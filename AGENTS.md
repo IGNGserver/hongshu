@@ -1,9 +1,8 @@
-<!-- 本地 bootstrap worktree 锚点；正文来自 origin/agent/bootstrap-repository:AGENTS.md。该初始化分支尚未合并到 origin/main。 -->
+<!-- wt anchor 生成，请勿直接编辑。正文逐字来自 origin/main 的 AGENTS.md（sha256 c4553a4a67ca）。刷新: wt anchor 短信同步系统 --run -->
 
-> **本目录没有代码，这是设计如此。** 它只是仓库身份锚点：`.git` + 本文件。
-> 读代码：`~/.local/bin/wt view 短信同步系统`；开发：`~/.local/bin/wt new 短信同步系统 <slug>`。
-> 当前规范暂存于 `origin/agent/bootstrap-repository`；初始化分支合并后，本锚点应由设备级 `wt anchor` 刷新。
-> 来源提交：3f52f28e58873f10739f1806022df0e104b18aa4
+> **本目录没有代码，这是设计如此（见全局规范 1c）。** 它只是仓库身份锚点：`.git` 完整 + 本文件。
+> 要读代码：`wt view 短信同步系统`，看完 `wt done 短信同步系统 _view-<sha>`。要改代码：`wt new 短信同步系统 <slug>`，只在生成的 `.wt/短信同步系统/<slug>/` 里动手。
+> 禁止在本目录 `checkout` / `switch` / 新建文件 / 建提交。设备级规范真源：`~/.qoder/coder-rules/global-rules.md`（第 1a 开工三步、第 2 任务隔离）。
 
 # 鸿枢（Hongshu）项目 Agent 规范
 
