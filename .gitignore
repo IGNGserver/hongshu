@@ -1,0 +1,49 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Go
+server/bin/
+server/tmp/
+server/coverage.out
+
+# Web / Node
+node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+web/.env.local
+npm-debug.log*
+pnpm-debug.log*
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/build/
+android/**/build/
+android/local.properties
+android/.idea/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Test and local runtime data
+coverage/
+test-results/
+*.log
+
+# Database exports and local data
+*.sql.gz
+*.dump
+runtime-data/
