@@ -1,4 +1,4 @@
-<!-- 本地 worktree 锚点；正文来自 origin/agent/bootstrap-repository:AGENTS.md（sha256 c4553a4a67ca）。该初始化分支尚未合并到 origin/main。 -->
+<!-- 本地 bootstrap worktree 锚点；正文来自 origin/agent/bootstrap-repository:AGENTS.md。该初始化分支尚未合并到 origin/main。 -->
 
 > **本目录没有代码，这是设计如此。** 它只是仓库身份锚点：`.git` + 本文件。
 > 读代码：`~/.local/bin/wt view 短信同步系统`；开发：`~/.local/bin/wt new 短信同步系统 <slug>`。
