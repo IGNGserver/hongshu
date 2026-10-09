@@ -1,7 +1,7 @@
 # 首版开发验证记录
 
 日期：2026-10-09。仅记录实际运行的检查；不等同于生产上线、正式版发布或真机兼容性认证。
-`VERSION` 维持 `0.1.0-alpha.1`，未创建 tag/Release/PR，未合并默认分支。
+本记录在 PR 集成和预发布前完成；版本源为 `0.1.0-alpha.1`，不代表当时已有 Release。
 
 ## 已执行
 
@@ -18,7 +18,7 @@
 | `WEB_BUILD_DIR=... npm run build` | PWA 生产资源校验和构建通过，无第三方运行时依赖 |
 | `docker compose -f compose.yml config --quiet` | 使用 Compose 2.39.4 通过配置解析；这不是容器运行测试 |
 | `bash -n scripts/{init-deployment,backup,verify-repository}.sh` | 通过 |
-| `actionlint .github/workflows/ci.yml` | 通过 |
+| `actionlint .github/workflows/*.yml` | CI 与预发布 workflow 检查通过 |
 | Gradle wrapper integrity | wrapper JAR SHA256 与 Gradle 官方 8.11.1 发布值一致；distribution 配置 SHA256 校验 |
 | `ktfmt --kotlinlang-style --dry-run --set-exit-if-changed ...` | Kotlin 生产代码、JVM 测试、androidTest 格式检查通过 |
 | `./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir ... :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | JDK 17 / SDK 35 / Gradle 8.11.1，5 个 JVM 测试通过；lint 无错误；debug APK 与 androidTest APK 构建成功 |
@@ -50,10 +50,10 @@ Android 12+ 云备份和设备迁移已显式排除全部应用数据，厂商�
 没有真实 SIM/双卡设备，也没有生产 HTTPS + 浏览器 Push 授权环境：不得声称这些已端到端通过。
 推荐的部署 MySQL 8.4.5 与本地测试 8.0.36 不同，CI 配置隔离 8.4.5；CI 的实际结果须查看推送后的 workflow，不能用本地结果代替。
 
-首次推送 CI（[37907523714](https://github.com/IGNGserver/hongshu/actions/runs/37907523714)）：
-仓库、Web、Go/MySQL 8.4.5、真实 Chromium 验证通过。Android 尚未进入测试，
-setup-android 默认请求已下架的 `tools` 包失败；已显式配置 `platform-tools`，
-保留 SDK 35 安装、wrapper 校验、全部测试/lint/APK 步骤，后续结果以新 workflow 为准。
+首次推送 CI（[37907523714](https://github.com/IGNGserver/hongshu/actions/runs/37907523714)）中，
+仓库、Web、Go/MySQL 8.4.5、真实 Chromium 验证通过；Android 因 setup-android 默认请求已下架的
+`tools` 包，在测试开始前失败。改为显式请求 `platform-tools` 后，
+[后续 CI](https://github.com/IGNGserver/hongshu/actions/runs/37908227348) 的仓库、Web、Go/MySQL 与 Android jobs 全部通过。
 
 ## 运维与兼容性限制
 

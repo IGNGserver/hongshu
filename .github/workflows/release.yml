@@ -1,0 +1,130 @@
+name: Hongshu preview release
+
+on:
+  push:
+    tags:
+      - "v*-alpha.*"
+      - "v*-beta.*"
+      - "v*-rc.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: validate and publish preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      mysql:
+        image: mysql:8.4.5
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_ROOT_HOST: "%"
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s --health-timeout=5s --health-retries=15
+    env:
+      TEST_MYSQL_DSN: root@tcp(127.0.0.1:3306)/?timeout=5s
+      MYSQL_BIN: /usr/bin/mysql
+      MYSQLDUMP_BIN: /usr/bin/mysqldump
+    steps:
+      - name: Check out tagged source and history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure build caches outside the checkout
+        run: |
+          printf 'GRADLE_USER_HOME=%s/gradle\nHONGSHU_BUILD_DIR=%s/hongshu\nWEB_BUILD_DIR=%s/hongshu/web\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Verify preview tag, VERSION, and main ancestry
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=${TAG#v}
+          test "$(tr -d '[:space:]' < VERSION)" = "$version"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)$ ]]
+          git fetch origin main --quiet
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; releases are immutable" >&2
+            exit 1
+          fi
+          printf 'TAG=%s\nVERSION=%s\n' "$TAG" "$version" >> "$GITHUB_ENV"
+      - name: Verify repository contract and whitespace
+        run: bash scripts/verify-repository.sh && git diff --check
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: server/go.sum
+      - name: Install MySQL client
+        run: sudo apt-get update && sudo apt-get install -y mysql-client
+      - name: Test and build Go service
+        working-directory: server
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l *.go cmd/*/*.go)"
+          go test -race -count=1 ./...
+          go vet ./...
+          mkdir -p "$HONGSHU_BUILD_DIR"
+          go build -trimpath -ldflags "-X main.buildVersion=$VERSION" -o "$HONGSHU_BUILD_DIR/hongshu-linux-amd64" .
+          go build -trimpath -o "$HONGSHU_BUILD_DIR/vapid-linux-amd64" ./cmd/vapid
+          go build -trimpath -o "$HONGSHU_BUILD_DIR/healthcheck-linux-amd64" ./cmd/healthcheck
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test and build Web/PWA
+        working-directory: web
+        run: npm test && npm run check && npm run build
+      - name: Install browser smoke dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-tools" --no-save playwright@1.56.1
+          "$RUNNER_TEMP/browser-tools/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise browser against isolated MySQL
+        run: node scripts/browser-smoke.cjs
+        env:
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/browser-tools/node_modules/playwright
+          HONGSHU_BINARY: ${{ runner.temp }}/hongshu/hongshu-linux-amd64
+          TEST_MYSQL_PORT: "3306"
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Test and build Android packages
+        working-directory: android
+        run: ./gradlew --no-daemon --project-cache-dir "$GRADLE_USER_HOME/project-cache" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Build OCI container and assemble release assets
+        run: |
+          set -euo pipefail
+          release="$HONGSHU_BUILD_DIR/release"
+          mkdir -p "$release"
+          cp "$HONGSHU_BUILD_DIR/hongshu-linux-amd64" "$HONGSHU_BUILD_DIR/vapid-linux-amd64" "$HONGSHU_BUILD_DIR/healthcheck-linux-amd64" "$release/"
+          tar -C "$WEB_BUILD_DIR" -czf "$release/hongshu-${TAG}-web.tar.gz" .
+          cp "$HONGSHU_BUILD_DIR/app/outputs/apk/debug/app-debug.apk" "$release/hongshu-${TAG}-android-debug.apk"
+          docker build --pull --tag "hongshu:${TAG}" .
+          docker save "hongshu:${TAG}" | gzip -9 > "$release/hongshu-${TAG}-oci-linux-amd64.tar.gz"
+          (cd "$release" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - name: Publish immutable GitHub Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "$HONGSHU_BUILD_DIR/release"/* \
+            --verify-tag --prerelease --title "Hongshu $TAG" \
+            --notes-file "docs/releases/${TAG}.md"
