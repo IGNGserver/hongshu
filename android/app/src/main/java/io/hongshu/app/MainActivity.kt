@@ -616,15 +616,16 @@ private fun Settings(
             }
         }
         items(candidates) { s ->
+            val slotText = if (s.slot >= 0) "卡槽 ${s.slot + 1}" else "卡槽未知"
             OutlinedButton(
                 onClick = {
                     sub = s.sub.toString()
-                    slot = s.slot.toString()
+                    slot = if (s.slot >= 0) s.slot.toString() else ""
                     phone = s.phone
                     label = s.label
                 }
             ) {
-                Text("${s.label} · 卡槽 ${s.slot+1} · ${s.phone.ifEmpty{"号码未知"}}")
+                Text("${s.label} · $slotText · ${s.phone.ifEmpty{"号码未知"}}")
             }
         }
         item {

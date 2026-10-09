@@ -16,7 +16,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | DELETE /api/devices/{id} | 管理员撤销，保留消息；最后管理员不可撤销 |
 | POST /api/pairings | 管理员生成一次性 code，十分钟有效；`{admin:true}` 仅授予新的 Web 浏览器管理员权（默认 false），Android 使用普通配对码 |
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
-| GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 可选名称同步，空 name 删除名称 |
+| GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
 | POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；返回每条 `{id,duplicate}`；整个批次原子提交；历史导入设 historical=true，不生成新短信通知 |
 | GET /api/sync?after=N&limit=L | `{messages, cursor, more}`，按 ID 升序；不得跨过未处理页面 |
 | GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按最新消息降序，搜索发件人/名称/正文；offset 分页 |

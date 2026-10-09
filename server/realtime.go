@@ -34,41 +34,64 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	ticker := time.NewTicker(2 * time.Second)
+	changeCh := make(chan struct{}, 1)
+	a.subsMu.Lock()
+	a.subscribers[changeCh] = struct{}{}
+	a.subsMu.Unlock()
+	defer func() {
+		a.subsMu.Lock()
+		delete(a.subscribers, changeCh)
+		a.subsMu.Unlock()
+	}()
+
+	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 	var observed int64 = -1
 	var lastPing time.Time
+
+	checkChanges := func() bool {
+		d, err := a.lookup(r)
+		if err != nil {
+			return false
+		}
+		var seq int64
+		var clock int64
+		if a.db.QueryRowContext(r.Context(), "SELECT seq FROM sync_clock WHERE id=1").Scan(&clock) != nil {
+			return false
+		}
+		if clock != observed && a.db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(id),0) FROM messages WHERE device_id<>? AND id>?", d.ID, observed).Scan(&seq) != nil {
+			return false
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if seq > 0 {
+			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": seq}) != nil {
+				return false
+			}
+		}
+		observed = clock
+		return true
+	}
+
 	for {
 		select {
 		case <-done:
 			return
 		case <-r.Context().Done():
 			return
+		case <-changeCh:
+			if !checkChanges() {
+				return
+			}
 		case <-ticker.C:
-			d, err := a.lookup(r)
-			if err != nil {
+			if !checkChanges() {
 				return
 			}
-			var seq int64
-			var clock int64
-			if a.db.QueryRowContext(r.Context(), "SELECT seq FROM sync_clock WHERE id=1").Scan(&clock) != nil {
-				return
-			}
-			if clock != observed && a.db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(id),0) FROM messages WHERE device_id<>? AND id>?", d.ID, observed).Scan(&seq) != nil {
-				return
-			}
-			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if seq > 0 {
-				if conn.WriteJSON(map[string]any{"type": "changed", "cursor": seq}) != nil {
-					return
-				}
-			} else if time.Since(lastPing) >= 25*time.Second {
+			if time.Since(lastPing) >= 25*time.Second {
 				if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)) != nil {
 					return
 				}
 				lastPing = time.Now()
 			}
-			observed = clock
 		}
 	}
 }

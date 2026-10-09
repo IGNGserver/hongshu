@@ -129,6 +129,7 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
                                     c.getInt(5),
                                     c.getInt(7) != 0,
                                 )
+                            val rawJsonSize = m.json().toString().toByteArray().size
                             if (
                                 m.body.isEmpty() ||
                                     m.sender.isEmpty() ||
@@ -138,7 +139,8 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
                                     m.timestamp < 0 ||
                                     m.timestamp > System.currentTimeMillis() + 86400000 ||
                                     m.body.contains('\u0000') ||
-                                    m.sender.contains('\u0000')
+                                    m.sender.contains('\u0000') ||
+                                    rawJsonSize > 900000
                             )
                                 writableDatabase.execSQL(
                                     "UPDATE outbox SET blocked='invalid_message' WHERE key=?",

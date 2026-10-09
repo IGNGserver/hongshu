@@ -35,10 +35,10 @@ fun uploadBatchCount(encodedSizes: List<Int>, budget: Int = 900000): Int {
     var bytes = 32
     var count = 0
     for (size in encodedSizes.take(100)) {
+        if (size > budget) break
         if (bytes + size + 1 > budget) break
         bytes += size + 1
         count++
     }
-    check(count > 0 || encodedSizes.isEmpty()) { "单条消息超过上传预算，原文仍保留在本地" }
     return count
 }

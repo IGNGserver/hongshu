@@ -282,40 +282,53 @@ function inboxView() {
   renderDetail();
   void refreshInbox().catch((e) => toast(e.message));
 }
+let inboxAbortController = null;
 let refreshGeneration = 0;
 async function refreshInbox() {
   if (!state.me) return;
-  const gen = ++refreshGeneration;
-  await reloadMetadata();
-  const filters = $(".filters");
-  if (filters && gen === refreshGeneration) {
-    const phones = [
-      ...new Map(
-        state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
-      ).values(),
-    ];
-    filters.replaceChildren(
-      selectFilter("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
-      selectFilter(
-        "所有设备",
-        state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
-        state.device,
-        (v) => (state.device = v),
-      ),
-    );
+  if (inboxAbortController) {
+    inboxAbortController.abort();
   }
-  const args = {
-    q: state.q,
-    sim: state.sim,
-    device: state.device,
-    offset: state.offset,
-    limit: 100,
-  };
-  const d = await api("/conversations?" + query(args));
-  if (gen !== refreshGeneration) return;
-  state.conversations = d.conversations;
-  renderConversations();
-  if (state.sender) await loadHistory(false);
+  inboxAbortController = new AbortController();
+  const signal = inboxAbortController.signal;
+
+  const gen = ++refreshGeneration;
+  try {
+    await reloadMetadata();
+    if (signal.aborted) return;
+    const filters = $(".filters");
+    if (filters && gen === refreshGeneration) {
+      const phones = [
+        ...new Map(
+          state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
+        ).values(),
+      ];
+      filters.replaceChildren(
+        selectFilter("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
+        selectFilter(
+          "所有设备",
+          state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
+          state.device,
+          (v) => (state.device = v),
+        ),
+      );
+    }
+    const args = {
+      q: state.q,
+      sim: state.sim,
+      device: state.device,
+      offset: state.offset,
+      limit: 100,
+    };
+    const d = await api("/conversations?" + query(args));
+    if (signal.aborted || gen !== refreshGeneration) return;
+    state.conversations = d.conversations;
+    renderConversations();
+    if (state.sender) await loadHistory(false);
+  } catch (err) {
+    if (err.name === "AbortError" || signal.aborted) return;
+    throw err;
+  }
 }
 function renderConversations() {
   const list = $(".list");
@@ -364,8 +377,15 @@ function renderConversations() {
     );
   list.append(controls);
 }
+let historyAbortController = null;
 async function loadHistory(older) {
   const sender = state.sender;
+  if (!older) {
+    if (historyAbortController) historyAbortController.abort();
+    historyAbortController = new AbortController();
+  }
+  const signal = historyAbortController?.signal;
+
   const args = {
     sender,
     sim: state.sim,
@@ -374,15 +394,20 @@ async function loadHistory(older) {
     limit: 100,
   };
   if (older && state.messages.length) args.before = state.messages[0].id;
-  const d = await api("/messages?" + query(args));
-  if (sender !== state.sender) return;
-  state.messages = older
-    ? mergeMessages(state.messages, d.messages)
-    : mergeMessages([], d.messages);
-  renderDetail();
-  if (!older) {
-    const n = $(".messages");
-    if (n) n.scrollTop = n.scrollHeight;
+  try {
+    const d = await api("/messages?" + query(args));
+    if (signal?.aborted || sender !== state.sender) return;
+    state.messages = older
+      ? mergeMessages(state.messages, d.messages)
+      : mergeMessages([], d.messages);
+    renderDetail();
+    if (!older) {
+      const n = $(".messages");
+      if (n) n.scrollTop = n.scrollHeight;
+    }
+  } catch (err) {
+    if (err.name === "AbortError" || signal?.aborted) return;
+    throw err;
   }
 }
 function renderDetail() {
