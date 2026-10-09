@@ -66,11 +66,24 @@ fun schedule(context: Context) {
         )
 }
 
+class BootReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        schedule(context)
+        syncNow(context)
+    }
+}
+
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val config = Config(applicationContext)
         if (config.token.isEmpty()) return Result.success()
         return try {
+            try {
+                catchUpInbox(applicationContext)
+            } catch (_: Exception) {
+                config.status = "收件箱补扫失败，实时广播不受影响"
+            }
             if (SyncEngine.run(applicationContext)) Result.success() else Result.retry()
         } catch (e: ApiException) {
             config.status = e.message ?: "同步失败"
@@ -93,7 +106,11 @@ object SyncEngine {
                 val store = repo.store
                 try {
                     if (c.token.isEmpty()) return@withContext true
-                    val me = repo.api.request("/me").getJSONObject("device")
+                    val session = repo.api.request("/me")
+                    val me = session.getJSONObject("device")
+                    val epoch = session.optLong("epoch")
+                    if (epochReset(store.epochSeen(), store.epoch(), epoch)) store.resetSyncedCache(epoch)
+                    else store.rememberEpoch(epoch)
                     c.notify = me.getBoolean("notify")
                     store.applyContacts(repo.api.request("/contacts").getJSONObject("contacts"))
                     // Local capture remains independent; server can deny upload without deleting
@@ -130,21 +147,46 @@ object SyncEngine {
                                             },
                                         ),
                                 )
-                            check(result.getJSONArray("acks").length() == pending.size) {
-                                "上传确认数量不一致"
+                            val acks = result.getJSONArray("acks")
+                            check(acks.length() == pending.size) { "上传确认数量不一致" }
+                            val accepted = mutableListOf<String>()
+                            for (i in 0 until acks.length()) {
+                                val ack = acks.getJSONObject(i)
+                                when (ack.optString("error")) {
+                                    "" -> accepted.add(pending[i].first)
+                                    "sim_not_confirmed" ->
+                                        store.block(pending[i].first, "sim_not_confirmed")
+                                    else -> store.block(pending[i].first, "invalid_message")
+                                }
                             }
-                            store.ack(pending.map { it.first })
+                            store.ack(accepted)
+                            if (accepted.isEmpty()) break
                         }
                     }
                     val notifyHistory = store.cursor() > 0
+                    val pairedAt = me.optLong("created_at")
                     var fresh = false
                     for (page in 0 until 100) {
-                        val data = repo.api.request("/sync?after=${store.cursor()}&limit=200")
+                        val data =
+                            try {
+                                repo.api.request("/sync?after=${store.cursor()}&limit=200")
+                            } catch (e: ApiException) {
+                                if (e.code != "epoch_changed") throw e
+                                store.resetSyncedCache(epoch)
+                                continue
+                            }
                         val added =
                             store.applySync(data.getJSONArray("messages"), data.getLong("cursor"))
                         if (
                             added.any {
-                                shouldNotify(it.deviceId, c.deviceId, it.historical, notifyHistory)
+                                shouldNotify(
+                                    it.deviceId,
+                                    c.deviceId,
+                                    it.historical,
+                                    notifyHistory,
+                                    it.timestamp,
+                                    pairedAt,
+                                )
                             }
                         )
                             fresh = true

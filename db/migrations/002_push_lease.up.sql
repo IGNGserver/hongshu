@@ -1,0 +1,1 @@
+ALTER TABLE push_jobs ADD COLUMN leased_until BIGINT NOT NULL DEFAULT 0;

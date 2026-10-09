@@ -8,12 +8,15 @@
 - https://developer.android.com/develop/background-work/background-tasks/persistent
 
 首版采用系统 `getMessagesFromIntent` 解析完整广播，不手工按单个 PDU 建消息。
-subscription extra 优先 `subscription`/`subscription_id`，其次 slot/slot_id/simSlot；不可辨识时
-仅当用户明确确认本机只有一张 SIM 时使用唯一已确认号码兜底；其他情况保留为未映射记录，不能猜测接收号码。
+SMS_RECEIVED 设为优先级 999，高于默认短信应用的 0，避免有序广播被提前中止。
+subscription extra 优先 `subscription`/`subscription_id`/`sub_id`；卡槽只用于在已授权时解析当前订阅 ID，不作为已保存号码的身份。
+不可辨识时仅当用户明确确认本机只有一张 SIM 时使用唯一已确认号码兜底；其他情况保留为未映射记录，不能猜测接收号码。
 运营商通常不提供 SIM 本机号；自动识别只作建议，用户必须确认或修改。
-历史导入读取 inbox 与 sub_id，优先使用 date_sent 对齐广播原始 PDU 时间，缺失时回退 date；与广播使用相同指纹。
-厂商 timestamp/address 差异仍可能造成重复，
-不使用模糊时间窗口去重，以免丢掉真实的重复验证码。
+历史导入和漏广播补扫读取 inbox 与 sub_id，时间使用本机接收时间 date。date_sent 与广播 PDU 时间经常不一致，不能拿来假装和实时广播是同一指纹。
+已有同设备广播记录时，同发件人、同正文、时间差不超过 2 分钟的导入或补扫行视为同一条，不重复上传。
+这只合并「广播已入库、收件箱时间略有偏差」的同一条，不合并相隔超过 2 分钟的真实重复验证码。
+自动补扫从配对时刻起记水位，不把安装前的收件箱当成新短信。
+厂商 timestamp/address 差异仍可能造成重复。
 
 Android 15+ 可能限制非默认短信应用读取敏感验证码；权限授予也不保证所有消息可见。
 Google Play 的 SMS 权限政策与设备 sideload 是不同问题；首版按用户自行安装设计，未声称可直接上架。

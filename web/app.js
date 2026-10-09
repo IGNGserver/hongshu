@@ -7,6 +7,9 @@ export function mergeMessages(previous, incoming) {
   for (const v of incoming) m.set(v.id, v);
   return [...m.values()].sort((a, b) => (a.timestamp - b.timestamp) || a.id - b.id);
 }
+export function epochReset(seen, stored, observed) {
+  return seen && stored !== observed;
+}
 export function pushKey(key) {
   return Uint8Array.from(
     atob(key.replaceAll("-", "+").replaceAll("_", "/")),
@@ -20,6 +23,7 @@ const state = {
   sims: [],
   page: "inbox",
   sender: "",
+  receiver: "",
   q: "",
   sim: "",
   device: "",
@@ -27,6 +31,8 @@ const state = {
   messages: [],
   offset: 0,
   cursor: 0,
+  epoch: 0,
+  epochSeen: false,
   ws: null,
   generation: 0,
   loggedOut: false,
@@ -343,18 +349,22 @@ function renderConversations() {
       "",
       async () => {
         state.sender = m.sender;
+        state.receiver = m.receiver;
         state.messages = [];
         $(".layout").classList.add("has-detail");
         renderConversations();
         await loadHistory(false);
       },
-      "conversation" + (state.sender === m.sender ? " selected" : ""),
+      "conversation" +
+        (state.sender === m.sender && state.receiver === m.receiver
+          ? " selected"
+          : ""),
     );
     const avatar = el("span", "avatar", (m.contact || m.sender).slice(0, 1));
     const preview = el("div", "preview");
     preview.append(
       el("strong", "", m.contact || m.sender),
-      el("p", "", m.body),
+      el("p", "", [m.receiver, m.body].filter(Boolean).join(" · ")),
       el("small", "", date(m.timestamp)),
     );
     b.append(avatar, preview);
@@ -380,6 +390,7 @@ function renderConversations() {
 let historyAbortController = null;
 async function loadHistory(older) {
   const sender = state.sender;
+  const receiver = state.receiver;
   if (!older) {
     if (historyAbortController) historyAbortController.abort();
     historyAbortController = new AbortController();
@@ -388,7 +399,7 @@ async function loadHistory(older) {
 
   const args = {
     sender,
-    sim: state.sim,
+    sim: receiver || state.sim,
     device: state.device,
     q: state.q,
     limit: 100,
@@ -396,7 +407,8 @@ async function loadHistory(older) {
   if (older && state.messages.length) args.before = state.messages[0].id;
   try {
     const d = await api("/messages?" + query(args));
-    if (signal?.aborted || sender !== state.sender) return;
+    if (signal?.aborted || sender !== state.sender || receiver !== state.receiver)
+      return;
     state.messages = older
       ? mergeMessages(state.messages, d.messages)
       : mergeMessages([], d.messages);
@@ -424,6 +436,7 @@ function renderDetail() {
       "返回",
       () => {
         state.sender = "";
+        state.receiver = "";
         $(".layout").classList.remove("has-detail");
         renderDetail();
       },
@@ -434,7 +447,7 @@ function renderDetail() {
   const m = state.messages.at(-1);
   title.append(
     el("strong", "", m?.contact || state.sender),
-    el("div", "muted", state.sender),
+    el("div", "muted", [state.sender, state.receiver].filter(Boolean).join(" · ")),
   );
   h.append(title);
   detail.append(h);
@@ -664,13 +677,33 @@ async function catchUp() {
   if (syncing || !state.me) return;
   syncing = true;
   try {
+    const me = await api("/me");
     let changed = false;
+    if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
+      state.messages = [];
+      state.conversations = [];
+      state.cursor = 0;
+      changed = true;
+    }
+    state.epoch = me.epoch;
+    state.epochSeen = true;
     for (let i = 0; i < 100; i++) {
       const d = await api(
         "/sync?" + query({ after: state.cursor, limit: 200 }),
       );
+      if (epochReset(state.epochSeen, state.epoch, d.epoch)) {
+        state.messages = [];
+        state.conversations = [];
+        state.cursor = 0;
+        state.epoch = d.epoch;
+        state.epochSeen = true;
+        changed = true;
+        continue;
+      }
       if (d.messages.length) changed = true;
       state.cursor = d.cursor;
+      state.epoch = d.epoch;
+      state.epochSeen = true;
       if (!d.more) break;
     }
     if (state.page === "inbox") await refreshInbox();
@@ -680,7 +713,9 @@ async function catchUp() {
 }
 async function start() {
   state.me = await api("/me");
-  state.cursor = state.me.cursor;
+  state.cursor = 0;
+  state.epoch = state.me.epoch;
+  state.epochSeen = true;
   state.loggedOut = false;
   state.generation++;
   await reloadMetadata();

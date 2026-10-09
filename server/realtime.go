@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdh"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net"
@@ -50,8 +51,7 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	var lastPing time.Time
 
 	checkChanges := func() bool {
-		d, err := a.lookup(r)
-		if err != nil {
+		if _, err := a.lookup(r); err != nil {
 			return false
 		}
 		var seq int64
@@ -59,7 +59,9 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 		if a.db.QueryRowContext(r.Context(), "SELECT seq FROM sync_clock WHERE id=1").Scan(&clock) != nil {
 			return false
 		}
-		if clock != observed && a.db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(id),0) FROM messages WHERE device_id<>? AND id>?", d.ID, observed).Scan(&seq) != nil {
+		// Include this device's own uploads. Other clients must see them; the source
+		// device decides locally whether to notify itself.
+		if clock != observed && a.db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(id),0) FROM messages WHERE id>?", observed).Scan(&seq) != nil {
 			return false
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -173,14 +175,24 @@ func (a *app) subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An endpoint belongs to one device; replacing it never transfers another identity.
+	tx, e := a.db.BeginTx(r.Context(), nil)
+	if e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	defer tx.Rollback()
 	var other string
-	e = a.db.QueryRowContext(r.Context(), "SELECT device_id FROM push_subscriptions WHERE endpoint=? AND device_id<>? LIMIT 1", in.Endpoint, device(r).ID).Scan(&other)
+	e = tx.QueryRowContext(r.Context(), "SELECT device_id FROM push_subscriptions WHERE endpoint=? AND device_id<>? LIMIT 1 FOR UPDATE", in.Endpoint, device(r).ID).Scan(&other)
 	if e == nil {
 		fail(w, 409, "subscription_in_use")
 		return
 	}
-	_, e = a.db.ExecContext(r.Context(), "INSERT INTO push_subscriptions VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE endpoint=?,p256dh=?,auth=?", device(r).ID, in.Endpoint, in.Keys.P256dh, in.Keys.Auth, in.Endpoint, in.Keys.P256dh, in.Keys.Auth)
-	if e != nil {
+	if e != sql.ErrNoRows {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	_, e = tx.ExecContext(r.Context(), "INSERT INTO push_subscriptions VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE endpoint=?,p256dh=?,auth=?", device(r).ID, in.Endpoint, in.Keys.P256dh, in.Keys.Auth, in.Endpoint, in.Keys.P256dh, in.Keys.Auth)
+	if e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
@@ -215,27 +227,42 @@ func (a *app) pushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// One middlebox process supported. Jobs survive restarts, with at-least-once
-			// notification semantics; stable SW tag coalesces retries.
-			rows, e := a.db.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20", time.Now().UnixMilli())
+			// Claim a short lease before sending so a slow delivery is not picked up
+			// again by the next tick. A crash releases the lease after 60s; the stable
+			// service-worker tag coalesces that at-least-once retry.
+			now := time.Now()
+			lease := now.Add(60 * time.Second).UnixMilli()
+			tx, e := a.db.BeginTx(ctx, nil)
 			if e != nil {
 				continue
 			}
-			type job struct {
+			if _, e = tx.ExecContext(ctx, "UPDATE push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id SET j.leased_until=? WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20", lease, now.UnixMilli(), now.UnixMilli()); e != nil {
+				tx.Rollback()
+				continue
+			}
+			rows, e := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.leased_until=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20", lease)
+			if e != nil {
+				tx.Rollback()
+				continue
+			}
+			type claimed struct {
 				id       int64
 				device   string
 				attempts int
 				sub      webpush.Subscription
 			}
-			jobs := []job{}
+			claimedJobs := []claimed{}
 			for rows.Next() {
-				var j job
+				var j claimed
 				if rows.Scan(&j.id, &j.device, &j.attempts, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth) == nil {
-					jobs = append(jobs, j)
+					claimedJobs = append(claimedJobs, j)
 				}
 			}
 			rows.Close()
-			for _, j := range jobs {
+			if rows.Err() != nil || tx.Commit() != nil {
+				continue
+			}
+			for _, j := range claimedJobs {
 				if ctx.Err() != nil {
 					return
 				}
@@ -248,7 +275,9 @@ func (a *app) pushLoop(ctx context.Context) {
 				if e == nil && status >= 200 && status < 300 {
 					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=?", j.id)
 				} else if status == 404 || status == 410 {
-					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE device_id=?", j.device)
+					// Only this failed delivery is gone. Other queued jobs for the device stay
+					// until their own subscription is attempted or the user unsubscribes.
+					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=?", j.id)
 					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=?", j.device, j.sub.Endpoint)
 				} else {
 					shift := j.attempts
@@ -259,7 +288,7 @@ func (a *app) pushLoop(ctx context.Context) {
 					if delay > 6*time.Hour {
 						delay = 6 * time.Hour
 					}
-					_, _ = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=? WHERE id=?", time.Now().Add(delay).UnixMilli(), j.id)
+					_, _ = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=?,leased_until=0 WHERE id=?", time.Now().Add(delay).UnixMilli(), j.id)
 				}
 			}
 		}
