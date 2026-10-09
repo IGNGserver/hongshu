@@ -85,16 +85,17 @@ func (c *apiTest) call(method, path, token string, body any, status int) map[str
 }
 func TestIntegrationWorkflow(t *testing.T) {
 	db := testDB(t)
-	a, _ := newApp(db, "http://localhost:8080", strings.Repeat("s", 32), "", "")
+	a, _ := newApp(db, "http://localhost:8080", "1", "", "")
 	c := apiTest{t: t, a: a}
-	c.call("POST", "/api/bootstrap", "", map[string]any{"secret": a.bootstrap, "name": "Admin browser"}, 201)
-	c.call("POST", "/api/bootstrap", "", map[string]any{"secret": a.bootstrap, "name": "Another"}, 409)
+	c.call("POST", "/api/login", "", map[string]any{"password": "wrong"}, 401)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
 	me := c.call("GET", "/api/me", "", nil, 200)
 	if me["epoch"] != float64(1) {
 		t.Fatal("fresh database epoch")
 	}
 	admin := me["device"].(map[string]any)["id"].(string)
 	code := c.call("POST", "/api/pairings", "", map[string]any{}, 201)["code"].(string)
+	c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Web browser", "kind": "web"}, 400)
 	paired := c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Phone", "kind": "android"}, 201)
 	token := paired["token"].(string)
 	id := paired["device"].(map[string]any)["id"].(string)
@@ -147,7 +148,6 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c.call("GET", "/api/sync?after=-1", token, nil, 400)
 	c.call("GET", "/api/sync?limit=0", token, nil, 400)
 	c.call("POST", "/api/pairings", token, map[string]any{}, 403)
-	c.call("DELETE", "/api/devices/"+admin, "", nil, 409)
 	// Concurrent writes use the clock lock; no cursor can skip a committed row.
 	var wg sync.WaitGroup
 	failures := make(chan string, 12)
@@ -222,6 +222,10 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if e := migrate(context.Background(), db, "../db/migrations"); e != nil {
 		t.Fatal("migration not repeatable", e)
 	}
+	c.call("DELETE", "/api/devices/"+admin, "", nil, 200)
+	c.call("GET", "/api/me", "", nil, 401)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	c.call("GET", "/api/me", "", nil, 200)
 }
 func TestIntegrationWebSocketRevocation(t *testing.T) {
 	db := testDB(t)
@@ -269,23 +273,14 @@ func TestIntegrationDirtyMigration(t *testing.T) {
 	}
 }
 
-func TestIntegrationLogoutRevokesIdentityAndProtectsRemainingAdmin(t *testing.T) {
+func TestIntegrationLogoutAndPasswordLogin(t *testing.T) {
 	db := testDB(t)
-	a, _ := newApp(db, "http://localhost:8080", strings.Repeat("s", 32), "", "")
+	a, _ := newApp(db, "http://localhost:8080", "1", "", "")
 	c := apiTest{t: t, a: a}
-	c.call("POST", "/api/bootstrap", "", map[string]any{"secret": a.bootstrap, "name": "first admin"}, 201)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
 	original := c.cookie
-	c.call("POST", "/api/logout", "", map[string]any{}, 409)
-	code := c.call("POST", "/api/pairings", "", map[string]bool{"admin": true}, 201)["code"].(string)
-	c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "wrong admin client", "kind": "android"}, 400)
-	paired := c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "backup admin", "kind": "web"}, 201)
-	if paired["device"].(map[string]any)["admin"] != true {
-		t.Fatal("explicit admin pairing lost role")
-	}
-	token := c.cookie.Value
 	c.call("POST", "/api/logout", "", map[string]any{}, 200)
-	c.call("GET", "/api/me", token, nil, 401)
-	c.cookie = original
-	c.call("POST", "/api/logout", "", map[string]any{}, 409)
+	c.call("GET", "/api/me", original.Value, nil, 401)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
 	c.call("GET", "/api/me", "", nil, 200)
 }

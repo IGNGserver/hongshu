@@ -38,16 +38,18 @@ const state = {
   loggedOut: false,
 };
 const errors = {
-  unauthorized: "授权失效，请重新配对",
+  unauthorized: "登录状态已失效，请重新输入中枢密码",
   invalid_pairing: "配对码无效或已过期",
-  already_initialized: "中枢已初始化，请使用配对码",
-  invalid_secret: "初始化密钥不正确",
+  invalid_password: "中枢密码不正确",
   rate_limited: "请求过于频繁，请稍后重试",
-  last_admin: "请先配对另一个管理员浏览器，再撤销授权或退出最后一个管理员",
   push_not_configured: "部署者尚未配置 Web Push",
   origin_denied: "PUBLIC_URL 与访问地址不一致",
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
 };
+function remoteHTTP() {
+  return location.protocol === "http:" &&
+    !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
+}
 function toast(text) {
   $("#toast").textContent = text;
   $("#toast").className = "visible";
@@ -100,53 +102,32 @@ function authView() {
     el("h1", "", "鸿枢 Hongshu"),
     el("p", "muted", "所有手机的短信，在自己的中枢相遇。"),
   );
-  const mode = el("select");
-  mode.setAttribute("aria-label", "连接方式");
-  for (const [v, t] of [
-    ["pair", "使用配对码连接"],
-    ["bootstrap", "首次初始化中枢"],
-  ]) {
-    const o = el("option", "", t);
-    o.value = v;
-    mode.append(o);
-  }
-  card.append(mode);
+  if (remoteHTTP())
+    card.append(
+      el(
+        "p",
+        "security-warning",
+        "警告：当前使用明文 HTTP。密码、短信和登录凭据未加密，可能被窃听或篡改；请优先使用 HTTPS 或 VPN。",
+      ),
+    );
   const form = el("form");
-  const name = el("input");
-  name.required = true;
-  name.maxLength = 100;
-  name.value = "我的浏览器";
-  const code = el("input");
-  code.required = true;
-  code.type = "password";
-  code.autocomplete = "off";
-  for (const [text, input] of [
-    ["设备名称", name],
-    ["配对码 / 初始化密钥", code],
-  ]) {
-    const l = el("label", "", text);
-    l.append(input);
-    form.append(l);
-  }
-  const submit = el("button", "primary", "安全连接");
+  const password = el("input");
+  password.required = true;
+  password.type = "password";
+  password.maxLength = 1024;
+  password.autocomplete = "current-password";
+  const label = el("label", "", "中枢密码");
+  label.append(password);
+  form.append(label);
+  const submit = el("button", "primary", "登录");
   submit.type = "submit";
   form.append(submit);
   form.onsubmit = async (e) => {
     e.preventDefault();
     submit.disabled = true;
     try {
-      if (mode.value === "bootstrap")
-        await api("/bootstrap", "POST", {
-          secret: code.value,
-          name: name.value,
-        });
-      else
-        await api("/pair", "POST", {
-          code: code.value.trim(),
-          name: name.value,
-          kind: "web",
-        });
-      code.value = "";
+      await api("/login", "POST", { password: password.value });
+      password.value = "";
       await start();
     } catch (err) {
       toast(err.message);
@@ -159,7 +140,7 @@ function authView() {
     el(
       "small",
       "",
-      "配对码由已连接的管理员生成。短信不存入浏览器持久缓存；通知默认不显示正文。",
+      "单用户中枢，无需用户名。Android 设备仍使用管理员生成的一次性配对码；短信不会离线保存在浏览器。",
     ),
   );
   root.append(card);
@@ -203,7 +184,16 @@ function shell() {
     el("p", "muted", "历史长期保留 · 通知内容保护"),
   );
   rail.append(foot);
-  container.append(rail, el("main", "main"));
+  const main = el("main", "main");
+  if (remoteHTTP())
+    main.append(
+      el(
+        "p",
+        "security-warning",
+        "当前 HTTP 连接未加密：密码、短信和登录凭据可能被窃听或篡改。浏览器离线应用与 Web Push 需要 HTTPS。",
+      ),
+    );
+  container.append(rail, main);
   root.append(container);
   if (state.page === "inbox") inboxView();
   if (state.page === "devices") devicesView();
@@ -477,8 +467,8 @@ async function devicesView() {
   if (state.me.device.admin) {
     const c = el("section", "card");
     c.append(
-      el("h2", "", "连接新设备"),
-      el("p", "muted", "一次性配对码，有效期 10 分钟。不要通过公开渠道分享。"),
+      el("h2", "", "连接 Android 设备"),
+      el("p", "muted", "Android 使用一次性配对码绑定，有效期 10 分钟。不要通过公开渠道分享。其他浏览器直接使用中枢密码登录。"),
       button(
         "生成配对码",
         async () => {
@@ -488,19 +478,6 @@ async function devicesView() {
         },
         "primary",
       ),
-      button("生成管理员配对码", async () => {
-        if (
-          !confirm(
-            "此配对码授予设备管理权。建议配对一个备用管理员浏览器，避免丢失唯一管理员身份。",
-          )
-        )
-          return;
-        const v = await api("/pairings", "POST", { admin: true });
-        c.append(
-          el("p", "code", v.code),
-          el("small", "", "管理员配对码 · 有效至 " + date(v.expires_at)),
-        );
-      }),
     );
     main.append(c);
   }
@@ -572,15 +549,17 @@ function settingsView() {
     el(
       "p",
       "muted",
-      "在线使用实时连接，后台通过标准 Web Push（无需 Firebase）。HTTPS 及浏览器授权是必要条件。",
+      "在线使用实时连接，后台通过标准 Web Push（无需 Firebase）。Web Push、Service Worker 和可安装离线应用需要 HTTPS 或 localhost；公网 HTTP 不支持。",
     ),
   );
   card.append(
     button("启用安全通知", enablePush, "primary"),
     button("关闭浏览器推送", async () => {
       await api("/push", "DELETE");
-      const reg = await navigator.serviceWorker.ready;
-      await (await reg.pushManager.getSubscription())?.unsubscribe();
+      if (window.isSecureContext && "serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        await (await reg?.pushManager.getSubscription())?.unsubscribe();
+      }
       toast("已关闭浏览器推送");
     }),
   );
@@ -627,6 +606,8 @@ function settingsView() {
   main.append(privacy);
 }
 async function enablePush() {
+  if (!window.isSecureContext)
+    throw new Error("Web Push 需要 HTTPS 或 localhost；公网 HTTP 不支持安全上下文");
   if (!("serviceWorker" in navigator) || !("PushManager" in window))
     throw new Error("当前浏览器不支持 Web Push");
   if (!state.me.vapid_public_key) throw new Error("部署者尚未配置 VAPID");

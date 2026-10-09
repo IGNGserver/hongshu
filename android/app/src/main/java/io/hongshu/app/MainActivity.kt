@@ -422,13 +422,16 @@ private fun Settings(
     ) {
         item {
             Text("连接配置", style = MaterialTheme.typography.titleLarge)
-            Text("仅接受 HTTPS；证书必须由系统信任。每台设备有独立凭据。", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "支持 HTTP/HTTPS，每台设备有独立凭据。HTTP 不加密密码、短信或设备凭据；公网使用建议改用 HTTPS 或 VPN。",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         item {
             OutlinedTextField(
                 url,
                 { url = it },
-                label = { Text("中枢地址 https://sms.example.com") },
+                label = { Text("中枢地址 http(s)://sms.example.com") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )

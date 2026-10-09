@@ -70,7 +70,7 @@ class RealtimeService : Service() {
                         socket =
                             client.newWebSocket(
                                 Request.Builder()
-                                    .url(c.url.replaceFirst("https://", "wss://") + "/api/ws")
+                                    .url(realtimeURL(c.url))
                                     .header("Authorization", "Bearer ${c.token}")
                                     .build(),
                                 object : WebSocketListener() {

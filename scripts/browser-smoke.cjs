@@ -10,7 +10,7 @@ const db = "hongshu_browser_" + randomBytes(6).toString("hex");
 const port = process.env.SMOKE_PORT || "18080";
 const mysqlPort = process.env.TEST_MYSQL_PORT || "13306";
 const origin = "http://localhost:" + port;
-const secret = randomBytes(32).toString("hex");
+const password = randomBytes(32).toString("hex");
 const mysql = process.env.MYSQL_BIN;
 if (!mysql || !process.env.HONGSHU_BINARY)
   throw new Error("MYSQL_BIN and HONGSHU_BINARY required");
@@ -57,7 +57,7 @@ async function request(path, token, method = "GET", body) {
         ...process.env,
         MYSQL_DSN:
           "root@tcp(127.0.0.1:" + mysqlPort + ")/" + db + "?timeout=5s",
-        BOOTSTRAP_SECRET: secret,
+        HONGSHU_PASSWORD: password,
         PUBLIC_URL: origin,
         LISTEN_ADDR: ":" + port,
         WEB_DIR: resolve(root, "web"),
@@ -87,11 +87,9 @@ async function request(path, token, method = "GET", body) {
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(origin);
-    await page.getByRole("button", { name: "安全连接", exact: true }).waitFor();
-    await page.locator("select").selectOption("bootstrap");
-    await page.getByLabel("设备名称", { exact: true }).fill("Synthetic Admin");
-    await page.getByLabel("配对码 / 初始化密钥").fill(secret);
-    await page.getByRole("button", { name: "安全连接", exact: true }).click();
+    await page.getByRole("button", { name: "登录", exact: true }).waitFor();
+    await page.getByLabel("中枢密码", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.getByRole("heading", { name: "短信收件箱" }).waitFor();
     await page.getByText("实时连接", { exact: true }).waitFor({ timeout: 15000 });
     const pairing = await page.evaluate(async () => {
@@ -172,7 +170,7 @@ async function request(path, token, method = "GET", body) {
         fullPage: true,
       });
     console.log(
-      "Browser smoke passed: setup, inbox, XSS safety, mobile conversation, search, devices, settings, private PWA cache",
+      "Browser smoke passed: password login, inbox, XSS safety, mobile conversation, search, devices, settings, private PWA cache",
     );
   } finally {
     if (browser) await browser.close();

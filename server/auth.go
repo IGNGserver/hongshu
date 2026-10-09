@@ -16,16 +16,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 type app struct {
-	db                                           *sql.DB
-	origin, bootstrap, vapidPublic, vapidPrivate string
-	secure                                       bool
-	limitMu                                      sync.Mutex
-	limits                                       map[string]*attempt
-	subsMu                                       sync.Mutex
-	subscribers                                  map[chan struct{}]struct{}
+	db                                *sql.DB
+	origin, vapidPublic, vapidPrivate string
+	passwordSalt, passwordHash        []byte
+	secure                            bool
+	limitMu                           sync.Mutex
+	limits                            map[string]*attempt
+	subsMu                            sync.Mutex
+	subscribers                       map[chan struct{}]struct{}
 }
 type attempt struct {
 	count int
@@ -51,15 +54,28 @@ func random(n int) string {
 	}
 	return hex.EncodeToString(b)
 }
-func newApp(db *sql.DB, origin, secret, pub, priv string) (*app, error) {
+func derivePassword(password string, salt []byte) []byte {
+	return argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32)
+}
+func newApp(db *sql.DB, origin, password, pub, priv string) (*app, error) {
 	u, e := url.Parse(origin)
-	if e != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+	if e != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("PUBLIC_URL must be an origin")
 	}
-	if u.Scheme == "http" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
-		return nil, errors.New("HTTPS required except localhost")
+	if len(password) == 0 || len(password) > 1024 {
+		return nil, errors.New("HONGSHU_PASSWORD must contain 1 to 1024 bytes")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), bootstrap: secret, vapidPublic: pub, vapidPrivate: priv, secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{})}, nil
+	salt := make([]byte, 16)
+	if _, e = rand.Read(salt); e != nil {
+		return nil, errors.New("password verifier initialization failed")
+	}
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{})}, nil
+}
+func (a *app) passwordMatches(password string) bool {
+	if len(password) == 0 || len(password) > 1024 {
+		return false
+	}
+	return subtle.ConstantTimeCompare(derivePassword(password, a.passwordSalt), a.passwordHash) == 1
 }
 func fail(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
@@ -142,6 +158,35 @@ func (a *app) allowed(r *http.Request) bool {
 	v.count++
 	return v.count <= 10
 }
+func (a *app) loginHandler(w http.ResponseWriter, r *http.Request) {
+	if !a.allowed(r) {
+		fail(w, 429, "rate_limited")
+		return
+	}
+	var in struct {
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if !a.passwordMatches(in.Password) {
+		fail(w, 401, "invalid_password")
+		return
+	}
+	tx, e := a.db.BeginTx(r.Context(), nil)
+	if e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	defer tx.Rollback()
+	d, token, e := insertDevice(r.Context(), tx, "Web browser", "web", true)
+	if e != nil || tx.Commit() != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	a.cookie(w, token)
+	writeJSON(w, 200, map[string]any{"device": d})
+}
 func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool) (Device, string, error) {
 	d := Device{ID: random(16), Name: name, Kind: kind, Admin: admin, Notify: true, Created: time.Now().UnixMilli()}
 	token := random(32)
@@ -151,68 +196,17 @@ func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool
 func validName(s string) bool {
 	return len(strings.TrimSpace(s)) > 0 && len(s) <= 100 && !strings.ContainsRune(s, 0)
 }
-func (a *app) bootstrapHandler(w http.ResponseWriter, r *http.Request) {
-	if !a.allowed(r) {
-		fail(w, 429, "rate_limited")
-		return
-	}
-	var in struct {
-		Secret string `json:"secret"`
-		Name   string `json:"name"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(hash(in.Secret)), []byte(hash(a.bootstrap))) != 1 {
-		fail(w, 403, "invalid_secret")
-		return
-	}
-	if !validName(in.Name) {
-		fail(w, 400, "invalid_name")
-		return
-	}
-	tx, e := a.db.BeginTx(r.Context(), nil)
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	defer tx.Rollback()
-	var seq int64
-	if e = tx.QueryRowContext(r.Context(), "SELECT seq FROM sync_clock WHERE id=1 FOR UPDATE").Scan(&seq); e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	var n int
-	if e = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM devices").Scan(&n); e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	if n > 0 {
-		fail(w, 409, "already_initialized")
-		return
-	}
-	d, token, e := insertDevice(r.Context(), tx, in.Name, "web", true)
-	if e != nil || tx.Commit() != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	a.cookie(w, token)
-	writeJSON(w, 201, d)
-}
 func (a *app) pairing(w http.ResponseWriter, r *http.Request) {
 	if !device(r).Admin {
 		fail(w, 403, "admin_required")
 		return
 	}
-	var in struct {
-		Admin bool `json:"admin"`
-	}
-	if !decode(w, r, &in) {
+	if !decode(w, r, &struct{}{}) {
 		return
 	}
 	code := random(16)
 	expires := time.Now().Add(10 * time.Minute).UnixMilli()
-	_, e := a.db.ExecContext(r.Context(), "INSERT INTO pairings VALUES (?,?,?)", hash(code), expires, in.Admin)
+	_, e := a.db.ExecContext(r.Context(), "INSERT INTO pairings VALUES (?,?,FALSE)", hash(code), expires)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -232,7 +226,7 @@ func (a *app) pair(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !validName(in.Name) || (in.Kind != "web" && in.Kind != "android") {
+	if !validName(in.Name) || in.Kind != "android" {
 		fail(w, 400, "invalid_device")
 		return
 	}
@@ -252,23 +246,18 @@ func (a *app) pair(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	if admin && in.Kind != "web" {
-		fail(w, 400, "admin_pairing_requires_web")
+	if admin {
+		fail(w, 403, "invalid_pairing")
 		return
 	}
 	if _, e = tx.ExecContext(r.Context(), "DELETE FROM pairings WHERE code_hash=?", hash(in.Code)); e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	d, token, e := insertDevice(r.Context(), tx, in.Name, in.Kind, admin)
+	d, token, e := insertDevice(r.Context(), tx, in.Name, in.Kind, false)
 	if e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	if in.Kind == "web" {
-		a.cookie(w, token)
-		writeJSON(w, 201, map[string]any{"device": d})
-	} else {
-		writeJSON(w, 201, map[string]any{"device": d, "token": token})
-	}
+	writeJSON(w, 201, map[string]any{"device": d, "token": token})
 }

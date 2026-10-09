@@ -10,7 +10,7 @@
 - **Android**：Kotlin、Compose、Material 3 Expressive，会话、对话、搜索、SIM 筛选；
   原生 SMS 广播、多段合并、双 SIM 映射、持久 outbox、失败重试、历史导入、可选联系人名称同步。
   上传和通知独立开关；普通查看设备无需短信权限。
-- **中枢**：Go + MySQL，独立设备凭据、一次性配对、备用管理员、设备撤销；
+- **中枢**：Go + MySQL，单一中枢密码（无用户名）、独立设备凭据、一次性配对、设备撤销；
   事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
 - **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
   WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；不离线持久保存短信正文。
@@ -22,7 +22,7 @@ Android 系统对验证码、后台运行、强制停止和厂商省电的限制
 
 ## 部署
 
-需要 Docker/Compose、HTTPS 域名与反向代理，本地 Linux 数据盘（MySQL 不使用 CIFS）。
+需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
 
 ```bash
 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
@@ -30,8 +30,7 @@ docker compose up -d
 curl --fail http://127.0.0.1:8080/healthz
 ```
 
-完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。首次 Web 初始化使用受保护 `.env`
-中的 BOOTSTRAP_SECRET，然后在设备页创建配对码。建议配对备用管理员浏览器。
+完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 仍在设备页使用一次性配对码绑定。
 Android 构建/使用：[android/README.md](android/README.md)。本轮不发布 APK Release 或代装。
 
 ## 结构与协议
@@ -72,7 +71,7 @@ cd ../android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :ap
 ```
 
 CI 包含真实隔离 MySQL 服务、Go race/vet/build、Web test/check/build 和 Android test/lint/APK。
-真实 SIM、浏览器后台 Push、公网 HTTPS 与备份恢复必须另外做环境验收。
+真实 SIM、浏览器后台 Push、公网 HTTP/HTTPS 与备份恢复必须另外做环境验收；HTTP 下敏感数据不加密且 Web Push 不可用。
 
 ## 安全与许可
 

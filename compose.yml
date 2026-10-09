@@ -7,11 +7,11 @@ services:
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    ports: ["127.0.0.1:${PORT:-8080}:8080"]
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:8080"]
     environment:
       MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?charset=utf8mb4&timeout=5s&readTimeout=30s&writeTimeout=30s"
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}
-      BOOTSTRAP_SECRET: ${BOOTSTRAP_SECRET:?set BOOTSTRAP_SECRET}
+      HONGSHU_PASSWORD: ${HONGSHU_PASSWORD:?set HONGSHU_PASSWORD}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.invalid}

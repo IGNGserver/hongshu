@@ -11,7 +11,7 @@ export HONGSHU_BUILD_DIR="$HOME/.cache/hongshu-android"
 
 APK 在 `$HONGSHU_BUILD_DIR/app/outputs/apk/debug/`。debug APK 仅测试，正式部署应自行
 配置受保护的签名并构建 release；仓库不包含签名密钥、不自动发布、不自动安装。
-生产配对只接受 HTTPS，证书必须受 Android 信任（不禁用证书验证）。
+支持 HTTP 与 HTTPS。HTTP 会明文传输配对码、设备 token 和短信正文；公网使用强烈建议配置 HTTPS 或 VPN。HTTPS 证书仍必须受 Android 信任（不禁用证书验证）。
 
 打开先显示会话列表，右上角进入设备/连接设置。新设备默认不采集短信；开启采集、授予新短信权限、
 配置确认 SIM 号码后才上传。历史读取/通讯录/通知/SIM 识别权限分开申请。

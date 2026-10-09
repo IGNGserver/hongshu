@@ -157,6 +157,10 @@ func splitSQL(script string) []string {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	password := os.Getenv("HONGSHU_PASSWORD")
+	if len(password) == 0 || len(password) > 1024 {
+		log.Fatal("HONGSHU_PASSWORD must contain 1 to 1024 bytes")
+	}
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
 		log.Fatal("MYSQL_DSN is required")
@@ -185,12 +189,9 @@ func main() {
 	if err = migrate(ctx, db, env("MIGRATIONS_DIR", "../db/migrations")); err != nil {
 		log.Fatal(err)
 	}
-	a, err := newApp(db, env("PUBLIC_URL", "http://localhost:8080"), os.Getenv("BOOTSTRAP_SECRET"), os.Getenv("VAPID_PUBLIC_KEY"), os.Getenv("VAPID_PRIVATE_KEY"))
+	a, err := newApp(db, env("PUBLIC_URL", "http://localhost:8080"), password, os.Getenv("VAPID_PUBLIC_KEY"), os.Getenv("VAPID_PRIVATE_KEY"))
 	if err != nil {
 		log.Fatal(err)
-	}
-	if len(a.bootstrap) < 32 {
-		log.Fatal("BOOTSTRAP_SECRET must contain at least 32 characters")
 	}
 	go a.pushLoop(ctx)
 	srv := &http.Server{Addr: env("LISTEN_ADDR", ":8080"), Handler: a.routes(env("WEB_DIR", "../web")), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10}

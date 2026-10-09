@@ -40,13 +40,14 @@
 
 ## 身份与安全
 
-首次 bootstrap 需要部署者生成的随机 secret，只能创建一个管理员 Web 身份。
-管理员生成高熵、10 分钟过期、一次性配对码；可明确勾选授予新身份管理员权以建立备用管理员。
-每设备独立 256-bit bearer，数据库只存 SHA256；最后管理员禁止撤销/退出。
-Web 身份使用 HttpOnly / SameSite=Strict cookie，生产 HTTPS 时 Secure；不将凭据放 localStorage。
+系统不建立用户名或用户表。部署配置一个中枢密码，Web 登录不校验用户名；密码允许弱密码但不能为空，服务端用带随机盐的 Argon2id 校验器驻留内存。
+中枢密码登录创建管理员 Web 设备身份；Android 仍由管理员生成高熵、10 分钟过期、一次性配对码绑定，并使用独立设备凭据。
+每设备独立 256-bit bearer，数据库只存 SHA256；撤销最后一个管理员设备后，仍可用中枢密码重新登录创建管理员身份。
+Web 身份使用 HttpOnly / SameSite=Strict cookie，HTTPS 时 Secure；HTTP 时为支持明文部署不设置 Secure；不将凭据放 localStorage。
 Android 使用 Keystore AES-GCM 保存凭据。撤销身份阻止后续 HTTP/WS/Push。
 Android 禁用应用备份，并通过 Android 12+ dataExtractionRules 明确排除云备份和设备迁移的全部应用数据；厂商迁移行为仍需真机验证。
-浏览器写请求检查 Origin；WS 检查 Origin；不提供跨域访问。部署公网必须配置 HTTPS PUBLIC_URL。
+浏览器写请求检查 Origin；WS 检查 Origin；不提供跨域访问。PUBLIC_URL 支持 HTTP 或 HTTPS；公网 HTTP 会明文传输密码、短信和会话凭据，强烈建议使用 HTTPS 或 VPN。
+浏览器 Service Worker、可安装离线应用和 Web Push 需要 HTTPS 或 localhost；公网 HTTP 下不可用。
 推送服务只能访问公开 HTTPS 地址，解析与拨号均阻止私网/回环，防止订阅接口成为 SSRF 通道。
 不记录请求正文、Authorization、Cookie、配对码、短信、号码或 Push endpoint。
 数据库/备份具有全部短信明文，部署者必须保护磁盘、备份和网络；首版不是端到端加密。

@@ -5,6 +5,16 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun realtimeSupportsHTTPAndHTTPSOrigins() {
+        assertEquals("http://sms.example.com:8080", hubOrigin("HTTP://sms.example.com:8080/"))
+        assertEquals(
+            "ws://sms.example.com:8080/api/ws",
+            realtimeURL("http://sms.example.com:8080/"),
+        )
+        assertEquals("wss://sms.example.com/api/ws", realtimeURL("https://sms.example.com"))
+    }
+
+    @Test
     fun uploadBatchHonorsActualEscapedJsonBytes() {
         assertEquals(14, uploadBatchCount(List(100) { 64000 }))
         assertEquals(1, uploadBatchCount(listOf(450000, 450000)))
