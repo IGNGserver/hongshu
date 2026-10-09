@@ -8,13 +8,14 @@
 | 检查 | 真实结果 |
 | --- | --- |
 | `bash scripts/verify-repository.sh`、`git diff --check`、Go `gofmt` 检查 | 全部通过 |
-| `go test -race -count=1 -v ./...` | Go 1.26.4；8 个无数据库单测通过。5 个 MySQL 集成测试因未配置 `TEST_MYSQL_DSN` / `MYSQL_BIN` 而跳过；不代表数据库登录事务已集成验证 |
+| `TEST_MYSQL_DSN=... MYSQL_BIN=... MYSQLDUMP_BIN=... go test -race -count=1 -v ./...` | Go 1.26.4 / 临时隔离 MySQL 8.4.11；13 个测试全部通过，含 5 个真实 DB 集成/恢复测试，无 skip。测试只创建并删除随机 `hongshu_it_*` 数据库 |
 | `go vet ./...`、`go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .`（HONGSHU_BUILD_DIR 指向共享构建缓存） | 通过 |
 | `npm test`、`npm run check`、`WEB_BUILD_DIR=... npm run build` | 7 个 Web 测试通过，语法检查和构建通过 |
-| Android `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` | Gradle 8.11.1 构建成功；8 个单测通过、lint 通过、debug APK 成功。Gradle 可变缓存使用 `/dev/shm`，产物在共享构建目录 |
+| Android `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` | Gradle 8.11.1 构建成功；8 个单测通过、lint 通过、debug APK 成功。版本 `0.1.0-alpha.4` / versionCode 3 已由 Gradle 配置；可变缓存使用 `/dev/shm`，产物在共享构建目录 |
 | `docker-compose -f compose.yml config --quiet` 与含引号/反斜杠的合成 `.env` 密码解析 | 通过；仅验证 Compose 配置解析，未启动容器 |
+| `PLAYWRIGHT_MODULE=... HONGSHU_BINARY=... MYSQL_BIN=... node scripts/browser-smoke.cjs` | 真实 Chromium + Go + 临时隔离 MySQL 通过：密码登录、WS、收件箱、XSS 安全、手机对话/返回、搜索、设备、设置和 PWA 缓存边界 |
 
-本机没有 MySQL、Docker daemon 或 MySQL CLI，因此未运行真实 MySQL 集成测试和 `scripts/browser-smoke.cjs`。没有公网测试主机/Android 真机，未实测外网 HTTP 连通性；HTTP 明文风险与公网 HTTP 下 Web Push/Service Worker 不可用已记录在部署和安全文档。
+本机没有 Docker daemon；Compose 只做配置解析，未启动容器/构建 OCI 镜像。浏览器 smoke 通过 localhost，不代表公网 HTTP 的外网连通性或传输安全已验收；没有 Android 真机。HTTP 明文风险与公网 HTTP 下 Web Push/Service Worker 不可用已记录在部署和安全文档。
 
 ## 基线版本验证（2026-10-09）
 

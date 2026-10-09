@@ -148,7 +148,6 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c.call("GET", "/api/sync?after=-1", token, nil, 400)
 	c.call("GET", "/api/sync?limit=0", token, nil, 400)
 	c.call("POST", "/api/pairings", token, map[string]any{}, 403)
-	c.call("DELETE", "/api/devices/"+admin, "", nil, 409)
 	// Concurrent writes use the clock lock; no cursor can skip a committed row.
 	var wg sync.WaitGroup
 	failures := make(chan string, 12)
@@ -223,6 +222,10 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if e := migrate(context.Background(), db, "../db/migrations"); e != nil {
 		t.Fatal("migration not repeatable", e)
 	}
+	c.call("DELETE", "/api/devices/"+admin, "", nil, 200)
+	c.call("GET", "/api/me", "", nil, 401)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	c.call("GET", "/api/me", "", nil, 200)
 }
 func TestIntegrationWebSocketRevocation(t *testing.T) {
 	db := testDB(t)
