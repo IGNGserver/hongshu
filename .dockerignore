@@ -1,0 +1,12 @@
+.git
+.env*
+android
+docs
+node_modules
+runtime-data
+**/build
+**/.gradle
+**/test-results
+web/test
+web/package.json
+web/build.mjs

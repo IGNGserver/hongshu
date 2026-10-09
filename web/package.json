@@ -1,0 +1,10 @@
+{
+  "name": "hongshu-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check app.js && node --check sw.js",
+    "build": "node build.mjs"
+  }
+}

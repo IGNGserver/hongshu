@@ -1,0 +1,62 @@
+name: hongshu
+services:
+  hub:
+    build: .
+    image: hongshu:local
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    ports: ["127.0.0.1:${PORT:-8080}:8080"]
+    environment:
+      MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?charset=utf8mb4&timeout=5s&readTimeout=30s&writeTimeout=30s"
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}
+      BOOTSTRAP_SECRET: ${BOOTSTRAP_SECRET:?set BOOTSTRAP_SECRET}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.invalid}
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, /healthcheck]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [internal, egress]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+  db:
+    image: mysql:8.4.5
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: hongshu
+      MYSQL_USER: hongshu
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_bin"]
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -u root --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+  backup:
+    image: mysql:8.4.5
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/backup.sh"]
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PWD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
+    volumes: ["./scripts/backup.sh:/backup.sh:ro", "./runtime-data/backups:/backups"]
+    depends_on:
+      db: {condition: service_healthy}
+      hub: {condition: service_healthy}
+    networks: [internal]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+volumes:
+  mysql-data:
+networks:
+  internal: {internal: true}
+  egress: {}
