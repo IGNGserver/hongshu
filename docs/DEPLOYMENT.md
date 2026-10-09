@@ -68,16 +68,24 @@ docker compose up -d hub backup
 curl --fail http://127.0.0.1:8080/healthz
 ```
 
-客户端本地游标可能高于恢复后的数据库最高 ID：恢复后必须重新配对客户端（Android 清除本地历史缓存
-或重新安装；不要在尚有未上传短信时清除应用数据）。为避免回档后 ID 重用，最佳做法是从完整备份恢复，
-保留增量/binlog并控制恢复点；首版没有自动跨数据库回档的 epoch 协议。
+客户端本地游标可能高于恢复后的数据库最高 ID，短信 ID 也会被重用。导入备份后、启动中枢前，
+把 epoch 加一（不要自动加，也不要在普通升级时加）：
+
+```bash
+docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu hongshu -e "UPDATE sync_clock SET epoch=epoch+1 WHERE id=1"'
+```
+
+Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉，未上传短信保留。不要为此清除应用数据。
+若恢复的是当前库的完整连续备份、客户端游标没有越过恢复点，可以不加 epoch；无法确认时就加。
+最佳做法仍是保留增量/binlog并控制恢复点，而不是回到一个会重用 ID 的旧库。
 
 ## 升级与回滚
 
 停机前备份，记录旧镜像 ID：`docker compose images`。从明确提交构建新镜像，
 `docker compose up -d --build hub`，检查 healthz、schema_migrations 和客户端同步。
 迁移以 checksum + dirty 标记审计，部分 DDL 失败会阻止启动，不能直接清除 dirty 继续。
-本版只有初始迁移，没有旧业务数据升级路径；down.sql 会销毁全部表，仅能在已确认的测试环境使用。
+已有部署会依次应用新增迁移。`002` 给推送任务加租约，`003` 给同步时钟加 epoch，默认都是兼容值。
+down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手工使用。
 应用回滚只能在 schema 兼容时用旧镜像；不兼容时恢复已验证的新卷备份，不能盲目执行 down.sql。
 保留数据库与授权信息，`docker compose down` 不加 `-v`；删除数据卷不是升级/回滚步骤。
 

@@ -78,8 +78,9 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type ack struct {
-		ID        int64 `json:"id"`
-		Duplicate bool  `json:"duplicate"`
+		ID        int64  `json:"id"`
+		Duplicate bool   `json:"duplicate"`
+		Error     string `json:"error,omitempty"`
 	}
 	acks := make([]ack, 0, len(in.Messages))
 	for _, m := range in.Messages {
@@ -90,14 +91,16 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if confirmed == 0 {
-			fail(w, 409, "sim_not_confirmed")
-			return
+			// Keep the rest of the batch. An unmapped SIM must not roll back
+			// messages whose receiver is already confirmed.
+			acks = append(acks, ack{Error: "sim_not_confirmed"})
+			continue
 		}
 		fp := fingerprint(m)
 		var id int64
 		e = tx.QueryRowContext(r.Context(), "SELECT id FROM messages WHERE device_id=? AND fingerprint=?", d.ID, fp).Scan(&id)
 		if e == nil {
-			acks = append(acks, ack{id, true})
+			acks = append(acks, ack{ID: id, Duplicate: true})
 			continue
 		}
 		if e != sql.ErrNoRows {
@@ -111,13 +114,13 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !m.Historical {
-			_, e = tx.ExecContext(r.Context(), "INSERT INTO push_jobs (message_id,device_id,next_at) SELECT ?,d.id,? FROM devices d JOIN push_subscriptions p ON p.device_id=d.id WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE", seq, time.Now().UnixMilli(), d.ID)
+			_, e = tx.ExecContext(r.Context(), "INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) SELECT ?,d.id,?,0 FROM devices d JOIN push_subscriptions p ON p.device_id=d.id WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE", seq, time.Now().UnixMilli(), d.ID)
 		}
 		if e != nil {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		acks = append(acks, ack{seq, false})
+		acks = append(acks, ack{ID: seq})
 	}
 	if _, e = tx.ExecContext(r.Context(), "UPDATE sync_clock SET seq=? WHERE id=1", seq); e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
@@ -159,6 +162,18 @@ func (a *app) syncMessages(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_cursor")
 		return
 	}
+	var epoch int64
+	var head int64
+	if e := a.db.QueryRowContext(r.Context(), "SELECT epoch,seq FROM sync_clock WHERE id=1").Scan(&epoch, &head); e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	// A cursor past the restored clock would otherwise return an empty page and
+	// look caught up, hiding every reused message ID. Refuse it instead.
+	if after > head {
+		fail(w, 409, "epoch_changed")
+		return
+	}
 	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender WHERE m.id>? ORDER BY m.id LIMIT ?", after, limit+1)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
@@ -178,12 +193,15 @@ func (a *app) syncMessages(w http.ResponseWriter, r *http.Request) {
 	if len(ms) > 0 {
 		cursor = ms[len(ms)-1].ID
 	}
-	writeJSON(w, 200, map[string]any{"messages": ms, "cursor": cursor, "more": more})
+	writeJSON(w, 200, map[string]any{"messages": ms, "cursor": cursor, "more": more, "epoch": epoch})
 }
 func filters(r *http.Request) (string, []any) {
 	where := " WHERE 1=1"
 	args := []any{}
-	for k, col := range map[string]string{"sim": "m.receiver", "device": "m.device_id", "sender": "m.sender"} {
+	keys := []string{"sim", "device", "sender"}
+	cols := map[string]string{"sim": "m.receiver", "device": "m.device_id", "sender": "m.sender"}
+	for _, k := range keys {
+		col := cols[k]
 		if v := r.URL.Query().Get(k); v != "" {
 			where += " AND " + col + "=?"
 			args = append(args, v)
@@ -236,7 +254,7 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	where, args := filters(r)
 	args = append(args, limit, offset)
-	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m LEFT JOIN contacts c ON c.phone=m.sender"+where+") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?", args...)
+	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m LEFT JOIN contacts c ON c.phone=m.sender"+where+") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?", args...)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return

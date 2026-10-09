@@ -86,14 +86,14 @@ func (a *app) routes(web string) http.Handler {
 	})
 }
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
-	var seq int64
+	var seq, epoch int64
 	var title string
-	e := a.db.QueryRowContext(r.Context(), "SELECT seq,title FROM sync_clock JOIN settings ON settings.id=sync_clock.id WHERE sync_clock.id=1").Scan(&seq, &title)
+	e := a.db.QueryRowContext(r.Context(), "SELECT seq,epoch,title FROM sync_clock JOIN settings ON settings.id=sync_clock.id WHERE sync_clock.id=1").Scan(&seq, &epoch, &title)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion})
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion})
 }
 func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 	rows, e := a.db.QueryContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices ORDER BY created_at")

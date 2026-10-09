@@ -73,6 +73,12 @@ func TestOriginAndCookie(t *testing.T) {
 		t.Fatal("public cleartext allowed")
 	}
 }
+func TestSplitSQLKeepsSemicolonInsideStrings(t *testing.T) {
+	parts := splitSQL("INSERT INTO settings VALUES (1, 'a;b');\n-- comment; ignored\nUPDATE settings SET title='c' WHERE id=1;")
+	if len(parts) != 2 || parts[0] != "INSERT INTO settings VALUES (1, 'a;b')" || parts[1] != "UPDATE settings SET title='c' WHERE id=1" {
+		t.Fatalf("sql split changed statement boundaries: %#v", parts)
+	}
+}
 func TestDecode(t *testing.T) {
 	for _, body := range []string{`{"extra":true}`, `{} {}`, strings.Repeat("x", 1<<20+1)} {
 		w := httptest.NewRecorder()

@@ -9,7 +9,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET /healthz | 数据库可用性，无敏感配置 |
 | POST /api/bootstrap | `{secret,name}`，仅首次，创建管理员浏览器 cookie |
 | POST /api/pair | `{code,name,kind}`，kind=android/web，一次性消费配对码；Android 返回 token，Web 仅 cookie |
-| GET /api/me | 本设备、设置、公钥、当前 sequence |
+| GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；最后管理员不可退出 |
 | GET /api/devices | 设备清单，不含 token |
 | PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；admin 不可通过此接口提权 |
@@ -17,9 +17,9 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | POST /api/pairings | 管理员生成一次性 code，十分钟有效；`{admin:true}` 仅授予新的 Web 浏览器管理员权（默认 false），Android 使用普通配对码 |
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
-| POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；返回每条 `{id,duplicate}`；整个批次原子提交；历史导入设 historical=true，不生成新短信通知 |
-| GET /api/sync?after=N&limit=L | `{messages, cursor, more}`，按 ID 升序；不得跨过未处理页面 |
-| GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按最新消息降序，搜索发件人/名称/正文；offset 分页 |
+| POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；返回等长 `{id,duplicate,error}`。格式错误整批拒绝；未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端遇到该错误必须保留本地队列，不能当作成功删除。历史导入设 historical=true，不生成新短信通知 |
+| GET /api/sync?after=N&limit=L | `{messages, cursor, more, epoch}`，按 ID 升序；不得跨过未处理页面。epoch 与客户端已记录的值不同表示数据库已回档，必须丢弃已同步缓存并从 0 重拉；未上传队列保留。`after` 大于当前 sequence 返回 `epoch_changed`，旧客户端不得把空页当成已经同步完成 |
+| GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按发件人加接收号码分组、最新消息降序；搜索发件人/名称/正文；offset 分页 |
 | GET /api/messages?sender=&q=&sim=&device=&before=&limit= | 按短信时间、ID 降序；before 指向上一页最早消息的 ID，服务端按该消息的时间/ID 二元游标分页 |
 | GET /api/ws | 同源 cookie 或 bearer WS，`{type:"changed",cursor:N}`；无重放保证，必须补齐 |
 | PUT/DELETE /api/push | Web 订阅 `{endpoint,keys:{p256dh,auth}}` / 注销本设备订阅 |

@@ -89,7 +89,11 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c := apiTest{t: t, a: a}
 	c.call("POST", "/api/bootstrap", "", map[string]any{"secret": a.bootstrap, "name": "Admin browser"}, 201)
 	c.call("POST", "/api/bootstrap", "", map[string]any{"secret": a.bootstrap, "name": "Another"}, 409)
-	admin := c.call("GET", "/api/me", "", nil, 200)["device"].(map[string]any)["id"].(string)
+	me := c.call("GET", "/api/me", "", nil, 200)
+	if me["epoch"] != float64(1) {
+		t.Fatal("fresh database epoch")
+	}
+	admin := me["device"].(map[string]any)["id"].(string)
 	code := c.call("POST", "/api/pairings", "", map[string]any{}, 201)["code"].(string)
 	paired := c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Phone", "kind": "android"}, 201)
 	token := paired["token"].(string)
@@ -100,6 +104,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c.call("POST", "/api/messages", token, batch, 403)
 	c.call("PATCH", "/api/devices/"+id, token, map[string]bool{"upload": true}, 200)
 	c.call("PUT", "/api/sims", token, map[string]any{"phone": message.Receiver, "label": "SIM 1", "subscription_id": 1}, 200)
+	c.call("PUT", "/api/sims", token, map[string]any{"phone": "+8613900000000", "label": "SIM 2", "subscription_id": 2}, 200)
 	first := c.call("POST", "/api/messages", token, batch, 200)
 	if first["acks"].([]any)[0].(map[string]any)["duplicate"] != false {
 		t.Fatal("first message duplicate")
@@ -108,15 +113,29 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if retry["acks"].([]any)[0].(map[string]any)["duplicate"] != true {
 		t.Fatal("retry was not idempotent")
 	}
-	// Unknown SIM in second item must roll back BOTH inserts and the clock.
+	// An unconfirmed receiver must not discard the confirmed item in the same batch.
 	second := message
 	second.Timestamp++
 	bad := message
 	bad.Receiver = "+1234567890"
-	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{second, bad}}, 409)
-	syncPage := c.call("GET", "/api/sync?after=0&limit=1", token, nil, 200)
-	if syncPage["cursor"] != float64(1) || len(syncPage["messages"].([]any)) != 1 {
-		t.Fatal("transaction rollback corrupted cursor")
+	partial := c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{second, bad}}, 200)
+	acks := partial["acks"].([]any)
+	if acks[0].(map[string]any)["duplicate"] != false || acks[1].(map[string]any)["error"] != "sim_not_confirmed" {
+		t.Fatal("unconfirmed SIM discarded the rest of the batch")
+	}
+	syncPage := c.call("GET", "/api/sync?after=0&limit=2", token, nil, 200)
+	if syncPage["cursor"] != float64(2) || syncPage["epoch"] != float64(1) || len(syncPage["messages"].([]any)) != 2 {
+		t.Fatal("accepted item was not committed")
+	}
+	if _, e := db.Exec("UPDATE sync_clock SET seq=1,epoch=2 WHERE id=1"); e != nil {
+		t.Fatal(e)
+	}
+	rewound := c.call("GET", "/api/sync?after=2&limit=1", token, nil, 409)
+	if rewound["error"] != "epoch_changed" {
+		t.Fatal("cursor past a restored clock was treated as caught up")
+	}
+	if _, e := db.Exec("UPDATE sync_clock SET seq=2,epoch=1 WHERE id=1"); e != nil {
+		t.Fatal(e)
 	}
 	c.call("PUT", "/api/contacts", token, map[string]string{"phone": "10086", "name": "Carrier"}, 200)
 	conversations := c.call("GET", "/api/conversations?q=Carrier", token, nil, 200)
@@ -154,7 +173,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 		t.Error(f)
 	}
 	all := c.call("GET", "/api/sync?after=0&limit=200", token, nil, 200)
-	if len(all["messages"].([]any)) != 13 || all["cursor"] != float64(13) {
+	if len(all["messages"].([]any)) != 14 || all["cursor"] != float64(14) {
 		t.Fatal("concurrent sequence gaps or lost messages")
 	}
 	// Durable notification queue exists in the same commit, excludes source.
@@ -177,18 +196,27 @@ func TestIntegrationWorkflow(t *testing.T) {
 		t.Fatal("historical import created notification storm")
 	}
 	latest := c.call("GET", "/api/messages?sender=10086&limit=1", token, nil, 200)
-	if latest["messages"].([]any)[0].(map[string]any)["id"] != float64(14) {
+	if latest["messages"].([]any)[0].(map[string]any)["id"] != float64(15) {
 		t.Fatal("history import displaced latest chronological message")
 	}
 	latestConversation := c.call("GET", "/api/conversations?limit=1", token, nil, 200)
-	if latestConversation["conversations"].([]any)[0].(map[string]any)["id"] != float64(14) {
+	if latestConversation["conversations"].([]any)[0].(map[string]any)["id"] != float64(15) {
 		t.Fatal("conversation sorted by ingestion instead of message time")
+	}
+	otherSIM := message
+	otherSIM.Receiver = "+8613900000000"
+	otherSIM.Historical = false
+	otherSIM.Timestamp += 20000
+	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{otherSIM}}, 200)
+	split := c.call("GET", "/api/conversations?sender=10086", token, nil, 200)
+	if len(split["conversations"].([]any)) != 2 {
+		t.Fatal("same sender on two SIMs collapsed into one conversation")
 	}
 	c.call("GET", "/api/messages?sender=10086&before=14&limit=1", token, nil, 200)
 	c.call("DELETE", "/api/devices/"+id, "", nil, 200)
 	c.call("GET", "/api/me", token, nil, 401)
 	retained := c.call("GET", "/api/sync?after=0", "", nil, 200)
-	if len(retained["messages"].([]any)) != 15 {
+	if len(retained["messages"].([]any)) != 17 {
 		t.Fatal("revocation erased SMS history")
 	}
 	if e := migrate(context.Background(), db, "../db/migrations"); e != nil {

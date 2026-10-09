@@ -58,7 +58,8 @@ func TestIntegrationBackupRestore(t *testing.T) {
 	}
 	for _, db := range []*sql.DB{source, target} {
 		var seq, count int64
-		if e = db.QueryRow("SELECT seq FROM sync_clock WHERE id=1").Scan(&seq); e != nil || seq != 1 {
+		var epoch int64
+		if e = db.QueryRow("SELECT seq,epoch FROM sync_clock WHERE id=1").Scan(&seq, &epoch); e != nil || seq != 1 || epoch != 1 {
 			t.Fatal("restored cursor mismatch")
 		}
 		if e = db.QueryRow("SELECT COUNT(*) FROM messages WHERE body='synthetic restore fixture'").Scan(&count); e != nil || count != 1 {

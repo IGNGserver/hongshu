@@ -73,11 +73,9 @@ func migrate(ctx context.Context, db *sql.DB, dir string) error {
 		if _, e = conn.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?,?,TRUE)", version, checksum); e != nil {
 			return e
 		}
-		for _, stmt := range strings.Split(string(data), ";") {
-			if strings.TrimSpace(stmt) != "" {
-				if _, e = conn.ExecContext(ctx, stmt); e != nil {
-					return fmt.Errorf("migration %s failed", version)
-				}
+		for _, stmt := range splitSQL(string(data)) {
+			if _, e = conn.ExecContext(ctx, stmt); e != nil {
+				return fmt.Errorf("migration %s failed", version)
 			}
 		}
 		if _, e = conn.ExecContext(ctx, "UPDATE schema_migrations SET dirty=FALSE WHERE version=?", version); e != nil {
@@ -85,6 +83,75 @@ func migrate(ctx context.Context, db *sql.DB, dir string) error {
 		}
 	}
 	return nil
+}
+
+// splitSQL separates statements without treating a semicolon inside a quoted
+// string or line comment as a boundary. Migrations are not allowed to use
+// routine bodies, so dollar-quoting is intentionally unsupported.
+func splitSQL(script string) []string {
+	var out []string
+	var b strings.Builder
+	inSingle, inDouble, inLine := false, false, false
+	for i := 0; i < len(script); i++ {
+		c := script[i]
+		if inLine {
+			if c == '\n' {
+				inLine = false
+			}
+			continue
+		}
+		if inSingle {
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(script) {
+				i++
+				b.WriteByte(script[i])
+				continue
+			}
+			if c == '\'' {
+				if i+1 < len(script) && script[i+1] == '\'' {
+					i++
+					b.WriteByte('\'')
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			b.WriteByte(c)
+			if c == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		if c == '-' && i+1 < len(script) && script[i+1] == '-' {
+			inLine = true
+			i++
+			continue
+		}
+		if c == '\'' {
+			inSingle = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == '"' {
+			inDouble = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ';' {
+			if stmt := strings.TrimSpace(b.String()); stmt != "" {
+				out = append(out, stmt)
+			}
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	if stmt := strings.TrimSpace(b.String()); stmt != "" {
+		out = append(out, stmt)
+	}
+	return out
 }
 
 func main() {

@@ -67,6 +67,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        Thread {
+            try {
+                catchUpInbox(this)
+            } catch (_: Exception) {
+                Config(this).status = "收件箱补扫失败，实时广播不受影响"
+            }
+        }
+            .start()
         syncNow(this)
     }
 }
@@ -81,6 +89,7 @@ fun HongshuUI(activity: MainActivity) {
     val changes by Store.changes.collectAsState()
     var screen by remember { mutableStateOf("inbox") }
     var sender by remember { mutableStateOf("") }
+    var threadReceiver by remember { mutableStateOf("") }
     var search by remember { mutableStateOf("") }
     var sim by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
@@ -114,11 +123,16 @@ fun HongshuUI(activity: MainActivity) {
             }
             Store.changes.value++
         }
-    LaunchedEffect(search, sim, sender) { messageLimit = 200 }
-    LaunchedEffect(changes, search, sim, sender, messageLimit) {
+    LaunchedEffect(search, sim, sender, threadReceiver) { messageLimit = 200 }
+    LaunchedEffect(changes, search, sim, sender, threadReceiver, messageLimit) {
         loaded =
             withContext(Dispatchers.IO) {
-                repo.store.messages(sender, search, sim, limit = messageLimit)
+                repo.store.messages(
+                    sender,
+                    search,
+                    if (sender.isNotEmpty()) threadReceiver else sim,
+                    limit = messageLimit,
+                )
             }
     }
     LaunchedEffect(Unit) {
@@ -127,8 +141,12 @@ fun HongshuUI(activity: MainActivity) {
             if (repo.config.token.isNotEmpty()) syncNow(activity)
         }
     }
+    fun closeThread() {
+        sender = ""
+        threadReceiver = ""
+    }
     BackHandler(screen != "inbox" || sender.isNotEmpty()) {
-        if (screen != "inbox") screen = "inbox" else sender = ""
+        if (screen != "inbox") screen = "inbox" else closeThread()
     }
     Scaffold(
         topBar = {
@@ -144,7 +162,7 @@ fun HongshuUI(activity: MainActivity) {
                 navigationIcon = {
                     if (screen != "inbox" || sender.isNotEmpty())
                         IconButton(
-                            onClick = { if (screen != "inbox") screen = "inbox" else sender = "" }
+                            onClick = { if (screen != "inbox") screen = "inbox" else closeThread() }
                         ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                         }
@@ -273,7 +291,10 @@ fun HongshuUI(activity: MainActivity) {
                                     if (sender.isEmpty()) {
                                         Row(
                                             Modifier.fillMaxWidth()
-                                                .clickable { sender = m.sender }
+                                                .clickable {
+                                                    sender = m.sender
+                                                    threadReceiver = m.receiver
+                                                }
                                                 .padding(horizontal = 20.dp, vertical = 14.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -315,7 +336,9 @@ fun HongshuUI(activity: MainActivity) {
                                                     )
                                                 }
                                                 Text(
-                                                    m.body,
+                                                    listOf(m.receiver, m.body)
+                                                        .filter { it.isNotEmpty() }
+                                                        .joinToString(" · "),
                                                     maxLines = 2,
                                                     overflow = TextOverflow.Ellipsis,
                                                     color =

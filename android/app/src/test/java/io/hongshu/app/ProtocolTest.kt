@@ -39,10 +39,29 @@ class ProtocolTest {
     }
 
     @Test
+    fun inboxImportWithinTwoMinutesIsTheSameLiveMessage() {
+        val live = SmsRecord("+8613800000000", "10086", "验证码 123456", 1700000000000, 1)
+        assertTrue(sameMessage(live, live.copy(timestamp = live.timestamp + 119_000)))
+        assertFalse(sameMessage(live, live.copy(timestamp = live.timestamp + 121_000)))
+        assertFalse(sameMessage(live, live.copy(body = "验证码 654321")))
+    }
+
+    @Test
     fun notificationExcludesSourceInitialSyncAndHistory() {
         assertTrue(shouldNotify("other", "self", false, true))
         assertFalse(shouldNotify("self", "self", false, true))
         assertFalse(shouldNotify("other", "self", true, true))
         assertFalse(shouldNotify("other", "self", false, false))
+        assertTrue(shouldNotify("other", "self", false, false, 200, 100))
+        assertFalse(shouldNotify("other", "self", false, false, 50, 100))
+        assertFalse(shouldNotify("other", "self", true, false, 200, 100))
+    }
+
+    @Test
+    fun restoredEpochDropsAKnownCursorButFirstSightOnlyRecordsIt() {
+        assertFalse(epochReset(false, 0, 1))
+        assertFalse(epochReset(true, 1, 1))
+        assertTrue(epochReset(true, 1, 2))
+        assertTrue(epochReset(true, 0, 1))
     }
 }

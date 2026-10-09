@@ -22,7 +22,7 @@ data class CachedMessage(
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
 class Store(context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 1) {
+    SQLiteOpenHelper(context, databaseName, null, 3) {
     private val config = Config(context)
 
     companion object {
@@ -43,10 +43,23 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
         )
         db.execSQL("CREATE TABLE meta (key TEXT PRIMARY KEY,value INTEGER NOT NULL)")
         db.execSQL("INSERT INTO meta VALUES ('cursor',0)")
+        db.execSQL("INSERT INTO meta VALUES ('inbox_date',0)")
+        db.execSQL("INSERT INTO meta VALUES ('inbox_id',0)")
+        db.execSQL("INSERT INTO meta VALUES ('capture_since',0)")
+        db.execSQL("INSERT INTO meta VALUES ('epoch',0)")
+        db.execSQL("INSERT INTO meta VALUES ('epoch_seen',0)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("Unsupported database version")
+        if (oldVersion < 2) {
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('inbox_date',0)")
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('inbox_id',0)")
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('capture_since',0)")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('epoch',0)")
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('epoch_seen',0)")
+        }
     }
 
     fun pendingCount(): Int =
@@ -102,10 +115,13 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun receiver(sub: Int, slot: Int): String {
         val all = sims()
+        // Slot is not an identity. A replaced SIM in the same tray must not inherit
+        // the previous number; only an exact subscription match, or an explicit
+        // single-SIM confirmation, may fill the receiver.
         return all.find { it.sub == sub && sub >= 0 }?.phone
-            ?: all.find { it.slot == slot && slot >= 0 }?.phone
             ?: if (all.size == 1 && config.singleSimConfirmed) all.first().phone else ""
     }
 
@@ -163,6 +179,14 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    fun block(key: String, reason: String) {
+        writableDatabase.execSQL(
+            "UPDATE outbox SET blocked=? WHERE key=? AND blocked=''",
+            arrayOf(reason, key),
+        )
+        changes.value++
+    }
+
     fun ack(keys: List<String>) {
         val db = writableDatabase
         db.beginTransaction()
@@ -175,11 +199,65 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
-    fun cursor(): Long =
-        readableDatabase.rawQuery("SELECT value FROM meta WHERE key='cursor'", null).use {
-            it.moveToFirst()
-            it.getLong(0)
+    fun cursor(): Long = meta("cursor")
+
+    fun epoch(): Long = meta("epoch")
+
+    fun epochSeen(): Boolean = meta("epoch_seen") != 0L
+
+    private fun meta(key: String): Long =
+        readableDatabase.rawQuery("SELECT value FROM meta WHERE key=?", arrayOf(key)).use {
+            if (!it.moveToFirst()) 0L else it.getLong(0)
         }
+
+    fun inboxWatermark(): Pair<Long, Long> = meta("inbox_date") to meta("inbox_id")
+
+    fun advanceInboxWatermark(date: Long, id: Long) {
+        val current = inboxWatermark()
+        if (date < current.first || (date == current.first && id <= current.second)) return
+        val db = writableDatabase
+        db.execSQL("UPDATE meta SET value=? WHERE key='inbox_date'", arrayOf(date))
+        db.execSQL("UPDATE meta SET value=? WHERE key='inbox_id'", arrayOf(id))
+    }
+
+    // First automatic scan starts at pairing time. Older inbox rows stay out of the
+    // live queue; the user can still import them explicitly as history.
+    fun captureSince(): Long {
+        val existing = meta("capture_since")
+        if (existing > 0) return existing
+        val now = System.currentTimeMillis()
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=? WHERE key='capture_since'",
+            arrayOf(now),
+        )
+        return now
+    }
+
+    fun hasNearDuplicate(record: SmsRecord): Boolean =
+        readableDatabase
+            .rawQuery(
+                "SELECT sender,body,timestamp FROM outbox WHERE sender=? AND ABS(timestamp-?)<=120000 UNION ALL SELECT sender,body,timestamp FROM inbox WHERE sender=? AND ABS(timestamp-?)<=120000",
+                arrayOf(
+                    record.sender,
+                    record.timestamp.toString(),
+                    record.sender,
+                    record.timestamp.toString(),
+                ),
+            )
+            .use { c ->
+                while (c.moveToNext()) {
+                    val other =
+                        SmsRecord(
+                            record.receiver,
+                            c.getString(0),
+                            c.getString(1),
+                            c.getLong(2),
+                            record.subscriptionId,
+                        )
+                    if (sameMessage(record, other)) return true
+                }
+                false
+            }
 
     fun applySync(messages: JSONArray, cursor: Long): List<CachedMessage> {
         val db = writableDatabase
@@ -263,7 +341,7 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
             if (sender.isNotEmpty())
                 "SELECT id,device,receiver,sender,body,timestamp,contact,historical FROM inbox WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
             else
-                "WITH matched AS (SELECT * FROM inbox WHERE $where), latest AS (SELECT sender,MAX(timestamp) event_time FROM matched GROUP BY sender), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.timestamp=l.event_time GROUP BY m.sender) SELECT id,device,receiver,sender,body,timestamp,contact,historical FROM inbox WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
+                "WITH matched AS (SELECT * FROM inbox WHERE $where), latest AS (SELECT sender,receiver,MAX(timestamp) event_time FROM matched GROUP BY sender,receiver), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.receiver=l.receiver AND m.timestamp=l.event_time GROUP BY m.sender,m.receiver) SELECT id,device,receiver,sender,body,timestamp,contact,historical FROM inbox WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
         args.add(limit.coerceAtLeast(1).toString())
         return readableDatabase.rawQuery(sql, args.toTypedArray()).use { c ->
             buildList {
@@ -294,6 +372,31 @@ class Store(context: Context, databaseName: String = "hongshu.db") :
             db.endTransaction()
         }
         changes.value++
+    }
+
+    // Drop the synced inbox and its cursor. Outbox, SIM mappings and the local
+    // capture watermark stay: a database rewind must not discard unsent SMS or
+    // start importing history from before this phone was paired.
+    fun resetSyncedCache(epoch: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("inbox", null, null)
+            db.execSQL("UPDATE meta SET value=0 WHERE key='cursor'")
+            db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
+            db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+    }
+
+    fun rememberEpoch(epoch: Long) {
+        if (epochSeen()) return
+        val db = writableDatabase
+        db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
+        db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
     }
 
     fun applyContacts(names: JSONObject) {
