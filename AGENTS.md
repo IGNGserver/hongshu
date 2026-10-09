@@ -8,7 +8,7 @@ Default branch: main
 Baseline: main
 Integration: user-authorized PR only
 Release: manual-on-explicit-request
-Validation: `bash scripts/verify-repository.sh`、`git diff --check`
+Validation: `bash scripts/verify-repository.sh`、`git diff --check`、`cd server && go test -race ./... && go vet ./... && go build -o "$HONGSHU_BUILD_DIR/hongshu" .`、`cd web && npm test && npm run check && npm run build`、`cd android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`
 Worktree: `~/项目/.wt/短信同步系统/<slug>`
 
 ## 项目范围
@@ -21,8 +21,8 @@ Worktree: `~/项目/.wt/短信同步系统/<slug>`
 - `db/migrations/`：MySQL 数据库迁移；
 - `docs/`：架构、接口、安全和运维文档。
 
-当前提交只初始化仓库、工作区和开发规范，不包含业务代码、数据库表、客户端权限申请或可部署产物。
-后续实现必须先更新相关架构/接口文档，再同步代码、迁移和测试。
+当前开发分支包含 Go/MySQL 中枢、Web/PWA 与 Kotlin/Compose Android 客户端。
+实现前先更新相关架构/接口文档，再同步代码、迁移和测试；功能与实测边界见 docs/VALIDATION.md。
 
 ## 开工与工作区
 
@@ -54,14 +54,21 @@ worktree。完成任务后，先确认提交已推送且没有未提交改动，
 
 ## 验证
 
-当前没有业务实现，仓库级验证只有：
+仓库级验证：
 
 ```bash
 bash scripts/verify-repository.sh
 git diff --check
+cd server && go test -race ./... && go vet ./...
+cd ../web && npm test && npm run check && npm run build
+cd ../android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-加入 Go、Web 或 Android 实现后，必须在本文件和 CI 中登记真实存在的格式检查、静态检查、单元测试和构建命令；不得为了让 CI 变绿而删除测试、弱化断言或跳过失败。
+设置 HONGSHU_BUILD_DIR、WEB_BUILD_DIR、GOCACHE/GOTMPDIR、GRADLE_USER_HOME 到共享缓存目录，不在工作区堆积产物。
+Go 构建命令：`cd server && go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .`。
+真实 MySQL 集成测试必须设置 TEST_MYSQL_DSN（具备创建/删除独立 hongshu_it_* 测试库权限），CI 提供隔离 MySQL 服务。
+格式检查：`test -z "$(gofmt -l server/*.go server/cmd/vapid/*.go)"`、`cd web && npm run check`、Android lint。
+不得为了让 CI 变绿而删除测试、弱化断言或跳过失败；真机/Push/部署验证不能由编译代替。
 
 ## 版本与发布
 

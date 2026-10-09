@@ -1,4 +1,4 @@
-name: Repository checks
+name: Hongshu validation
 
 on:
   push:
@@ -23,3 +23,64 @@ jobs:
         run: bash scripts/verify-repository.sh
       - name: Check whitespace errors
         run: git diff --check
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4.5
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_ROOT_HOST: "%"
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s --health-timeout=5s --health-retries=15
+    env:
+      TEST_MYSQL_DSN: root@tcp(127.0.0.1:3306)/?timeout=5s
+      MYSQL_BIN: /usr/bin/mysql
+      MYSQLDUMP_BIN: /usr/bin/mysqldump
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: server/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y mysql-client
+      - run: test -z "$(gofmt -l *.go cmd/vapid/*.go)"
+        working-directory: server
+      - run: go test -race -count=1 ./... && go vet ./... && go build -trimpath -o "$RUNNER_TEMP/hongshu" .
+        working-directory: server
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: npm install --prefix "$RUNNER_TEMP/browser-tools" --no-save playwright@1.56.1
+      - run: "$RUNNER_TEMP/browser-tools/node_modules/.bin/playwright install --with-deps chromium"
+      - run: PLAYWRIGHT_MODULE="$RUNNER_TEMP/browser-tools/node_modules/playwright" HONGSHU_BINARY="$RUNNER_TEMP/hongshu" node scripts/browser-smoke.cjs
+        env:
+          TEST_MYSQL_PORT: "3306"
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: npm test && npm run check && npm run build
+        working-directory: web
+        env: {WEB_BUILD_DIR: "${{ runner.temp }}/hongshu-web"}
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          printf 'GRADLE_USER_HOME=%s/gradle\nHONGSHU_BUILD_DIR=%s/hongshu-android\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/wrapper-validation@v4
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - run: ./gradlew --no-daemon --project-cache-dir "$GRADLE_USER_HOME/project-cache" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+        working-directory: android
