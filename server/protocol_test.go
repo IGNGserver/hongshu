@@ -62,6 +62,16 @@ func TestOriginAndCookie(t *testing.T) {
 	if !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode {
 		t.Fatal("insecure browser credential")
 	}
+	insecure, e := newApp(nil, "http://sms.example.com:8080", "1", "", "")
+	if e != nil {
+		t.Fatal("public HTTP origin rejected", e)
+	}
+	w = httptest.NewRecorder()
+	insecure.cookie(w, strings.Repeat("a", 64))
+	c = w.Result().Cookies()[0]
+	if c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode {
+		t.Fatal("HTTP session cookie flags changed unexpectedly")
+	}
 	r := httptest.NewRequest("POST", "/api/pair", strings.NewReader(`{}`))
 	r.Header.Set("Origin", "https://evil.example")
 	w = httptest.NewRecorder()
@@ -69,8 +79,37 @@ func TestOriginAndCookie(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("cross-origin mutation allowed")
 	}
+	if !insecure.passwordMatches("1") || insecure.passwordMatches("2") {
+		t.Fatal("weak configured password was not verified correctly")
+	}
 	if _, e = newApp(nil, "http://sms.example.com", "", "", ""); e == nil {
-		t.Fatal("public cleartext allowed")
+		t.Fatal("empty password accepted")
+	}
+	if _, e = newApp(nil, "http://sms.example.com", strings.Repeat("x", 1025), "", ""); e == nil {
+		t.Fatal("oversized password accepted")
+	}
+	if _, e = newApp(nil, "http://:8080", "1", "", ""); e == nil {
+		t.Fatal("origin without a hostname accepted")
+	}
+	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"1"}`))
+	w = httptest.NewRecorder()
+	insecure.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatal("login without Origin was allowed")
+	}
+	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"wrong"}`))
+	r.Header.Set("Origin", insecure.origin)
+	w = httptest.NewRecorder()
+	insecure.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "invalid_password") {
+		t.Fatal("invalid password was not rejected")
+	}
+	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"ignored","password":"1"}`))
+	r.Header.Set("Origin", insecure.origin)
+	w = httptest.NewRecorder()
+	insecure.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatal("login unexpectedly accepted a username field")
 	}
 }
 func TestSplitSQLKeepsSemicolonInsideStrings(t *testing.T) {

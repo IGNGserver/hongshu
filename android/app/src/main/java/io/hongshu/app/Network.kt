@@ -12,6 +12,29 @@ import org.json.JSONObject
 
 class ApiException(val status: Int, val code: String) : IOException("中枢返回 $status ($code)")
 
+internal fun hubOrigin(url: String): String {
+    val base = URI(url)
+    val scheme = base.scheme?.lowercase()
+    require(
+        (scheme == "http" || scheme == "https") &&
+            base.host != null &&
+            base.userInfo == null &&
+            (base.path.isNullOrEmpty() || base.path == "/") &&
+            base.query == null &&
+            base.fragment == null
+    ) {
+        "中枢地址必须使用 HTTP 或 HTTPS，且不能包含路径或凭据"
+    }
+    val authority = requireNotNull(base.rawAuthority)
+    return "$scheme://$authority"
+}
+
+internal fun realtimeURL(url: String): String {
+    val origin = hubOrigin(url)
+    val scheme = if (origin.startsWith("https://")) "wss" else "ws"
+    return "$scheme://${URI(origin).rawAuthority}/api/ws"
+}
+
 class Api(private val config: Config) {
     companion object {
         val client =
@@ -29,18 +52,8 @@ class Api(private val config: Config) {
         body: JSONObject? = null,
         authorized: Boolean = true,
     ): JSONObject {
-        val base = URI(config.url)
-        require(
-            base.scheme == "https" &&
-                base.host != null &&
-                base.userInfo == null &&
-                (base.path.isNullOrEmpty() || base.path == "/") &&
-                base.query == null &&
-                base.fragment == null
-        ) {
-            "必须使用 HTTPS 中枢地址，不带路径或凭据"
-        }
-        val builder = Request.Builder().url(config.url + "/api" + path).header("Origin", config.url)
+        val origin = hubOrigin(config.url)
+        val builder = Request.Builder().url(origin + "/api" + path).header("Origin", origin)
         if (authorized) builder.header("Authorization", "Bearer ${config.token}")
         builder.method(
             method,
@@ -79,7 +92,7 @@ class Repository(val context: Context) {
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
             "旧中枢尚有未上传短信，不能更换中枢以免泄露内容"
         }
-        config.url = url
+        config.url = hubOrigin(url)
         try {
             val r =
                 api.request(

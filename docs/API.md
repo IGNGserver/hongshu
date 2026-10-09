@@ -1,20 +1,20 @@
 # HTTP API v1
 
 JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
-认证为 Android `Authorization: Bearer <device-token>` 或 Web HttpOnly cookie。
-错误为 `{"error":"稳定错误码"}`，不返回数据库/短信内容；401 应停用凭据并重新配对。
+认证为 Android `Authorization: Bearer <device-token>` 或 Web HttpOnly cookie。Web 无用户名；部署配置的单一中枢密码用于创建管理员 Web 会话。
+错误为 `{"error":"稳定错误码"}`，不返回数据库/短信内容；登录密码错误返回 401，设备凭据失效时 Web 重新登录、Android 重新配对。
 
 | 方法路径 | 语义 |
 | --- | --- |
 | GET /healthz | 数据库可用性，无敏感配置 |
-| POST /api/bootstrap | `{secret,name}`，仅首次，创建管理员浏览器 cookie |
-| POST /api/pair | `{code,name,kind}`，kind=android/web，一次性消费配对码；Android 返回 token，Web 仅 cookie |
+| POST /api/login | `{password}`，校验中枢密码并创建管理员浏览器 cookie；弱密码允许，空密码不允许 |
+| POST /api/pair | `{code,name,kind}`，kind=android，一次性消费配对码并返回设备 token；Web 浏览器使用统一中枢密码登录 |
 | GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch |
-| POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；最后管理员不可退出 |
+| POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
 | GET /api/devices | 设备清单，不含 token |
 | PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；admin 不可通过此接口提权 |
-| DELETE /api/devices/{id} | 管理员撤销，保留消息；最后管理员不可撤销 |
-| POST /api/pairings | 管理员生成一次性 code，十分钟有效；`{admin:true}` 仅授予新的 Web 浏览器管理员权（默认 false），Android 使用普通配对码 |
+| DELETE /api/devices/{id} | 管理员撤销，保留消息；中枢密码可重新创建管理员 Web 身份 |
+| POST /api/pairings | 管理员生成 Android 一次性配对 code，十分钟有效；不接收 admin 标记，不通过配对码创建 Web 登录身份 |
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
 | POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；返回等长 `{id,duplicate,error}`。格式错误整批拒绝；未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端遇到该错误必须保留本地队列，不能当作成功删除。历史导入设 historical=true，不生成新短信通知 |
@@ -27,5 +27,5 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 
 请求体最多 1 MiB；不接受未知 JSON 字段；正文最多 64000 UTF-8 bytes，时间限制在 Unix epoch 至未来 24h；客户端按实际 JSON 字节数拆批。
 号码不能包含 NUL，接收号码采用用户确认的国际号码（建议 E.164，服务端校验 + 和 3..20 位数字）。
-token 没有放在 URL 的接口。首次 setup 和配对失败按来源地址限速。
-初始化和配对请求必须携带与 PUBLIC_URL 相同的 Origin；Android 原生客户端也显式发送该头，不依赖浏览器自动添加。
+token 和密码没有放在 URL 的接口。登录和配对失败按来源地址限速。
+登录和配对请求必须携带与 PUBLIC_URL 相同的 Origin；Android 原生客户端也显式发送该头，不依赖浏览器自动添加。

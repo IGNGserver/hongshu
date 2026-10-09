@@ -1,7 +1,7 @@
 # 部署与恢复
 
-需要 Docker Engine + Compose v2、Linux 本地磁盘、HTTPS 域名与反向代理。
-不要把 MySQL 数据卷放 SMB/CIFS/NFS：文件锁/刷盘语义会破坏可靠性。中枢默认只监听宿主 127.0.0.1。
+需要 Docker Engine + Compose v2、Linux 本地磁盘。推荐 HTTPS 域名与反向代理；也支持显式配置外部 HTTP。
+不要把 MySQL 数据卷放 SMB/CIFS/NFS：文件锁/刷盘语义会破坏可靠性。端口默认只绑定宿主 127.0.0.1。
 源码从已审计的开发分支检出；本轮没有 tag 或 Release，不要称为已发布稳定版。
 
 ```bash
@@ -11,12 +11,21 @@ curl --fail http://127.0.0.1:8080/healthz
 docker compose ps
 ```
 
-首次浏览器打开 HTTPS 地址，选择“首次初始化中枢”，从本机受保护 `.env` 读取
-BOOTSTRAP_SECRET（不要粘贴到日志/issue），创建管理员。随后在设备页生成配对码供其他
-Web 和 Android 使用。配对码仅十分钟且只能使用一次。建议另配对一个备用管理员浏览器，
-设备页“生成管理员配对码”明确授予管理权；最后一个管理员不能从 UI 退出或被撤销。
-丢失唯一管理员凭据时必须先备份，
-再按数据库维护方式由部署者处理；系统没有万能登录后门。
+初始化脚本会安全提示输入一次中枢密码，也可通过受保护的环境变量 `HONGSHU_PASSWORD` 提供；弱密码允许，但不能为空。密码保存在权限为 0600 的 `.env`，不要粘贴到日志/issue。Web 登录只需这个密码，无用户名；每次新浏览器登录创建一个管理员设备会话。退出或撤销最后一个管理员后仍可用中枢密码重新登录。
+
+已有部署升级时，在现有 `.env` 中添加 `HONGSHU_PASSWORD`，再重建 hub：`docker compose up -d --force-recreate hub`。原有短信、Android token 和设备记录不变；已登录浏览器的会话不会因更改配置密码而自动撤销，需要在设备页单独撤销旧 Web 会话。
+
+## 外部 HTTP（明文）
+
+仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
+
+```bash
+PUBLIC_URL=http://sms.example.com:8080 BIND_ADDRESS=0.0.0.0 PORT=8080 bash scripts/init-deployment.sh
+docker compose up -d
+curl --fail http://127.0.0.1:8080/healthz
+```
+
+`PUBLIC_URL` 必须与浏览器/Android 实际访问的 scheme、主机和端口完全一致。HTTP 会明文传输登录密码、会话凭据、短信正文和 API 数据，链路上的人可以窃听或篡改；弱密码也更容易被猜中。优先使用 HTTPS 或 VPN，不要把 MySQL 3306 暴露到外网。Web Push、Service Worker 与可安装离线应用在公网 HTTP 下不可用。
 
 Android 配对后打开本机采集开关、授予 RECEIVE_SMS、识别/确认每张 SIM 号码，再选择历史导入。
 普通查看设备不需要短信权限。Android 构建见 android/README.md。
@@ -45,8 +54,7 @@ server {
 }
 ```
 
-PUBLIC_URL 必须与浏览器访问 origin 完全一致；不可放子路径；不开放 CORS。
-需要放在另一台代理主机时显式调整绑定并用防火墙限制中枢端口，不公开 MySQL 3306。
+PUBLIC_URL 必须与浏览器访问 origin 完全一致；不可放子路径；不开放 CORS。HTTPS 反向代理场景保持默认 `BIND_ADDRESS=127.0.0.1`；代理在另一台主机时显式调整绑定并用防火墙限制中枢端口，不公开 MySQL 3306。
 Web Push 需要服务器能访问公开 HTTPS Push 服务，浏览器支持且授予通知权限。
 iOS Web Push 通常需添加到主屏幕；隐私模式/厂商浏览器可能不支持。在线 WS 失效仍周期补齐。
 
@@ -91,7 +99,7 @@ down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手�
 
 ## 本地开发
 
-Go 1.24+；`MYSQL_DSN`、`BOOTSTRAP_SECRET`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。
-从 server 执行 `go run .`；本地 HTTP 仅 Web 调试，Android 故意禁止 HTTP。
+Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。
+从 server 执行 `go run .`；支持 HTTP 的本地 Web 与 Android 联调。
 `WEB_DIR` 默认 ../web，`MIGRATIONS_DIR` 默认 ../db/migrations。
 生产镜像使用非 root / 只读根文件系统。数据库和备份未做端到端加密，请启用宿主磁盘与备份加密。

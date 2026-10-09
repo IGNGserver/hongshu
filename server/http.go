@@ -17,7 +17,7 @@ func (a *app) routes(web string) http.Handler {
 		}
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("POST /api/bootstrap", a.bootstrapHandler)
+	mux.HandleFunc("POST /api/login", a.loginHandler)
 	mux.HandleFunc("POST /api/pair", a.pair)
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.revokeIdentity(w, r, device(r).ID, func() {
@@ -78,7 +78,7 @@ func (a *app) routes(web string) http.Handler {
 			fail(w, 403, "origin_denied")
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" && (cookieErr == nil || r.URL.Path == "/api/bootstrap" || r.URL.Path == "/api/pair") && origin == "" && r.Header.Get("Authorization") == "" {
+		if r.Method != "GET" && r.Method != "HEAD" && (cookieErr == nil || r.URL.Path == "/api/login" || r.URL.Path == "/api/pair") && origin == "" && r.Header.Get("Authorization") == "" {
 			fail(w, 403, "origin_required")
 			return
 		}
@@ -153,38 +153,12 @@ func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 	a.revokeIdentity(w, r, r.PathValue("id"), nil)
 }
 func (a *app) revokeIdentity(w http.ResponseWriter, r *http.Request, id string, afterCommit func()) {
-	// Lock all admin rows to serialize last-admin protection.
 	tx, e := a.db.BeginTx(r.Context(), nil)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
 	defer tx.Rollback()
-	rows, e := tx.QueryContext(r.Context(), "SELECT id FROM devices WHERE admin=TRUE AND revoked=FALSE ORDER BY id FOR UPDATE")
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	admins := []string{}
-	for rows.Next() {
-		var s string
-		if rows.Scan(&s) != nil {
-			rows.Close()
-			fail(w, 503, "database_unavailable")
-			return
-		}
-		admins = append(admins, s)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	if len(admins) == 1 && admins[0] == id {
-		fail(w, 409, "last_admin")
-		return
-	}
 	if _, e = tx.ExecContext(r.Context(), "UPDATE devices SET revoked=TRUE WHERE id=?", id); e != nil {
 		fail(w, 503, "database_unavailable")
 		return

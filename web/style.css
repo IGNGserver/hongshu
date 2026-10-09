@@ -86,6 +86,13 @@ small,
 .muted {
   color: var(--muted);
 }
+.security-warning {
+  border: 1px solid #a34b19;
+  border-radius: 12px;
+  background: #fff0e5;
+  color: #6f2d0c;
+  padding: 0.8rem 1rem;
+}
 .brand {
   display: flex;
   align-items: center;
