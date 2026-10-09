@@ -24,7 +24,9 @@ pnpm-debug.log*
 
 # Android / Gradle
 .gradle/
+.kotlin/
 android/.gradle/
+android/.kotlin/
 android/build/
 android/**/build/
 android/local.properties

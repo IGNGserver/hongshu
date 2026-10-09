@@ -59,6 +59,7 @@ fun importContacts(context: Context): Int {
     }
     val api = Api(Config(context))
     var count = 0
+    val pendingBatch = org.json.JSONArray()
     context.contentResolver
         .query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
@@ -75,9 +76,16 @@ fun importContacts(context: Context): Int {
             while (c.moveToNext()) {
                 val phone = c.getString(0) ?: c.getString(1) ?: continue
                 val name = c.getString(2) ?: continue
-                api.request("/contacts", "PUT", JSONObject().put("phone", phone).put("name", name))
+                pendingBatch.put(JSONObject().put("phone", phone).put("name", name))
                 count++
+                if (pendingBatch.length() >= 500) {
+                    api.request("/contacts", "PUT", JSONObject().put("contacts", pendingBatch))
+                    while (pendingBatch.length() > 0) pendingBatch.remove(0)
+                }
             }
         }
+    if (pendingBatch.length() > 0) {
+        api.request("/contacts", "PUT", JSONObject().put("contacts", pendingBatch))
+    }
     return count
 }

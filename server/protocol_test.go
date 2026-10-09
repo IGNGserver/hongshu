@@ -82,3 +82,22 @@ func TestDecode(t *testing.T) {
 		}
 	}
 }
+func TestBatchContacts(t *testing.T) {
+	var in struct {
+		Phone    string `json:"phone"`
+		Name     string `json:"name"`
+		Contacts []struct {
+			Phone string `json:"phone"`
+			Name  string `json:"name"`
+		} `json:"contacts"`
+	}
+	body := `{"contacts":[{"phone":"+8613800000000","name":"Alice"},{"phone":"+8613900000000","name":"Bob"}]}`
+	r := httptest.NewRequest("PUT", "/api/contacts", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	if !decode(w, r, &in) {
+		t.Fatal("decode failed")
+	}
+	if len(in.Contacts) != 2 || in.Contacts[0].Name != "Alice" {
+		t.Fatal("batch contacts parsing failed")
+	}
+}

@@ -24,6 +24,8 @@ type app struct {
 	secure                                       bool
 	limitMu                                      sync.Mutex
 	limits                                       map[string]*attempt
+	subsMu                                       sync.Mutex
+	subscribers                                  map[chan struct{}]struct{}
 }
 type attempt struct {
 	count int
@@ -57,7 +59,7 @@ func newApp(db *sql.DB, origin, secret, pub, priv string) (*app, error) {
 	if u.Scheme == "http" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
 		return nil, errors.New("HTTPS required except localhost")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), bootstrap: secret, vapidPublic: pub, vapidPrivate: priv, secure: u.Scheme == "https", limits: map[string]*attempt{}}, nil
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), bootstrap: secret, vapidPublic: pub, vapidPrivate: priv, secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{})}, nil
 }
 func fail(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
@@ -108,6 +110,16 @@ func (a *app) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 func (a *app) cookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{Name: "hongshu", Value: token, Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: 365 * 24 * 3600})
+}
+func (a *app) broadcastChange() {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	for ch := range a.subscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 func (a *app) allowed(r *http.Request) bool {
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)

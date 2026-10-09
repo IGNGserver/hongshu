@@ -259,10 +259,49 @@ func (a *app) saveSIM(w http.ResponseWriter, r *http.Request) {
 }
 func (a *app) contact(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Phone string `json:"phone"`
-		Name  string `json:"name"`
+		Phone    string `json:"phone"`
+		Name     string `json:"name"`
+		Contacts []struct {
+			Phone string `json:"phone"`
+			Name  string `json:"name"`
+		} `json:"contacts"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	if len(in.Contacts) > 0 {
+		if len(in.Contacts) > 500 {
+			fail(w, 400, "invalid_batch")
+			return
+		}
+		for _, c := range in.Contacts {
+			if len(c.Phone) == 0 || len(c.Phone) > 100 || len(c.Name) > 100 {
+				fail(w, 400, "invalid_contact")
+				return
+			}
+		}
+		tx, e := a.db.BeginTx(r.Context(), nil)
+		if e != nil {
+			fail(w, 503, "database_unavailable")
+			return
+		}
+		defer tx.Rollback()
+		for _, c := range in.Contacts {
+			if c.Name == "" {
+				_, e = tx.ExecContext(r.Context(), "DELETE FROM contacts WHERE phone=?", c.Phone)
+			} else {
+				_, e = tx.ExecContext(r.Context(), "INSERT INTO contacts VALUES (?,?) ON DUPLICATE KEY UPDATE name=?", c.Phone, c.Name, c.Name)
+			}
+			if e != nil {
+				fail(w, 503, "database_unavailable")
+				return
+			}
+		}
+		if tx.Commit() != nil {
+			fail(w, 503, "database_unavailable")
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
 	if len(in.Phone) == 0 || len(in.Phone) > 100 || len(in.Name) > 100 {

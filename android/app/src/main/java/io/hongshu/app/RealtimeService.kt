@@ -119,6 +119,7 @@ class RealtimeService : Service() {
                         } finally {
                             socket?.cancel()
                         }
+                        if (c.token.isEmpty() || !c.notify) break
                         c.status = "实时连接断开，等待重连"
                         delay((1000L shl attempts.coerceAtMost(6)) + Random.nextLong(1000))
                         attempts++

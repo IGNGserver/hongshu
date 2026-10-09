@@ -123,6 +123,7 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
+	a.broadcastChange()
 	writeJSON(w, 200, map[string]any{"acks": acks, "cursor": seq})
 }
 
