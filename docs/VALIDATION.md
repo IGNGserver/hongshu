@@ -50,6 +50,11 @@ Android 12+ 云备份和设备迁移已显式排除全部应用数据，厂商�
 没有真实 SIM/双卡设备，也没有生产 HTTPS + 浏览器 Push 授权环境：不得声称这些已端到端通过。
 推荐的部署 MySQL 8.4.5 与本地测试 8.0.36 不同，CI 配置隔离 8.4.5；CI 的实际结果须查看推送后的 workflow，不能用本地结果代替。
 
+首次推送 CI（[37907523714](https://github.com/IGNGserver/hongshu/actions/runs/37907523714)）：
+仓库、Web、Go/MySQL 8.4.5、真实 Chromium 验证通过。Android 尚未进入测试，
+setup-android 默认请求已下架的 `tools` 包失败；已显式配置 `platform-tools`，
+保留 SDK 35 安装、wrapper 校验、全部测试/lint/APK 步骤，后续结果以新 workflow 为准。
+
 ## 运维与兼容性限制
 
 - Android 15+ dataSync 前台服务最长约 6h/24h，Doze/省电/强制停止可延迟通知；不保证全天即时。
