@@ -72,6 +72,7 @@ class RealtimeService : Service() {
                                 Request.Builder()
                                     .url(realtimeURL(c.url))
                                     .header("Authorization", "Bearer ${c.token}")
+                                    .header("Cookie", "hongshu=${c.token}")
                                     .build(),
                                 object : WebSocketListener() {
                                     override fun onOpen(webSocket: WebSocket, response: Response) {

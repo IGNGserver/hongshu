@@ -27,7 +27,7 @@ curl --fail http://127.0.0.1:18473/healthz
 
 `PUBLIC_URL` 必须与浏览器/Android 实际访问的 scheme、主机和端口完全一致。HTTP 会明文传输登录密码、会话凭据、短信正文和 API 数据，链路上的人可以窃听或篡改；弱密码也更容易被猜中。优先使用 HTTPS 或 VPN，不要把 MySQL 3306 暴露到外网。Web Push、Service Worker 与可安装离线应用在公网 HTTP 下不可用。
 
-Android 配对后打开本机采集开关、授予 RECEIVE_SMS、识别/确认每张 SIM 号码，再选择历史导入。
+Android 连接后打开本机采集开关、授予 RECEIVE_SMS、识别/确认每张 SIM 号码，再选择历史导入。
 普通查看设备不需要短信权限。Android 构建见 android/README.md。
 
 ## 反向代理示例
@@ -48,7 +48,7 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 90s;
-        # Do not log SMS bodies, authorization, pairing codes or query searches.
+        # Do not log SMS bodies, authorization, credentials or query searches.
         access_log off;
     }
 }
@@ -63,7 +63,7 @@ iOS Web Push 通常需添加到主屏幕；隐私模式/厂商浏览器可能不
 backup 服务每天一次一致性 mysqldump，文件在 `runtime-data/backups/`，不会自动删除。
 同时备份 `.env`（含 VAPID 私钥）至加密的异地存储；短信 dump 和身份 token_hash 仍属敏感数据。
 磁盘空间需要监控；备份服务日志失败必须处理。定期 `gzip -t`，在隔离数据库实际恢复并核对消息数量、
-最高 ID、schema_migrations、配对/撤销状态。只检查压缩文件不是完整恢复演练。
+最高 ID、schema_migrations、设备授权/撤销状态。只检查压缩文件不是完整恢复演练。
 
 恢复不是升级脚本的一部分。停止中枢与 backup，保留当前卷快照/逻辑备份，再将**明确指定的备份**
 导入新建的空数据库（不要把 dump 直接覆盖生产）：

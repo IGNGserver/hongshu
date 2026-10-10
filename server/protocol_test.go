@@ -72,7 +72,7 @@ func TestOriginAndCookie(t *testing.T) {
 	if c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode {
 		t.Fatal("HTTP session cookie flags changed unexpectedly")
 	}
-	r := httptest.NewRequest("POST", "/api/pair", strings.NewReader(`{}`))
+	r := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"1"}`))
 	r.Header.Set("Origin", "https://evil.example")
 	w = httptest.NewRecorder()
 	a.routes("../web").ServeHTTP(w, r)

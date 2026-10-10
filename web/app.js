@@ -45,7 +45,6 @@ const state = {
 
 const errors = {
   unauthorized: "登录状态已失效，请重新输入中枢密码",
-  invalid_pairing: "配对码无效或已过期",
   invalid_password: "中枢密码不正确",
   rate_limited: "请求过于频繁，请稍后重试",
   push_not_configured: "部署者尚未配置 Web Push",
@@ -175,7 +174,7 @@ function authView() {
     el(
       "small",
       "",
-      "单用户中枢，无需用户名。Android 设备仍使用管理员生成的一次性配对码；短信不会离线保存在浏览器。",
+      "单用户中枢，无需用户名。所有设备统一使用中枢密码连接；短信不会离线保存在浏览器。",
     ),
   );
   root.append(card);
@@ -546,21 +545,8 @@ async function devicesView() {
   if (state.me.device.admin) {
     const c = el("section", "card stack");
     c.append(
-      el("h2", "", "连接 Android 设备"),
-      el(
-        "p",
-        "muted",
-        "Android 使用一次性配对码绑定，有效期 10 分钟。不要通过公开渠道分享。其他浏览器直接使用中枢密码登录。",
-      ),
-      button(
-        "生成配对码",
-        async () => {
-          const v = await api("/pairings", "POST", {});
-          const n = el("p", "code", v.code);
-          c.append(n, el("small", "", "有效至 " + date(v.expires_at)));
-        },
-        "primary",
-      ),
+      el("h2", "", "连接新设备"),
+      el("p", "muted", "所有设备（Android 手机或其他浏览器）直接使用统一中枢密码连接，无需生成配对码。"),
     );
     main.append(c);
   }

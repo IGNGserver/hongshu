@@ -89,17 +89,17 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c := apiTest{t: t, a: a}
 	c.call("POST", "/api/login", "", map[string]any{"password": "wrong"}, 401)
 	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	adminCookie := c.cookie
 	me := c.call("GET", "/api/me", "", nil, 200)
 	if me["epoch"] != float64(1) {
 		t.Fatal("fresh database epoch")
 	}
 	admin := me["device"].(map[string]any)["id"].(string)
-	code := c.call("POST", "/api/pairings", "", map[string]any{}, 201)["code"].(string)
-	c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Web browser", "kind": "web"}, 400)
-	paired := c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Phone", "kind": "android"}, 201)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Bad", "kind": "unknown"}, 400)
+	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Phone", "kind": "android"}, 200)
+	c.cookie = adminCookie
 	token := paired["token"].(string)
 	id := paired["device"].(map[string]any)["id"].(string)
-	c.call("POST", "/api/pair", "", map[string]any{"code": code, "name": "Replay", "kind": "android"}, 403)
 	message := Incoming{Receiver: "+8613800000000", Sender: "10086", Body: "synthetic integration message <script>", Timestamp: 1700000000000, SubscriptionID: 1}
 	batch := map[string]any{"messages": []Incoming{message}}
 	c.call("POST", "/api/messages", token, batch, 403)
@@ -147,7 +147,6 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c.call("GET", "/api/messages?sender=10086&sim=%2B8613800000000", token, nil, 200)
 	c.call("GET", "/api/sync?after=-1", token, nil, 400)
 	c.call("GET", "/api/sync?limit=0", token, nil, 400)
-	c.call("POST", "/api/pairings", token, map[string]any{}, 403)
 	// Concurrent writes use the clock lock; no cursor can skip a committed row.
 	var wg sync.WaitGroup
 	failures := make(chan string, 12)
