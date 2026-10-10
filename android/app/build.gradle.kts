@@ -23,7 +23,23 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildTypes { release { isMinifyEnabled = false } }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            val keystorePath = providers.gradleProperty("androidKeystorePath").orNull
+            val keystorePassword = providers.gradleProperty("androidKeystorePassword").orNull
+            val keyAlias = providers.gradleProperty("androidKeyAlias").orNull
+            val keyPassword = providers.gradleProperty("androidKeyPassword").orNull
+            if (keystorePath != null && keystorePassword != null && keyAlias != null && keyPassword != null) {
+                signingConfig = signingConfigs.create("releaseSigning").apply {
+                    storeFile = file(keystorePath)
+                    storePassword = keystorePassword
+                    this.keyAlias = keyAlias
+                    this.keyPassword = keyPassword
+                }
+            }
+        }
+    }
     lint { abortOnError = true }
 }
 

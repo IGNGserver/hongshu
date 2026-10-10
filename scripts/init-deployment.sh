@@ -24,12 +24,15 @@ quote_compose_single() {
 }
 {
   printf 'PUBLIC_URL=%s\nPORT=%s\nBIND_ADDRESS=%s\n' "$PUBLIC_URL" "${PORT:-18473}" "${BIND_ADDRESS:-127.0.0.1}"
+  printf 'HONGSHU_VERSION=%s\n' "${HONGSHU_VERSION:-latest}"
   printf "HONGSHU_PASSWORD='%s'\n" "$(quote_compose_single "$HONGSHU_PASSWORD")"
   printf 'MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'VAPID_SUBJECT=%s\n' "${VAPID_SUBJECT:-mailto:admin@example.invalid}"
 } > .env
-docker compose build hub
+if [[ -f Dockerfile ]]; then
+  docker compose build hub || true
+fi
 docker compose run --rm --no-deps --entrypoint /vapid hub >> .env
 mkdir -p runtime-data/backups
 if [[ "$PUBLIC_URL" == http://* ]]; then
