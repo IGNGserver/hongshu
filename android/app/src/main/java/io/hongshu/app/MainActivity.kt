@@ -730,7 +730,7 @@ private fun SettingsView(
 ) {
     val c = repo.config
     var url by remember { mutableStateOf(c.url) }
-    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(Build.MODEL) }
     var upload by remember { mutableStateOf(c.upload) }
     var notify by remember { mutableStateOf(c.notify) }
@@ -776,31 +776,31 @@ private fun SettingsView(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it },
-                        label = { Text("一次性配对码") },
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("中枢密码") },
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
                         visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Button(
-                        enabled = !busy && code.isNotBlank() && c.token.isEmpty(),
+                        enabled = !busy && password.isNotBlank() && c.token.isEmpty(),
                         shape = RoundedCornerShape(16.dp),
                         onClick = {
                             action {
-                                repo.pair(url, code, name)
-                                code = ""
+                                repo.login(url, password, name)
+                                password = ""
                                 syncNow(activity)
-                                "配对成功"
+                                "连接成功"
                             }
                         },
                     ) {
-                        Text("配对此设备")
+                        Text("连接此设备")
                     }
                     if (c.token.isNotEmpty()) {
                         Text(
-                            "已成功配对中枢；若需更换请先在原中枢撤销。",
+                            "已成功连接中枢；若需更换请先在原中枢撤销。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
                         )

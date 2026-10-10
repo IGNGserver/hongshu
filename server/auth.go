@@ -164,7 +164,9 @@ func (a *app) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Password string `json:"password"`
+		Password string  `json:"password"`
+		Name     *string `json:"name"`
+		Kind     *string `json:"kind"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -173,19 +175,39 @@ func (a *app) loginHandler(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "invalid_password")
 		return
 	}
+	kind := "web"
+	if in.Kind != nil && *in.Kind != "" {
+		kind = *in.Kind
+	}
+	if kind != "web" && kind != "android" {
+		fail(w, 400, "invalid_device")
+		return
+	}
+	name := "Web browser"
+	if kind == "android" {
+		name = "Android phone"
+	}
+	if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+		if !validName(*in.Name) {
+			fail(w, 400, "invalid_device")
+			return
+		}
+		name = strings.TrimSpace(*in.Name)
+	}
+	admin := (kind == "web")
 	tx, e := a.db.BeginTx(r.Context(), nil)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
 	defer tx.Rollback()
-	d, token, e := insertDevice(r.Context(), tx, "Web browser", "web", true)
+	d, token, e := insertDevice(r.Context(), tx, name, kind, admin)
 	if e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
 	a.cookie(w, token)
-	writeJSON(w, 200, map[string]any{"device": d})
+	writeJSON(w, 200, map[string]any{"device": d, "token": token})
 }
 func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool) (Device, string, error) {
 	d := Device{ID: random(16), Name: name, Kind: kind, Admin: admin, Notify: true, Created: time.Now().UnixMilli()}
@@ -195,69 +217,4 @@ func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool
 }
 func validName(s string) bool {
 	return len(strings.TrimSpace(s)) > 0 && len(s) <= 100 && !strings.ContainsRune(s, 0)
-}
-func (a *app) pairing(w http.ResponseWriter, r *http.Request) {
-	if !device(r).Admin {
-		fail(w, 403, "admin_required")
-		return
-	}
-	if !decode(w, r, &struct{}{}) {
-		return
-	}
-	code := random(16)
-	expires := time.Now().Add(10 * time.Minute).UnixMilli()
-	_, e := a.db.ExecContext(r.Context(), "INSERT INTO pairings VALUES (?,?,FALSE)", hash(code), expires)
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	writeJSON(w, 201, map[string]any{"code": code, "expires_at": expires})
-}
-func (a *app) pair(w http.ResponseWriter, r *http.Request) {
-	if !a.allowed(r) {
-		fail(w, 429, "rate_limited")
-		return
-	}
-	var in struct {
-		Code string `json:"code"`
-		Name string `json:"name"`
-		Kind string `json:"kind"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	if !validName(in.Name) || in.Kind != "android" {
-		fail(w, 400, "invalid_device")
-		return
-	}
-	tx, e := a.db.BeginTx(r.Context(), nil)
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	defer tx.Rollback()
-	var admin bool
-	e = tx.QueryRowContext(r.Context(), "SELECT admin FROM pairings WHERE code_hash=? AND expires_at>? FOR UPDATE", hash(in.Code), time.Now().UnixMilli()).Scan(&admin)
-	if e == sql.ErrNoRows {
-		fail(w, 403, "invalid_pairing")
-		return
-	}
-	if e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	if admin {
-		fail(w, 403, "invalid_pairing")
-		return
-	}
-	if _, e = tx.ExecContext(r.Context(), "DELETE FROM pairings WHERE code_hash=?", hash(in.Code)); e != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	d, token, e := insertDevice(r.Context(), tx, in.Name, in.Kind, false)
-	if e != nil || tx.Commit() != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	writeJSON(w, 201, map[string]any{"device": d, "token": token})
 }

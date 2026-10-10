@@ -92,16 +92,8 @@ async function request(path, token, method = "GET", body) {
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.getByRole("heading", { name: "短信收件箱" }).waitFor();
     await page.getByText("实时连接", { exact: true }).waitFor({ timeout: 15000 });
-    const pairing = await page.evaluate(async () => {
-      const r = await fetch("/api/pairings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      return r.json();
-    });
-    const phone = await request("/pair", null, "POST", {
-      code: pairing.code,
+    const phone = await request("/login", null, "POST", {
+      password,
       name: "Synthetic Phone",
       kind: "android",
     });
@@ -146,8 +138,7 @@ async function request(path, token, method = "GET", body) {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole("button", { name: "设备", exact: true }).click();
     await page.getByText("Synthetic Phone", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "生成配对码", exact: true }).click();
-    await page.locator(".code").waitFor();
+    await page.getByText("连接新设备", { exact: true }).waitFor();
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByLabel("中枢名称").fill("Synthetic Hub");
     await page.getByRole("button", { name: "保存名称" }).click();

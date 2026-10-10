@@ -18,7 +18,6 @@ func (a *app) routes(web string) http.Handler {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("POST /api/login", a.loginHandler)
-	mux.HandleFunc("POST /api/pair", a.pair)
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.revokeIdentity(w, r, device(r).ID, func() {
 			http.SetCookie(w, &http.Cookie{Name: "hongshu", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode})
@@ -28,7 +27,6 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/devices", a.auth(a.devices))
 	mux.HandleFunc("PATCH /api/devices/{id}", a.auth(a.updateDevice))
 	mux.HandleFunc("DELETE /api/devices/{id}", a.auth(a.revoke))
-	mux.HandleFunc("POST /api/pairings", a.auth(a.pairing))
 	mux.HandleFunc("GET /api/sims", a.auth(a.sims))
 	mux.HandleFunc("PUT /api/sims", a.auth(a.saveSIM))
 	mux.HandleFunc("PUT /api/contacts", a.auth(a.contact))
@@ -78,7 +76,7 @@ func (a *app) routes(web string) http.Handler {
 			fail(w, 403, "origin_denied")
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" && (cookieErr == nil || r.URL.Path == "/api/login" || r.URL.Path == "/api/pair") && origin == "" && r.Header.Get("Authorization") == "" {
+		if r.Method != "GET" && r.Method != "HEAD" && (cookieErr == nil || r.URL.Path == "/api/login") && origin == "" && r.Header.Get("Authorization") == "" {
 			fail(w, 403, "origin_required")
 			return
 		}

@@ -37,9 +37,9 @@
 | `ktfmt --kotlinlang-style --dry-run --set-exit-if-changed ...` | Kotlin 生产代码、JVM 测试、androidTest 格式检查通过 |
 | `./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir ... :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | JDK 17 / SDK 35 / Gradle 8.11.1，5 个 JVM 测试通过；lint 无错误；debug APK 与 androidTest APK 构建成功 |
 | `apksigner verify --verbose ...` / `aapt2 dump badging ...` / `aapt2 dump xmltree ... --file res/xml/data_extraction_rules.xml` | debug APK 签名有效；应用 ID、版本、min 26/target 35 正确；云备份和设备迁移排除规则确实已打包 |
-| `PLAYWRIGHT_MODULE=... HONGSHU_BINARY=... MYSQL_BIN=... node scripts/browser-smoke.cjs` | 真实 Chromium + Go + 隔离 MySQL 通过：初始化、WS 连接及自动更新、收件箱、XSS 安全、手机对话/返回、搜索、设备导航/配对码、设置、PWA 不缓存 API |
+| `PLAYWRIGHT_MODULE=... HONGSHU_BINARY=... MYSQL_BIN=... node scripts/browser-smoke.cjs` | 真实 Chromium + Go + 隔离 MySQL 通过：初始化、WS 连接及自动更新、收件箱、XSS 安全、手机对话/返回、搜索、设备导航、设置、PWA 不缓存 API |
 
-MySQL 测试覆盖：首次初始化、一次性配对重放、设备授权/撤销、最后管理员保护、SIM 确认、
+MySQL 测试覆盖：首次初始化、统一密码登录、设备授权/撤销、最后管理员保护、SIM 确认、
 幂等重试、批次原子回滚、12 路并发提交与顺序游标、分页/筛选/搜索、持久 Push 任务、
 来源设备排除、历史导入不生成 Push、撤销后保留历史、WS 撤销/跨域拦截、dirty/checksum 迁移拒绝。
 恢复测试在隔离随机数据库实际执行 mysqldump -> mysql，验证消息、授权哈希、游标与迁移审计。

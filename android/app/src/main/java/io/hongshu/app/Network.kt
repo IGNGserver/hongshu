@@ -54,7 +54,10 @@ class Api(private val config: Config) {
     ): JSONObject {
         val origin = hubOrigin(config.url)
         val builder = Request.Builder().url(origin + "/api" + path).header("Origin", origin)
-        if (authorized) builder.header("Authorization", "Bearer ${config.token}")
+        if (authorized) {
+            builder.header("Authorization", "Bearer ${config.token}")
+            builder.header("Cookie", "hongshu=${config.token}")
+        }
         builder.method(
             method,
             if (method == "GET" || method == "DELETE") null
@@ -73,7 +76,7 @@ class Api(private val config: Config) {
             if (!response.isSuccessful) {
                 if (response.code == 401) {
                     config.token = ""
-                    config.status = "授权已撤销，请重新配对"
+                    config.status = "授权已撤销，请重新连接"
                 }
                 throw ApiException(response.code, json.optString("error", "network_error"))
             }
@@ -87,7 +90,7 @@ class Repository(val context: Context) {
     val store = Store(context)
     val api = Api(config)
 
-    fun pair(url: String, code: String, name: String) {
+    fun login(url: String, password: String, name: String) {
         val oldUrl = config.url
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
             "旧中枢尚有未上传短信，不能更换中枢以免泄露内容"
@@ -96,9 +99,12 @@ class Repository(val context: Context) {
         try {
             val r =
                 api.request(
-                    "/pair",
+                    "/login",
                     "POST",
-                    JSONObject().put("code", code.trim()).put("name", name).put("kind", "android"),
+                    JSONObject()
+                        .put("password", password.trim())
+                        .put("name", name.trim())
+                        .put("kind", "android"),
                     false,
                 )
             store.resetForNewIdentity()
@@ -111,4 +117,7 @@ class Repository(val context: Context) {
             throw e
         }
     }
+
+    // 兼容可能遗留的调用
+    fun pair(url: String, password: String, name: String) = login(url, password, name)
 }

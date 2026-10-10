@@ -10,7 +10,7 @@
 - **Android**：Kotlin、Compose、Material 3 Expressive，会话、对话、搜索、SIM 筛选；
   原生 SMS 广播、多段合并、双 SIM 映射、持久 outbox、失败重试、历史导入、可选联系人名称同步。
   上传和通知独立开关；普通查看设备无需短信权限。
-- **中枢**：Go + MySQL，单一中枢密码（无用户名）、独立设备凭据、一次性配对、设备撤销；
+- **中枢**：Go + MySQL，单一中枢密码（无用户名）、统一密钥认证、独立设备凭据、设备撤销；
   事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
 - **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
   WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；不离线持久保存短信正文。
@@ -30,7 +30,7 @@ docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```
 
-完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 仍在设备页使用一次性配对码绑定。
+完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 与 Web 均直接使用统一中枢密码连接。
 Android 构建/使用：[android/README.md](android/README.md)。GitHub Release 仅发布经过正式签名（非 debug）的 Android 安装包（`hongshu-*-android.apk`）。
 
 ## 结构与协议
