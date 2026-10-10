@@ -7,7 +7,7 @@ services:
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    ports: ["${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:8080"]
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${PORT:-18473}:8080"]
     environment:
       MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?charset=utf8mb4&timeout=5s&readTimeout=30s&writeTimeout=30s"
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL}

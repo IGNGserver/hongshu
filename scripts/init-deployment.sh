@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test ! -e .env || { echo '.env already exists; refusing to replace credentials' >&2; exit 1; }
-: "${PUBLIC_URL:?Set PUBLIC_URL to the exact external origin, e.g. https://sms.example.com or http://sms.example.com:8080}"
+: "${PUBLIC_URL:?Set PUBLIC_URL to the exact external origin, e.g. https://sms.example.com or http://sms.example.com:18473}"
 [[ "$PUBLIC_URL" =~ ^https?://[^/]+$ && "$PUBLIC_URL" != *'?'* && "$PUBLIC_URL" != *'#'* && "$PUBLIC_URL" != *@* ]] || { echo 'PUBLIC_URL must be an HTTP(S) origin without credentials, path, query or fragment' >&2; exit 1; }
 if [[ -z "${HONGSHU_PASSWORD+x}" ]]; then
   [[ -r /dev/tty ]] || { echo 'Set HONGSHU_PASSWORD or run this script interactively to enter it' >&2; exit 1; }
@@ -23,7 +23,7 @@ quote_compose_single() {
   printf '%s' "$value"
 }
 {
-  printf 'PUBLIC_URL=%s\nPORT=%s\nBIND_ADDRESS=%s\n' "$PUBLIC_URL" "${PORT:-8080}" "${BIND_ADDRESS:-127.0.0.1}"
+  printf 'PUBLIC_URL=%s\nPORT=%s\nBIND_ADDRESS=%s\n' "$PUBLIC_URL" "${PORT:-18473}" "${BIND_ADDRESS:-127.0.0.1}"
   printf "HONGSHU_PASSWORD='%s'\n" "$(quote_compose_single "$HONGSHU_PASSWORD")"
   printf 'MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(openssl rand -hex 32)"

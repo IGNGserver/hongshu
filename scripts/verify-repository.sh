@@ -20,6 +20,13 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha
   exit 1
 fi
 
+if ! grep -Fq 'PORT:-18473}:8080' compose.yml \
+    || ! grep -Fxq 'PORT=18473' .env.example \
+    || ! grep -Fq '${PORT:-18473}' scripts/init-deployment.sh; then
+  echo 'Docker host port default must be 18473 in Compose, .env.example, and the initializer' >&2
+  exit 1
+fi
+
 if git ls-files -z | grep -E -z '(^|/)(\.env|.*\.(pem|key|p12|jks|keystore))$' >/dev/null; then
   echo "tracked credential-like file detected" >&2
   exit 1
