@@ -27,11 +27,11 @@ Android 系统对验证码、后台运行、强制停止和厂商省电的限制
 ```bash
 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:18473/healthz
 ```
 
 完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 仍在设备页使用一次性配对码绑定。
-Android 构建/使用：[android/README.md](android/README.md)。本轮不发布 APK Release 或代装。
+Android 构建/使用：[android/README.md](android/README.md)。Release 中的 APK 使用 debug 签名，仅供试用。
 
 ## 结构与协议
 

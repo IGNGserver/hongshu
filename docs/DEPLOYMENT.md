@@ -1,13 +1,13 @@
 # 部署与恢复
 
 需要 Docker Engine + Compose v2、Linux 本地磁盘。推荐 HTTPS 域名与反向代理；也支持显式配置外部 HTTP。
-不要把 MySQL 数据卷放 SMB/CIFS/NFS：文件锁/刷盘语义会破坏可靠性。端口默认只绑定宿主 127.0.0.1。
-源码从已审计的开发分支检出；本轮没有 tag 或 Release，不要称为已发布稳定版。
+不要把 MySQL 数据卷放 SMB/CIFS/NFS：文件锁/刷盘语义会破坏可靠性。Compose 默认只绑定宿主 `127.0.0.1:18473`，转发到容器 `8080`；可通过 `PORT` 覆盖宿主端口。
+版本及 Release 状态以根目录 `VERSION` 和 GitHub Release 页面为准；alpha/beta/rc 均为预发布版本，不是稳定版。
 
 ```bash
 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:18473/healthz
 docker compose ps
 ```
 
@@ -20,9 +20,9 @@ docker compose ps
 仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
 
 ```bash
-PUBLIC_URL=http://sms.example.com:8080 BIND_ADDRESS=0.0.0.0 PORT=8080 bash scripts/init-deployment.sh
+PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
 docker compose up -d
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:18473/healthz
 ```
 
 `PUBLIC_URL` 必须与浏览器/Android 实际访问的 scheme、主机和端口完全一致。HTTP 会明文传输登录密码、会话凭据、短信正文和 API 数据，链路上的人可以窃听或篡改；弱密码也更容易被猜中。优先使用 HTTPS 或 VPN，不要把 MySQL 3306 暴露到外网。Web Push、Service Worker 与可安装离线应用在公网 HTTP 下不可用。
@@ -42,7 +42,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/sms.example.com/privkey.pem;
     client_max_body_size 1m;
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18473;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header Upgrade $http_upgrade;
@@ -73,7 +73,7 @@ backup 服务每天一次一致性 mysqldump，文件在 `runtime-data/backups/`
 docker compose up -d db
 gzip -dc /secure-backups/hongshu-TIMESTAMP.sql.gz | docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu hongshu'
 docker compose up -d hub backup
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:18473/healthz
 ```
 
 客户端本地游标可能高于恢复后的数据库最高 ID，短信 ID 也会被重用。导入备份后、启动中枢前，
@@ -99,7 +99,7 @@ down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手�
 
 ## 本地开发
 
-Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。
+Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。直接运行 Go 服务时默认监听 8080；Docker Compose 的宿主默认端口为 18473。
 从 server 执行 `go run .`；支持 HTTP 的本地 Web 与 Android 联调。
 `WEB_DIR` 默认 ../web，`MIGRATIONS_DIR` 默认 ../db/migrations。
 生产镜像使用非 root / 只读根文件系统。数据库和备份未做端到端加密，请启用宿主磁盘与备份加密。
