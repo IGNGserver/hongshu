@@ -2,7 +2,7 @@
 
 需要 Docker Engine + Compose v2、Linux 本地磁盘。推荐 HTTPS 域名与反向代理；也支持显式配置外部 HTTP。
 不要把 MySQL 数据卷放 SMB/CIFS/NFS：文件锁/刷盘语义会破坏可靠性。Compose 默认只绑定宿主 `127.0.0.1:18473`，转发到容器 `8080`；可通过 `PORT` 覆盖宿主端口。
-源码从已审计的开发分支检出；本轮没有 tag 或 Release，不要称为已发布稳定版。
+版本及 Release 状态以根目录 `VERSION` 和 GitHub Release 页面为准；alpha/beta/rc 均为预发布版本，不是稳定版。
 
 ```bash
 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
