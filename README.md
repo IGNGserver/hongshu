@@ -22,7 +22,7 @@ Android 系统对验证码、后台运行、强制停止和厂商省电的限制
 
 ## 部署
 
-需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
+需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。中枢镜像发布在 GitHub Container Registry（`ghcr.io/igngserver/hongshu`），普通部署直接拉取版本号或 `latest` 镜像，无需基于 main 或源码本地构建。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
 
 ```bash
 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
@@ -31,7 +31,7 @@ curl --fail http://127.0.0.1:18473/healthz
 ```
 
 完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 仍在设备页使用一次性配对码绑定。
-Android 构建/使用：[android/README.md](android/README.md)。Release 中的 APK 使用 debug 签名，仅供试用。
+Android 构建/使用：[android/README.md](android/README.md)。GitHub Release 仅发布经过正式签名（非 debug）的 Android 安装包（`hongshu-*-android.apk`）。
 
 ## 结构与协议
 

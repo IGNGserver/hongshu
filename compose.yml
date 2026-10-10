@@ -1,8 +1,7 @@
 name: hongshu
 services:
   hub:
-    build: .
-    image: hongshu:local
+    image: ${HONGSHU_IMAGE:-ghcr.io/igngserver/hongshu}:${HONGSHU_VERSION:-latest}
     restart: unless-stopped
     read_only: true
     security_opt: [no-new-privileges:true]

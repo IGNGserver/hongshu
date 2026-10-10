@@ -89,12 +89,22 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 
 ## 升级与回滚
 
-停机前备份，记录旧镜像 ID：`docker compose images`。从明确提交构建新镜像，
-`docker compose up -d --build hub`，检查 healthz、schema_migrations 和客户端同步。
+中枢部署基于发布镜像标签（如 `latest` 或指定版本号如 `0.1.0-alpha.5`），用户不需要克隆源码或基于 `main` 分支构建。
+
+升级步骤：
+1. 停机前做好数据备份；
+2. 在 `.env` 中指定目标版本号（例如 `HONGSHU_VERSION=0.1.0-alpha.5`）或保持 `HONGSHU_VERSION=latest`；
+3. 拉取新镜像并重启 hub 服务：
+   ```bash
+   docker compose pull hub
+   docker compose up -d hub
+   ```
+4. 检查 healthz、schema_migrations 和客户端同步状态。
+
 迁移以 checksum + dirty 标记审计，部分 DDL 失败会阻止启动，不能直接清除 dirty 继续。
 已有部署会依次应用新增迁移。`002` 给推送任务加租约，`003` 给同步时钟加 epoch，默认都是兼容值。
 down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手工使用。
-应用回滚只能在 schema 兼容时用旧镜像；不兼容时恢复已验证的新卷备份，不能盲目执行 down.sql。
+应用回滚只能在 schema 兼容时退回旧版本镜像标签（修改 `.env` 中的 `HONGSHU_VERSION` 并重新 `docker compose up -d hub`）；不兼容时恢复已验证的新卷备份，不能盲目执行 down.sql。
 保留数据库与授权信息，`docker compose down` 不加 `-v`；删除数据卷不是升级/回滚步骤。
 
 ## 本地开发
