@@ -17,7 +17,7 @@ import (
 )
 
 func (a *app) ws(w http.ResponseWriter, r *http.Request) {
-	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" || r.Header.Get("Origin") == a.origin }, ReadBufferSize: 1024, WriteBufferSize: 1024}
+	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return a.isOriginAllowed(r) }, ReadBufferSize: 1024, WriteBufferSize: 1024}
 	conn, e := up.Upgrade(w, r, nil)
 	if e != nil {
 		return

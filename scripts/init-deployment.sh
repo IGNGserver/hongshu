@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test ! -e .env || { echo '.env already exists; refusing to replace credentials' >&2; exit 1; }
-: "${PUBLIC_URL:?Set PUBLIC_URL to the exact external origin, e.g. https://sms.example.com or http://sms.example.com:18473}"
+: "${PUBLIC_URL:=http://127.0.0.1:${PORT:-18473}}"
 [[ "$PUBLIC_URL" =~ ^https?://[^/]+$ && "$PUBLIC_URL" != *'?'* && "$PUBLIC_URL" != *'#'* && "$PUBLIC_URL" != *@* ]] || { echo 'PUBLIC_URL must be an HTTP(S) origin without credentials, path, query or fragment' >&2; exit 1; }
 if [[ -z "${HONGSHU_PASSWORD+x}" ]]; then
   [[ -r /dev/tty ]] || { echo 'Set HONGSHU_PASSWORD or run this script interactively to enter it' >&2; exit 1; }

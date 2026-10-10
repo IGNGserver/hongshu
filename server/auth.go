@@ -111,6 +111,9 @@ func (a *app) lookup(r *http.Request) (Device, error) {
 	if len(token) != 64 {
 		return d, errors.New("missing credential")
 	}
+	if a.db == nil {
+		return d, errors.New("database unavailable")
+	}
 	err := a.db.QueryRowContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices WHERE token_hash=? AND revoked=FALSE", hash(token)).Scan(&d.ID, &d.Name, &d.Kind, &d.Admin, &d.Upload, &d.Notify, &d.Revoked, &d.Created)
 	return d, err
 }
