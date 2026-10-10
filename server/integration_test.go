@@ -89,6 +89,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 	c := apiTest{t: t, a: a}
 	c.call("POST", "/api/login", "", map[string]any{"password": "wrong"}, 401)
 	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	adminCookie := c.cookie
 	me := c.call("GET", "/api/me", "", nil, 200)
 	if me["epoch"] != float64(1) {
 		t.Fatal("fresh database epoch")
@@ -96,6 +97,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 	admin := me["device"].(map[string]any)["id"].(string)
 	c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Bad", "kind": "unknown"}, 400)
 	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Phone", "kind": "android"}, 200)
+	c.cookie = adminCookie
 	token := paired["token"].(string)
 	id := paired["device"].(map[string]any)["id"].(string)
 	message := Incoming{Receiver: "+8613800000000", Sender: "10086", Body: "synthetic integration message <script>", Timestamp: 1700000000000, SubscriptionID: 1}
