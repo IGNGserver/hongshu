@@ -53,10 +53,12 @@ class Api(private val config: Config) {
         authorized: Boolean = true,
     ): JSONObject {
         val origin = hubOrigin(config.url)
-        val builder = Request.Builder().url(origin + "/api" + path).header("Origin", origin)
+        val builder = Request.Builder().url(origin + "/api" + path)
         if (authorized) {
             builder.header("Authorization", "Bearer ${config.token}")
             builder.header("Cookie", "hongshu=${config.token}")
+        } else {
+            builder.header("Origin", origin)
         }
         builder.method(
             method,

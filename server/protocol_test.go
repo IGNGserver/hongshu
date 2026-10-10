@@ -111,6 +111,43 @@ func TestOriginAndCookie(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatal("login unexpectedly accepted a username field")
 	}
+
+	// Dynamic host / LAN origin matching when server origin is 127.0.0.1
+	lanServer, err := newApp(nil, "http://127.0.0.1:18473", "1", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"wrong"}`))
+	r.Host = "192.168.5.17:18473"
+	r.Header.Set("Origin", "http://192.168.5.17:18473")
+	w = httptest.NewRecorder()
+	lanServer.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "invalid_password") {
+		t.Fatalf("LAN host origin matching failed: got %d %s", w.Code, w.Body.String())
+	}
+
+	// Reverse proxy with X-Forwarded-Host
+	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"wrong"}`))
+	r.Host = "127.0.0.1:18473"
+	r.Header.Set("X-Forwarded-Host", "sms.example.com")
+	r.Header.Set("Origin", "https://sms.example.com")
+	w = httptest.NewRecorder()
+	lanServer.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "invalid_password") {
+		t.Fatalf("X-Forwarded-Host origin matching failed: got %d %s", w.Code, w.Body.String())
+	}
+
+	// Bearer token request bypasses Origin check
+	r = httptest.NewRequest("POST", "/api/messages", strings.NewReader(`{}`))
+	r.Host = "192.168.5.17:18473"
+	r.Header.Set("Authorization", "Bearer " + strings.Repeat("a", 64))
+	r.Header.Set("Origin", "https://evil.example")
+	w = httptest.NewRecorder()
+	lanServer.routes("../web").ServeHTTP(w, r)
+	// Should fail with 401 (unauthorized because token not in DB) or 503 (database_unavailable), NOT 403 origin_denied
+	if w.Code == http.StatusForbidden && strings.Contains(w.Body.String(), "origin_denied") {
+		t.Fatal("Bearer token request was blocked by Origin check")
+	}
 }
 func TestSplitSQLKeepsSemicolonInsideStrings(t *testing.T) {
 	parts := splitSQL("INSERT INTO settings VALUES (1, 'a;b');\n-- comment; ignored\nUPDATE settings SET title='c' WHERE id=1;")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,7 @@ func (a *app) routes(web string) http.Handler {
 		}
 		origin := r.Header.Get("Origin")
 		_, cookieErr := r.Cookie("hongshu")
-		if origin != "" && origin != a.origin {
+		if !a.isOriginAllowed(r) {
 			fail(w, 403, "origin_denied")
 			return
 		}
@@ -342,4 +343,31 @@ func (a *app) saveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *app) isOriginAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return true
+	}
+	if a.origin != "" && strings.EqualFold(origin, a.origin) {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	for _, h := range []string{r.Header.Get("X-Forwarded-Host"), r.Host, r.URL.Host} {
+		if h == "" {
+			continue
+		}
+		hostPart := strings.TrimSpace(strings.Split(h, ",")[0])
+		if hostPart != "" && strings.EqualFold(u.Host, hostPart) {
+			return true
+		}
+	}
+	return false
 }
