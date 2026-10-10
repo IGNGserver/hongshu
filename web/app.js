@@ -2,20 +2,24 @@ export const query = (values) =>
   new URLSearchParams(
     Object.entries(values).filter(([, v]) => v !== "" && v !== undefined),
   ).toString();
+
 export function mergeMessages(previous, incoming) {
   const m = new Map(previous.map((v) => [v.id, v]));
   for (const v of incoming) m.set(v.id, v);
   return [...m.values()].sort((a, b) => (a.timestamp - b.timestamp) || a.id - b.id);
 }
+
 export function epochReset(seen, stored, observed) {
   return seen && stored !== observed;
 }
+
 export function pushKey(key) {
   return Uint8Array.from(
     atob(key.replaceAll("-", "+").replaceAll("_", "/")),
     (c) => c.charCodeAt(0),
   );
 }
+
 const $ = (s) => document.querySelector(s);
 const state = {
   me: null,
@@ -36,7 +40,9 @@ const state = {
   ws: null,
   generation: 0,
   loggedOut: false,
+  busy: false,
 };
+
 const errors = {
   unauthorized: "登录状态已失效，请重新输入中枢密码",
   invalid_pairing: "配对码无效或已过期",
@@ -46,15 +52,32 @@ const errors = {
   origin_denied: "PUBLIC_URL 与访问地址不一致",
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
 };
+
 function remoteHTTP() {
-  return location.protocol === "http:" &&
-    !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
+  return (
+    location.protocol === "http:" &&
+    !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname)
+  );
 }
+
+let toastTimer = null;
 function toast(text) {
-  $("#toast").textContent = text;
-  $("#toast").className = "visible";
-  setTimeout(() => ($("#toast").className = ""), 5000);
+  const t = $("#toast");
+  if (!t) return;
+  t.textContent = text;
+  t.classList.add("visible");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("visible"), 4000);
 }
+
+function setBusy(b) {
+  state.busy = b;
+  const p = $("#global-progress");
+  if (p) {
+    p.style.display = b ? "block" : "none";
+  }
+}
+
 async function api(path, method = "GET", body) {
   const res = await fetch("/api" + path, {
     method,
@@ -73,18 +96,26 @@ async function api(path, method = "GET", body) {
   }
   return data;
 }
+
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== undefined) n.textContent = text;
   return n;
 }
+
 function button(text, fn, cls = "") {
   const b = el("button", cls, text);
   b.type = "button";
-  b.onclick = () => Promise.resolve(fn()).catch((e) => toast(e.message));
+  b.onclick = () => {
+    setBusy(true);
+    Promise.resolve(fn())
+      .catch((e) => toast(e.message))
+      .finally(() => setBusy(false));
+  };
   return b;
 }
+
 function date(t) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "short",
@@ -94,6 +125,7 @@ function date(t) {
     year: "numeric",
   }).format(new Date(t));
 }
+
 function authView() {
   const root = $("#app");
   root.replaceChildren();
@@ -102,7 +134,7 @@ function authView() {
     el("h1", "", "鸿枢 Hongshu"),
     el("p", "muted", "所有手机的短信，在自己的中枢相遇。"),
   );
-  if (remoteHTTP())
+  if (remoteHTTP()) {
     card.append(
       el(
         "p",
@@ -110,6 +142,7 @@ function authView() {
         "警告：当前使用明文 HTTP。密码、短信和登录凭据未加密，可能被窃听或篡改；请优先使用 HTTPS 或 VPN。",
       ),
     );
+  }
   const form = el("form");
   const password = el("input");
   password.required = true;
@@ -125,6 +158,7 @@ function authView() {
   form.onsubmit = async (e) => {
     e.preventDefault();
     submit.disabled = true;
+    setBusy(true);
     try {
       await api("/login", "POST", { password: password.value });
       password.value = "";
@@ -133,6 +167,7 @@ function authView() {
       toast(err.message);
     } finally {
       submit.disabled = false;
+      setBusy(false);
     }
   };
   card.append(
@@ -145,27 +180,36 @@ function authView() {
   );
   root.append(card);
 }
+
 function shell() {
   const root = $("#app");
   root.replaceChildren();
+
+  // Wavy Indeterminate Progress Indicator (Expressive Feedback)
+  const progContainer = el("div", "progress-container");
+  progContainer.id = "global-progress";
+  progContainer.style.display = state.busy ? "block" : "none";
+  progContainer.append(el("div", "progress-bar-wavy"));
+
   const container = el("div", "shell");
   const rail = el("aside", "rail");
   const brand = el("div", "brand");
   brand.append(el("span", "mark", "枢"));
-  const label = el("div");
-  label.append(
+  const brandLabel = el("div");
+  brandLabel.append(
     el("strong", "", state.me.title),
     el("div", "muted", "你的私人短信中枢"),
   );
-  brand.append(label);
+  brand.append(brandLabel);
   rail.append(brand);
+
   const nav = el("nav");
   nav.setAttribute("aria-label", "主导航");
   for (const [p, t] of [
     ["inbox", "收件箱"],
     ["devices", "设备"],
     ["settings", "设置"],
-  ])
+  ]) {
     nav.append(
       button(
         t,
@@ -177,15 +221,19 @@ function shell() {
         state.page === p ? "active" : "",
       ),
     );
+  }
   rail.append(nav);
+
   const foot = el("div", "foot");
   foot.append(
     el("div", "status", "连接中"),
     el("p", "muted", "历史长期保留 · 通知内容保护"),
   );
   rail.append(foot);
+
   const main = el("main", "main");
-  if (remoteHTTP())
+  main.append(progContainer);
+  if (remoteHTTP()) {
     main.append(
       el(
         "p",
@@ -193,16 +241,20 @@ function shell() {
         "当前 HTTP 连接未加密：密码、短信和登录凭据可能被窃听或篡改。浏览器离线应用与 Web Push 需要 HTTPS。",
       ),
     );
+  }
   container.append(rail, main);
   root.append(container);
+
   if (state.page === "inbox") inboxView();
   if (state.page === "devices") devicesView();
   if (state.page === "settings") settingsView();
+
   setStatus(
     state.ws?.readyState === 1 ? "实时连接" : "自动补齐",
     state.ws?.readyState === 1,
   );
 }
+
 function setStatus(text, online) {
   const n = $(".status");
   if (n) {
@@ -210,6 +262,7 @@ function setStatus(text, online) {
     n.className = "status" + (online ? " online" : "");
   }
 }
+
 function selectFilter(label, items, value, change) {
   const s = el("select");
   s.setAttribute("aria-label", label);
@@ -229,6 +282,7 @@ function selectFilter(label, items, value, change) {
   };
   return s;
 }
+
 function inboxView() {
   const main = $(".main");
   const head = el("header", "page-head");
@@ -239,6 +293,7 @@ function inboxView() {
     button("刷新", () => refreshInbox()),
   );
   main.append(head);
+
   const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
   const inbox = el("div", "inbox");
   const search = el("input", "search");
@@ -256,6 +311,7 @@ function inboxView() {
     }, 250);
   };
   inbox.append(search);
+
   const f = el("div", "filters");
   const phones = [
     ...new Map(
@@ -274,10 +330,12 @@ function inboxView() {
   inbox.append(f, el("div", "list"));
   layout.append(inbox, el("article", "detail"));
   main.append(layout);
+
   renderConversations();
   renderDetail();
   void refreshInbox().catch((e) => toast(e.message));
 }
+
 let inboxAbortController = null;
 let refreshGeneration = 0;
 async function refreshInbox() {
@@ -290,6 +348,7 @@ async function refreshInbox() {
 
   const gen = ++refreshGeneration;
   try {
+    setBusy(true);
     await reloadMetadata();
     if (signal.aborted) return;
     const filters = $(".filters");
@@ -324,16 +383,21 @@ async function refreshInbox() {
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return;
     throw err;
+  } finally {
+    setBusy(false);
   }
 }
+
 function renderConversations() {
   const list = $(".list");
   if (!list) return;
   list.replaceChildren();
-  if (!state.conversations.length)
+  if (!state.conversations.length) {
     list.append(
       el("div", "empty", "暂无短信。请配置 Android 采集设备及 SIM 号码。"),
     );
+    return;
+  }
   for (const m of state.conversations) {
     const b = button(
       "",
@@ -341,7 +405,7 @@ function renderConversations() {
         state.sender = m.sender;
         state.receiver = m.receiver;
         state.messages = [];
-        $(".layout").classList.add("has-detail");
+        $(".layout")?.classList.add("has-detail");
         renderConversations();
         await loadHistory(false);
       },
@@ -361,22 +425,28 @@ function renderConversations() {
     list.append(b);
   }
   const controls = el("div", "row");
-  if (state.offset > 0)
+  controls.style.padding = "1rem";
+  if (state.offset > 0) {
     controls.append(
       button("上一页", () => {
         state.offset = Math.max(0, state.offset - 100);
         return refreshInbox();
       }),
     );
-  if (state.conversations.length === 100)
+  }
+  if (state.conversations.length === 100) {
     controls.append(
       button("下一页", () => {
         state.offset += 100;
         return refreshInbox();
       }),
     );
-  list.append(controls);
+  }
+  if (controls.children.length > 0) {
+    list.append(controls);
+  }
 }
+
 let historyAbortController = null;
 async function loadHistory(older) {
   const sender = state.sender;
@@ -396,9 +466,11 @@ async function loadHistory(older) {
   };
   if (older && state.messages.length) args.before = state.messages[0].id;
   try {
+    setBusy(true);
     const d = await api("/messages?" + query(args));
-    if (signal?.aborted || sender !== state.sender || receiver !== state.receiver)
+    if (signal?.aborted || sender !== state.sender || receiver !== state.receiver) {
       return;
+    }
     state.messages = older
       ? mergeMessages(state.messages, d.messages)
       : mergeMessages([], d.messages);
@@ -410,8 +482,11 @@ async function loadHistory(older) {
   } catch (err) {
     if (err.name === "AbortError" || signal?.aborted) return;
     throw err;
+  } finally {
+    setBusy(false);
   }
 }
+
 function renderDetail() {
   const detail = $(".detail");
   if (!detail) return;
@@ -427,7 +502,7 @@ function renderDetail() {
       () => {
         state.sender = "";
         state.receiver = "";
-        $(".layout").classList.remove("has-detail");
+        $(".layout")?.classList.remove("has-detail");
         renderDetail();
       },
       "back",
@@ -441,34 +516,42 @@ function renderDetail() {
   );
   h.append(title);
   detail.append(h);
+
   const messages = el("div", "messages");
   messages.append(button("加载更早记录", () => loadHistory(true)));
-  if (!state.messages.length)
+  if (!state.messages.length) {
     messages.append(el("p", "empty", "没有符合筛选条件的消息"));
-  for (const m of state.messages) {
+  }
+  for (const msg of state.messages) {
     const b = el("div", "bubble");
-    b.append(document.createTextNode(m.body));
+    b.append(document.createTextNode(msg.body));
     const name =
-      state.devices.find((d) => d.id === m.device_id)?.name || "来源设备";
+      state.devices.find((d) => d.id === msg.device_id)?.name || "来源设备";
     b.append(
       el(
         "div",
         "metadata",
-        date(m.timestamp) + " · " + m.receiver + " · " + name,
+        date(msg.timestamp) + " · " + msg.receiver + " · " + name,
       ),
     );
     messages.append(b);
   }
   detail.append(messages);
 }
+
 async function devicesView() {
   const main = $(".main");
   main.append(el("h1", "", "设备与 SIM"));
+
   if (state.me.device.admin) {
-    const c = el("section", "card");
+    const c = el("section", "card stack");
     c.append(
       el("h2", "", "连接 Android 设备"),
-      el("p", "muted", "Android 使用一次性配对码绑定，有效期 10 分钟。不要通过公开渠道分享。其他浏览器直接使用中枢密码登录。"),
+      el(
+        "p",
+        "muted",
+        "Android 使用一次性配对码绑定，有效期 10 分钟。不要通过公开渠道分享。其他浏览器直接使用中枢密码登录。",
+      ),
       button(
         "生成配对码",
         async () => {
@@ -481,10 +564,12 @@ async function devicesView() {
     );
     main.append(c);
   }
+
   const grid = el("div", "cards");
   for (const d of state.devices) {
-    const c = el("section", "card");
-    c.append(
+    const c = el("section", "card stack");
+    const head = el("div", "row spread");
+    head.append(
       el("h2", "", d.name),
       el(
         "span",
@@ -492,9 +577,13 @@ async function devicesView() {
         d.kind + (d.admin ? " · 管理员" : "") + (d.revoked ? " · 已撤销" : ""),
       ),
     );
+    c.append(head);
+
     const sims = state.sims.filter((s) => s.device_id === d.id);
-    for (const s of sims)
+    for (const s of sims) {
       c.append(el("p", "muted", (s.label || "SIM") + " · " + s.phone));
+    }
+
     if (!d.revoked && (state.me.device.admin || d.id === state.me.device.id)) {
       const row = el("div", "row");
       row.append(
@@ -513,7 +602,7 @@ async function devicesView() {
           shell();
         }),
       );
-      if (d.kind === "android")
+      if (d.kind === "android") {
         row.append(
           button(d.upload ? "禁止上传" : "允许上传", async () => {
             await api("/devices/" + d.id, "PATCH", { upload: !d.upload });
@@ -521,7 +610,8 @@ async function devicesView() {
             shell();
           }),
         );
-      if (state.me.device.admin && d.id !== state.me.device.id)
+      }
+      if (state.me.device.admin && d.id !== state.me.device.id) {
         row.append(
           button(
             "撤销授权",
@@ -534,15 +624,18 @@ async function devicesView() {
             "danger",
           ),
         );
+      }
       c.append(row);
     }
     grid.append(c);
   }
   main.append(grid);
 }
+
 function settingsView() {
   const main = $(".main");
   main.append(el("h1", "", "中枢设置"));
+
   const card = el("section", "card stack");
   card.append(
     el("h2", "", "浏览器通知"),
@@ -552,7 +645,8 @@ function settingsView() {
       "在线使用实时连接，后台通过标准 Web Push（无需 Firebase）。Web Push、Service Worker 和可安装离线应用需要 HTTPS 或 localhost；公网 HTTP 不支持。",
     ),
   );
-  card.append(
+  const notifyRow = el("div", "row");
+  notifyRow.append(
     button("启用安全通知", enablePush, "primary"),
     button("关闭浏览器推送", async () => {
       await api("/push", "DELETE");
@@ -563,7 +657,9 @@ function settingsView() {
       toast("已关闭浏览器推送");
     }),
   );
+  card.append(notifyRow);
   main.append(card);
+
   if (state.me.device.admin) {
     const c = el("section", "card stack");
     c.append(el("h2", "", "中枢名称"));
@@ -581,7 +677,8 @@ function settingsView() {
     );
     main.append(c);
   }
-  const privacy = el("section", "card");
+
+  const privacy = el("section", "card stack");
   privacy.append(
     el("h2", "", "隐私与存储"),
     el(
@@ -605,31 +702,38 @@ function settingsView() {
   );
   main.append(privacy);
 }
+
 async function enablePush() {
-  if (!window.isSecureContext)
+  if (!window.isSecureContext) {
     throw new Error("Web Push 需要 HTTPS 或 localhost；公网 HTTP 不支持安全上下文");
-  if (!("serviceWorker" in navigator) || !("PushManager" in window))
+  }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     throw new Error("当前浏览器不支持 Web Push");
+  }
   if (!state.me.vapid_public_key) throw new Error("部署者尚未配置 VAPID");
-  if ((await Notification.requestPermission()) !== "granted")
+  if ((await Notification.requestPermission()) !== "granted") {
     throw new Error("请在浏览器设置中允许通知");
+  }
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
-  if (!sub)
+  if (!sub) {
     sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: pushKey(state.me.vapid_public_key),
     });
+  }
   const json = sub.toJSON();
   await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
   await api("/devices/" + state.me.device.id, "PATCH", { notify: true });
   toast("已启用隐私通知");
 }
+
 async function reloadMetadata() {
   const [d, s] = await Promise.all([api("/devices"), api("/sims")]);
   state.devices = d.devices;
   state.sims = s.sims;
 }
+
 function disconnect() {
   state.loggedOut = true;
   state.generation++;
@@ -637,6 +741,7 @@ function disconnect() {
   state.ws = null;
   refreshGeneration++;
 }
+
 function realtime() {
   const gen = state.generation;
   const ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/ws");
@@ -648,11 +753,13 @@ function realtime() {
   ws.onmessage = () => void catchUp().catch((e) => toast(e.message));
   ws.onclose = () => {
     setStatus("断线，等待补齐", false);
-    if (!state.loggedOut && gen === state.generation)
+    if (!state.loggedOut && gen === state.generation) {
       setTimeout(realtime, 5000 + Math.random() * 2000);
+    }
   };
   ws.onerror = () => ws.close();
 }
+
 let syncing = false;
 async function catchUp() {
   if (syncing || !state.me) return;
@@ -692,6 +799,7 @@ async function catchUp() {
     syncing = false;
   }
 }
+
 async function start() {
   state.me = await api("/me");
   state.cursor = 0;
@@ -701,20 +809,24 @@ async function start() {
   state.generation++;
   await reloadMetadata();
   shell();
-  if ("serviceWorker" in navigator)
+  if ("serviceWorker" in navigator) {
     void navigator.serviceWorker
       .register("/sw.js")
       .catch(() => toast("离线应用壳注册失败"));
+  }
   realtime();
 }
+
 if (typeof document !== "undefined") {
   setInterval(() => {
-    if (state.me && document.visibilityState === "visible")
+    if (state.me && document.visibilityState === "visible") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));
+    }
   }, 30000);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.me)
+    if (document.visibilityState === "visible" && state.me) {
       void catchUp().catch(() => {});
+    }
   });
   start().catch(() => authView());
 }
