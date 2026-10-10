@@ -8,6 +8,7 @@ import android.os.Build
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -52,6 +53,7 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
@@ -194,6 +196,7 @@ fun HongshuUI(activity: MainActivity) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(
@@ -374,7 +377,7 @@ private fun ConversationListView(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             // Google Messages 顶栏：
-            // "Google 信息" 标题 + 搜索放大镜 + 圆形头像 (点击弹出账号弹窗)
+            // "信息" 标题 + 搜索放大镜 + 圆形头像 (点击弹出账号弹窗)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -414,7 +417,7 @@ private fun ConversationListView(
                     )
                 } else {
                     Text(
-                        text = "Google 信息",
+                        text = "信息",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onBackground,
