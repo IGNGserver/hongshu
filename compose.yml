@@ -1,7 +1,7 @@
 name: hongshu
 services:
   hub:
-    image: ${HONGSHU_IMAGE:-ghcr.io/igngserver/hongshu}:${HONGSHU_VERSION:-latest}
+    image: ${HONGSHU_IMAGE:-ghcr.io/igngserver/hongshu}:${HONGSHU_VERSION:?select an explicitly published version}
     restart: unless-stopped
     read_only: true
     security_opt: [no-new-privileges:true]
@@ -11,6 +11,7 @@ services:
       MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?charset=utf8mb4&timeout=5s&readTimeout=30s&writeTimeout=30s"
       PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:18473}
       HONGSHU_PASSWORD: ${HONGSHU_PASSWORD:?set HONGSHU_PASSWORD}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.invalid}

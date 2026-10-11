@@ -13,9 +13,21 @@ import javax.crypto.spec.GCMParameterSpec
 class Config(context: Context) {
     private val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
     var singleSimConfirmed: Boolean
-        get() = prefs.getBoolean("single_sim_confirmed", false)
+        get() = singleSimSubscription >= 0
         set(value) {
-            prefs.edit().putBoolean("single_sim_confirmed", value).commit()
+            if (!value) singleSimSubscription = -1
+        }
+
+    var singleSimSubscription: Int
+        get() = prefs.getInt("single_sim_subscription", -1)
+        set(value) {
+            prefs.edit().putInt("single_sim_subscription", value).commit()
+        }
+
+    var captureStatus: String
+        get() = prefs.getString("capture_status", "未扫描")!!
+        set(value) {
+            prefs.edit().putString("capture_status", value).apply()
         }
 
     var url: String

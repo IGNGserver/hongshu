@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -72,5 +73,50 @@ func TestIntegrationBackupRestore(t *testing.T) {
 		if e = migrate(context.Background(), db, "../db/migrations"); e != nil {
 			t.Fatal("restored migration audit invalid", e)
 		}
+	}
+	// Repeated restore of the SAME dump must not reuse a namespace, even when
+	// newly ingested IDs have already caught up with a stale client's cursor.
+	lastEpoch := int64(1)
+	for generation := 2; generation <= 3; generation++ {
+		var liveEpoch int64
+		if e = target.QueryRow("SELECT epoch FROM sync_clock WHERE id=1").Scan(&liveEpoch); e != nil {
+			t.Fatal(e)
+		}
+		repeat := exec.Command(clientBinary, append(args, targetName)...)
+		repeat.Env = dump.Env
+		repeat.Stdin = strings.NewReader(string(bytes))
+		if e = repeat.Run(); e != nil {
+			t.Fatal("repeated isolated restore failed", e)
+		}
+		var restoredEpoch int64
+		if e = target.QueryRow("SELECT epoch FROM sync_clock WHERE id=1").Scan(&restoredEpoch); e != nil {
+			t.Fatal(e)
+		}
+		next, e := exec.Command("bash", "../scripts/next-restore-epoch.sh", strconv.FormatInt(liveEpoch, 10), strconv.FormatInt(restoredEpoch, 10)).Output()
+		if e != nil {
+			t.Fatal("generation helper failed", e)
+		}
+		epoch, e := strconv.ParseInt(strings.TrimSpace(string(next)), 10, 64)
+		if e != nil || epoch <= lastEpoch || epoch != int64(generation) {
+			t.Fatal("restore reused generation", e)
+		}
+		if _, e = target.Exec("UPDATE sync_clock SET epoch=?,seq=3 WHERE id=1", epoch); e != nil {
+			t.Fatal(e)
+		}
+		for id := 2; id <= 3; id++ {
+			if _, e = target.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(strconv.Itoa(id)+strconv.Itoa(generation)), "+1234567890", "synthetic", "new restore namespace", 1700000000000+id, 1); e != nil {
+				t.Fatal(e)
+			}
+		}
+		restoredApp, e := newApp(target, "http://localhost:8080", "synthetic", "", "")
+		if e != nil {
+			t.Fatal(e)
+		}
+		restoredClient := apiTest{t: t, a: restoredApp}
+		page := restoredClient.call("GET", "/api/sync?after=2", token, nil, 200)
+		if page["epoch"] != float64(epoch) || page["epoch"] == float64(lastEpoch) {
+			t.Fatal("client cannot distinguish reused IDs")
+		}
+		lastEpoch = epoch
 	}
 }

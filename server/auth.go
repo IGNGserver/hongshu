@@ -12,9 +12,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -29,6 +31,13 @@ type app struct {
 	limits                            map[string]*attempt
 	subsMu                            sync.Mutex
 	subscribers                       map[chan struct{}]struct{}
+	passwordSlots                     chan struct{}
+	trustedProxies                    []netip.Prefix
+	pushClaimFailures                 atomic.Int64
+	pushStateFailures                 atomic.Int64
+	pushDeliveryFailures              atomic.Int64
+	pushLastSuccess                   atomic.Int64
+	wsCheckInterval                   time.Duration
 }
 type attempt struct {
 	count int
@@ -45,6 +54,9 @@ type Device struct {
 	Created int64  `json:"created_at"`
 }
 type deviceKey struct{}
+
+var errCredential = errors.New("missing credential")
+var errAuthUnavailable = errors.New("authentication store unavailable")
 
 func hash(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
 func random(n int) string {
@@ -69,7 +81,7 @@ func newApp(db *sql.DB, origin, password, pub, priv string) (*app, error) {
 	if _, e = rand.Read(salt); e != nil {
 		return nil, errors.New("password verifier initialization failed")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{})}, nil
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2)}, nil
 }
 func (a *app) passwordMatches(password string) bool {
 	if len(password) == 0 || len(password) > 1024 {
@@ -109,10 +121,10 @@ func (a *app) lookup(r *http.Request) (Device, error) {
 	}
 	var d Device
 	if len(token) != 64 {
-		return d, errors.New("missing credential")
+		return d, errCredential
 	}
 	if a.db == nil {
-		return d, errors.New("database unavailable")
+		return d, errAuthUnavailable
 	}
 	err := a.db.QueryRowContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices WHERE token_hash=? AND revoked=FALSE", hash(token)).Scan(&d.ID, &d.Name, &d.Kind, &d.Admin, &d.Upload, &d.Notify, &d.Revoked, &d.Created)
 	return d, err
@@ -121,7 +133,11 @@ func (a *app) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		d, e := a.lookup(r)
 		if e != nil {
-			fail(w, 401, "unauthorized")
+			if errors.Is(e, errCredential) || errors.Is(e, sql.ErrNoRows) {
+				fail(w, 401, "unauthorized")
+			} else {
+				fail(w, 503, "database_unavailable")
+			}
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), deviceKey{}, d)))
@@ -129,6 +145,46 @@ func (a *app) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 func (a *app) cookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{Name: "hongshu", Value: token, Path: "/", HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode, MaxAge: 365 * 24 * 3600})
+}
+func (a *app) requestSecure(r *http.Request) bool {
+	// Origin is validated by middleware. Never trust arbitrary forwarded-proto.
+	return a.secure || r.TLS != nil || strings.HasPrefix(strings.ToLower(r.Header.Get("Origin")), "https://")
+}
+func (a *app) cookieForRequest(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{Name: "hongshu", Value: token, Path: "/", HttpOnly: true, Secure: a.requestSecure(r), SameSite: http.SameSiteStrictMode, MaxAge: 365 * 24 * 3600})
+}
+func (a *app) configureTrustedProxies(value string) error {
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return errors.New("TRUSTED_PROXY_CIDRS must contain IP prefixes")
+		}
+		a.trustedProxies = append(a.trustedProxies, prefix)
+	}
+	return nil
+}
+func (a *app) clientAddress(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	for _, prefix := range a.trustedProxies {
+		if prefix.Contains(peer.Unmap()) {
+			// The trusted edge must overwrite this header, not append a client value.
+			if forwarded, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Forwarded-For"))); err == nil {
+				return forwarded.Unmap().String()
+			}
+		}
+	}
+	return peer.Unmap().String()
 }
 func (a *app) broadcastChange() {
 	a.subsMu.Lock()
@@ -141,7 +197,7 @@ func (a *app) broadcastChange() {
 	}
 }
 func (a *app) allowed(r *http.Request) bool {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := a.clientAddress(r)
 	now := time.Now()
 	a.limitMu.Lock()
 	defer a.limitMu.Unlock()
@@ -174,7 +230,15 @@ func (a *app) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !a.passwordMatches(in.Password) {
+	select {
+	case a.passwordSlots <- struct{}{}:
+	default:
+		fail(w, 503, "authentication_busy")
+		return
+	}
+	matches := a.passwordMatches(in.Password)
+	<-a.passwordSlots
+	if !matches {
 		fail(w, 401, "invalid_password")
 		return
 	}
@@ -209,7 +273,7 @@ func (a *app) loginHandler(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	a.cookie(w, token)
+	a.cookieForRequest(w, r, token)
 	writeJSON(w, 200, map[string]any{"device": d, "token": token})
 }
 func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool) (Device, string, error) {

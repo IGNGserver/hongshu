@@ -3,10 +3,12 @@
 JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 认证为统一中枢密码建立会话，支持 HttpOnly Cookie 与 `Authorization: Bearer <token>`。Web 无用户名；所有设备统一使用部署配置的中枢密码认证。
 错误为 `{"error":"稳定错误码"}`，不返回数据库/短信内容；登录密码错误返回 401，设备凭据失效时重新使用中枢密码登录。
+认证查询的数据库故障返回 `503 database_unavailable`，不表示撤销；客户端保留现有 token 并退避。
+登录密码按不透明 UTF-8 字符串传输，不 trim；全局密码校验繁忙返回 `503 authentication_busy`。
 
 | 方法路径 | 语义 |
 | --- | --- |
-| GET /healthz | 数据库可用性，无敏感配置 |
+| GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
 | GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
@@ -27,3 +29,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 号码不能包含 NUL，接收号码采用用户确认的国际号码（建议 E.164，服务端校验 + 和 3..20 位数字）。
 token 和密码没有放在 URL 的接口。登录失败按来源地址限速。
 登录请求必须携带与 PUBLIC_URL 相同的 Origin；Android 原生客户端也显式发送该头，不依赖浏览器自动添加。
+显式 TRUSTED_PROXY_CIDRS 配置后才接受代理覆盖的单个 X-Forwarded-For 地址；客户端直连提交的转发头不可信。
+HTTPS PUBLIC_URL、直接 TLS 或已通过 Origin 校验的 HTTPS 登录强制 Secure cookie。
+Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；Web 无持久缓存，从 /me 当前 head 观察变化，
+按需请求会话/历史，不请求 /sync 丢弃正文，因此不再有 /sync 的 409 重试死循环。

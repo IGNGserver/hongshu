@@ -5,6 +5,17 @@ plugins {
 }
 
 val hongshuVersion = file("../../VERSION").readText().trim()
+val versionMatch = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-(alpha|beta|rc)\\.(\\d+))?$").matchEntire(hongshuVersion)
+    ?: error("Invalid VERSION")
+val (major, minor, patch, channel, iteration) = versionMatch.destructured
+val channelCode = if (channel.isEmpty()) 9999L else {
+    val number = iteration.toLong()
+    require(number in 1..2999) { "Prerelease iteration exceeds Android coding range" }
+    number + when (channel) { "alpha" -> 0; "beta" -> 3000; else -> 6000 }
+}
+require(minor.toLong() < 100 && patch.toLong() < 100) { "Version exceeds Android coding range" }
+val releaseCode = major.toLong()*100000000 + minor.toLong()*1000000 + patch.toLong()*10000 + channelCode
+require(releaseCode in 1..2100000000) { "Android versionCode out of range" }
 
 android {
     namespace = "io.hongshu.app"
@@ -13,7 +24,7 @@ android {
         applicationId = "io.hongshu.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
+        versionCode = releaseCode.toInt()
         versionName = hongshuVersion
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

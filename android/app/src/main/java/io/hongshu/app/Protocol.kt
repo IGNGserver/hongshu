@@ -24,11 +24,15 @@ fun confirmedNumber(value: String): Boolean = Regex("^\\+?[0-9]{3,20}$").matches
 
 fun combineParts(parts: List<String>): String = parts.joinToString("")
 
+internal fun resolvedReceiver(mappings: List<SimMapping>, sub: Int, confirmedSub: Int): String {
+    if (sub >= 0) return mappings.find { it.sub == sub }?.phone ?: ""
+    return mappings.singleOrNull()?.takeIf { it.sub >= 0 && it.sub == confirmedSub }?.phone ?: ""
+}
+
 // A restored database reuses message IDs. Clients that already recorded an epoch
 // must drop their synced cache when it changes. Zero is a legal epoch, so "never
 // seen" is a separate flag rather than a sentinel value.
-fun epochReset(seen: Boolean, stored: Long, observed: Long): Boolean =
-    seen && stored != observed
+fun epochReset(seen: Boolean, stored: Long, observed: Long): Boolean = seen && stored != observed
 
 fun shouldNotify(
     source: String,

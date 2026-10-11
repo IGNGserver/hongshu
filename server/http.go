@@ -16,12 +16,12 @@ func (a *app) routes(web string) http.Handler {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "ok"})
+		writeJSON(w, 200, map[string]any{"status": "ok", "push": map[string]any{"enabled": a.vapidPublic != "" && a.vapidPrivate != "", "claim_failures": a.pushClaimFailures.Load(), "state_failures": a.pushStateFailures.Load(), "delivery_failures": a.pushDeliveryFailures.Load(), "last_success": a.pushLastSuccess.Load()}})
 	})
 	mux.HandleFunc("POST /api/login", a.loginHandler)
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.revokeIdentity(w, r, device(r).ID, func() {
-			http.SetCookie(w, &http.Cookie{Name: "hongshu", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.secure, SameSite: http.SameSiteStrictMode})
+			http.SetCookie(w, &http.Cookie{Name: "hongshu", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.requestSecure(r), SameSite: http.SameSiteStrictMode})
 		})
 	}))
 	mux.HandleFunc("GET /api/me", a.auth(a.me))
@@ -68,7 +68,7 @@ func (a *app) routes(web string) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		if a.secure {
+		if a.requestSecure(r) {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		origin := r.Header.Get("Origin")

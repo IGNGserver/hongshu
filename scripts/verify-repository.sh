@@ -39,3 +39,4 @@ if grep -RIlE 'gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC 
 fi
 
 echo "repository verification passed: version $version"
+python3 scripts/test-operations.py

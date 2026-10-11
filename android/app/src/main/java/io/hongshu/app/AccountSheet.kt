@@ -344,7 +344,7 @@ private fun SettingsMainOverview(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = c.status,
+                    text = "${c.status} · ${c.captureStatus}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -455,7 +455,7 @@ private fun HubLoginSubPage(
         }
         item {
             Button(
-                enabled = !busy && password.isNotBlank() && c.token.isEmpty(),
+                enabled = !busy && password.isNotEmpty() && c.token.isEmpty(),
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth(),
                 onClick = {
@@ -534,9 +534,18 @@ private fun SimSettingsSubPage(
                 Switch(
                     checked = singleSim,
                     onCheckedChange = {
-                        singleSim = it
-                        c.singleSimConfirmed = it
-                        syncNow(activity)
+                        onAction {
+                            if (it) {
+                                check(ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) { "请先授权 SIM 识别" }
+                                val active = activity.getSystemService(SubscriptionManager::class.java).activeSubscriptionInfoList.orEmpty()
+                                val only = active.singleOrNull() ?: error("当前不是唯一活动 SIM，不能兜底")
+                                check(repo.store.sims().any { m -> m.sub == only.subscriptionId }) { "请先确认当前 SIM 号码" }
+                                c.singleSimSubscription = only.subscriptionId
+                            } else c.singleSimSubscription = -1
+                            singleSim = c.singleSimConfirmed
+                            syncNow(activity)
+                            "已更新单卡确认；换卡或多卡时自动失效"
+                        }
                     },
                 )
             }
@@ -931,14 +940,3 @@ private fun AboutSubPage() {
         }
     }
 }
-
-// 兼容别名
-@Composable
-fun GoogleAccountDialog(
-    activity: MainActivity,
-    repo: Repository,
-    busy: Boolean,
-    onDismissRequest: () -> Unit,
-    onRequestPermissions: (Array<String>) -> Unit,
-    onAction: (suspend () -> String) -> Unit,
-) = SettingsDialog(activity, repo, busy, onDismissRequest, onRequestPermissions, onAction)

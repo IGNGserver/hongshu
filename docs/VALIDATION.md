@@ -53,6 +53,8 @@ JSON 字节数拆批、确认号码、来源/初次补齐/历史导入通知排�
 
 ## 未执行的环境验收与 lint 警告
 
+以下为原基线记录；2026-10-12 的模拟器实测与当前边界见文末新增章节。
+
 SQLite 事务、重启保留、未映射队列防饥饿测试在 androidTest 中，需 Android 设备/模拟器执行。
 本轮只构建 androidTest APK，没有执行 instrumentation tests；不以构建代替运行。
 Android lint 的同步 SharedPreferences commit、stopService 的 ImplicitSamInstance、API 29 内联常量、
@@ -77,7 +79,7 @@ Android 12+ 云备份和设备迁移已显式排除全部应用数据，厂商�
 - Android 私有缓存、MySQL 和备份包含短信明文；传输 HTTPS，凭据 Keystore，但非 E2EE/SQL 字段加密。
 - Web 离线仅提供应用壳，不缓存短信正文；Android 可离线查看已补齐历史。
 - 异常超长/不合法短信在本地保留，不阻塞其他消息；首版没有异常队列编辑/导出 UI。
-- 数据库回档后按部署文档把 `sync_clock.epoch` 加一。客户端发现 epoch 变化会清空已同步缓存并重拉，未上传队列保留。epoch 不会在普通写入时自动增加。
+- 数据库恢复前记录现行代次，恢复后按部署文档设置高于现行与备份值的 epoch，不能仅给备份值加一。客户端清空已同步缓存并重拉，未上传队列保留；普通写入不改变 epoch。
 - 单个中枢进程；多副本通知 worker、MMS/RCS、发送短信、多租户、海量搜索压测不在首版范围。
 
 ## 本机构建环境
@@ -88,3 +90,34 @@ CIFS 不支持可靠的 MySQL 文件锁，Gradle 原子缓存写也产生问题�
 生产必须用本地 Linux 数据盘；源码目录没有构建产物、凭据、短信或备份。
 完整日志保留在共享缓存，不提交到仓库（避免混入运行时数据）。
 最终 APK、Go 工具和 Web 资源包保留在共享缓存的 `artifacts/`，附 `SHA256SUMS`；debug 签名仅供测试，非正式发布产物。
+
+## 2026-10-12 Engineering audit remediation
+
+修复对应与剩余边界见 [AUDIT_REMEDIATION.md](AUDIT_REMEDIATION.md)。基线 e6155be；版本未递增，仍是 alpha.11。
+本次缓存/产物在 `/home/lvziw/tmp/opencode/hongshu-remediation/`，Gradle 依赖使用已有共享缓存，
+可变 GRADLE_USER_HOME 使用 `/dev/shm/hongshu-gradle`；不在 worktree 堆积产物。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check` | 通过；仓库结构/版本/凭据样式与新增 7 项隔离运维测试 |
+| `bash -n scripts/*.sh`、`actionlint .github/workflows/{ci,release}.yml` | 通过；发布故障测试 mock gh/docker，无注册表写入或 Release |
+| `TEST_MYSQL_DSN=... MYSQL_BIN=... MYSQLDUMP_BIN=... go test -race -count=1 -v ./...` | Go 1.26.4 / 本地独立 MySQL 8.4.11；24 项全部通过，无 skip |
+| `go vet ./...`、`go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .`、`test -z "$(gofmt -l *.go cmd/*/*.go)"` | 全部通过 |
+| `npm test`、`npm run check`、`WEB_BUILD_DIR=... npm run build` | Web 16 项通过，JS 语法/完整生产壳构建通过；content-only 升级/离线缓存是实际构建+VM 生命周期测试 |
+| `PLAYWRIGHT_MODULE=... HONGSHU_BINARY=... MYSQL_BIN=... WEB_BUILD_DIR=... node scripts/browser-smoke.cjs` | Chromium + 本次 Go 二进制 + 独立随机 MySQL 库，通过登录/WS/自动刷新/XSS/手机布局/搜索/设置/壳不缓存 API |
+| `./gradlew --no-daemon --offline --project-cache-dir ... -Pkotlin.project.persistent.dir=... :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | JDK 17 / SDK 35 / Gradle 8.11.1，通过；9 项 JVM 单测、lint、debug 与 androidTest APK |
+| `adb -s emulator-5582 install -r ...`、`adb -s emulator-5582 shell am instrument -w io.hongshu.app.test/androidx.test.runner.AndroidJUnitRunner` | 新建隔离 API 35 模拟器，12 项 instrumentation 全通过；其中 100 次 WorkManager 触发与 HTTP 故障是真实调度/请求 |
+| `aapt dump badging .../app-debug.apk` | versionCode=1000011 / versionName=0.1.0-alpha.11，min 26/target 35 |
+
+实际 MySQL worker 覆盖领取/加密发送/租约过期/重试/失效订阅/撤销复核；HTTP 接收器为合成内存 transport，
+不是公网 Web Push。恢复用同一真实 dump 两次，epoch 递增到 2 和 3，且新 head 已超过旧游标。
+2000 条短信、10 个会话的 `EXPLAIN ANALYZE` 显示扫描 10 条摘要、10 次 messages 主键点查，
+不重新扫描 2000 条历史计算窗口；该小型计划验证不是容量/延迟压测。
+模拟器覆盖 v3→v4 无损迁移、捕获来源/SIM 隔离、ACK 空窗、初次同步/通知/epoch、精确密码与凭据保留、
+采集健康不被网络成功覆盖。真实厂商 provider/PDU 与双卡硬件仍未验收。
+
+失败记录不作为通过结果：最初 GRADLE_USER_HOME 的离线依赖缺失，改用已有完整缓存后通过；
+`:connectedDebugAndroidTest --offline` 因缺少 UTP 插件依赖未执行，改用上表实际 adb runner 完整执行，
+没有降低断言或禁用测试。新增网络测试首次命中了旧已完成 worker 的测试等待条件，改为等待本次新 UUID 后重跑通过。
+CI 已增加在线 emulator runner，但推送后的 GitHub CI 结果需另行查询，不能用本地结果代替。
+本次没有 Docker daemon、未实际解析 Compose/构建 OCI 镜像/启动容器；无真实 SIM、生产恢复、公网 Push、发版或部署。

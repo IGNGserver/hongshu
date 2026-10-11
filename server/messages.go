@@ -113,6 +113,11 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "database_unavailable")
 			return
 		}
+		_, e = tx.ExecContext(r.Context(), "INSERT INTO conversation_heads (sender,receiver,message_id,timestamp) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE message_id=IF(VALUES(timestamp)>timestamp OR (VALUES(timestamp)=timestamp AND VALUES(message_id)>message_id),VALUES(message_id),message_id),timestamp=GREATEST(timestamp,VALUES(timestamp))", m.Sender, m.Receiver, seq, m.Timestamp)
+		if e != nil {
+			fail(w, 503, "database_unavailable")
+			return
+		}
 		if !m.Historical {
 			_, e = tx.ExecContext(r.Context(), "INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) SELECT ?,d.id,?,0 FROM devices d JOIN push_subscriptions p ON p.device_id=d.id WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE", seq, time.Now().UnixMilli(), d.ID)
 		}
@@ -121,6 +126,10 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		acks = append(acks, ack{ID: seq})
+	}
+	if _, e = tx.ExecContext(r.Context(), "UPDATE conversation_heads_state SET seq=? WHERE id=1", seq); e != nil {
+		fail(w, 503, "database_unavailable")
+		return
 	}
 	if _, e = tx.ExecContext(r.Context(), "UPDATE sync_clock SET seq=? WHERE id=1", seq); e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
@@ -254,7 +263,11 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	where, args := filters(r)
 	args = append(args, limit, offset)
-	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m LEFT JOIN contacts c ON c.phone=m.sender"+where+") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?", args...)
+	query := "SELECT " + messageColumns + " FROM messages m LEFT JOIN contacts c ON c.phone=m.sender JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m LEFT JOIN contacts c ON c.phone=m.sender" + where + ") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?"
+	if r.URL.Query().Get("q") == "" && r.URL.Query().Get("device") == "" {
+		query = "SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id LEFT JOIN contacts c ON c.phone=m.sender" + where + " ORDER BY h.timestamp DESC,h.message_id DESC LIMIT ? OFFSET ?"
+	}
+	rows, e := a.db.QueryContext(r.Context(), query, args...)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
