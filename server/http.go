@@ -73,7 +73,7 @@ func (a *app) routes(web string) http.Handler {
 		}
 		origin := r.Header.Get("Origin")
 		_, cookieErr := r.Cookie("hongshu")
-		if !a.isOriginAllowed(r) {
+		if !a.isOriginAllowed(r, r.URL.Path == "/api/ws") {
 			fail(w, 403, "origin_denied")
 			return
 		}
@@ -345,12 +345,20 @@ func (a *app) saveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (a *app) isOriginAllowed(r *http.Request) bool {
+func (a *app) isOriginAllowed(r *http.Request, isWS bool) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
 	}
-	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+	if !isWS && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return true
+	}
+	return a.isHostAllowed(r)
+}
+
+func (a *app) isHostAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
 		return true
 	}
 	if a.origin != "" && strings.EqualFold(origin, a.origin) {
