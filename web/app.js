@@ -20,6 +20,9 @@ export function pushKey(key) {
   );
 }
 
+// -------------------------------------------------------------
+// UI State & Configuration
+// -------------------------------------------------------------
 const $ = (s) => document.querySelector(s);
 const state = {
   me: null,
@@ -51,6 +54,70 @@ const errors = {
   origin_denied: "PUBLIC_URL 与访问地址不一致",
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
 };
+
+// SVG Icon Assets (Google Material Symbols / Icons)
+const ICONS = {
+  chat: `<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>`,
+  devices: `<svg viewBox="0 0 24 24"><path d="M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z"/></svg>`,
+  settings: `<svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
+  search: `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>`,
+  arrowDropDown: `<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>`,
+  arrowBack: `<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>`,
+  close: `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
+  contentCopy: `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`,
+  warning: `<svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
+  emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
+    <rect x="42" y="46" width="76" height="58" rx="16" fill="currentColor" fill-opacity="0.3"/>
+    <path d="M54 62h52M54 74h36M54 86h24" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="106" cy="102" r="18" fill="var(--md-sys-color-primary)"/>
+    <path d="M102 96l8 6-8 6" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+};
+
+// Deterministic Expressive Avatar Color Generator
+const AVATAR_PALETTES = [
+  { bg: "#E8DEF8", color: "#1D192B" },
+  { bg: "#D0E4FF", color: "#001D36" },
+  { bg: "#CBE6FF", color: "#001E30" },
+  { bg: "#C2E7FF", color: "#001D35" },
+  { bg: "#D4E7E4", color: "#0D2825" },
+  { bg: "#FFD8E4", color: "#31111D" },
+  { bg: "#FFDCC2", color: "#2E1500" },
+  { bg: "#EADDFF", color: "#21005D" },
+];
+
+function getAvatarStyle(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  const idx = Math.abs(hash) % AVATAR_PALETTES.length;
+  const p = AVATAR_PALETTES[idx];
+  return `background-color: ${p.bg}; color: ${p.color};`;
+}
+
+// Attach Material 3 Ripple effect to interactive DOM elements
+function attachRipple(element) {
+  element.classList.add("ripple-surface");
+  element.addEventListener("pointerdown", (e) => {
+    const rect = element.getBoundingClientRect();
+    const size = Math.max(rect.width, rect.height);
+    const x = e.clientX - rect.left - size / 2;
+    const y = e.clientY - rect.top - size / 2;
+
+    const wave = document.createElement("span");
+    wave.className = "ripple-wave";
+    wave.style.width = `${size}px`;
+    wave.style.height = `${size}px`;
+    wave.style.left = `${x}px`;
+    wave.style.top = `${y}px`;
+
+    element.append(wave);
+    wave.addEventListener("animationend", () => wave.remove(), { once: true });
+  });
+}
 
 function remoteHTTP() {
   return (
@@ -106,6 +173,7 @@ function el(tag, cls, text) {
 function button(text, fn, cls = "") {
   const b = el("button", cls, text);
   b.type = "button";
+  attachRipple(b);
   b.onclick = () => {
     setBusy(true);
     Promise.resolve(fn())
@@ -115,20 +183,87 @@ function button(text, fn, cls = "") {
   return b;
 }
 
-function date(t) {
+function iconButton(svgHtml, label, fn, cls = "") {
+  const b = el("button", "icon-button " + cls);
+  b.type = "button";
+  b.innerHTML = svgHtml;
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  attachRipple(b);
+  b.onclick = (e) => {
+    e.stopPropagation();
+    setBusy(true);
+    Promise.resolve(fn())
+      .catch((err) => toast(err.message))
+      .finally(() => setBusy(false));
+  };
+  return b;
+}
+
+function formatRelativeTime(t) {
+  const now = new Date();
+  const d = new Date(t);
+  const diff = now - d;
+  const sameDay =
+    now.getDate() === d.getDate() &&
+    now.getMonth() === d.getMonth() &&
+    now.getFullYear() === d.getFullYear();
+
+  if (sameDay) {
+    return new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(d);
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (
+    yesterday.getDate() === d.getDate() &&
+    yesterday.getMonth() === d.getMonth() &&
+    yesterday.getFullYear() === d.getFullYear()
+  ) {
+    return "昨天";
+  }
+  if (now.getFullYear() === d.getFullYear()) {
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+    }).format(d);
+  }
   return new Intl.DateTimeFormat("zh-CN", {
-    month: "short",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  }).format(d);
+}
+
+function dateFull(t) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    year: "numeric",
+    hour12: false,
   }).format(new Date(t));
 }
 
+function dateDay(t) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(t));
+}
+
+// -------------------------------------------------------------
+// Authentication View (M3 Expressive Card)
+// -------------------------------------------------------------
 function authView() {
   const root = $("#app");
   root.replaceChildren();
-  const card = el("main", "auth card");
+  const card = el("main", "auth");
   card.append(
     el("h1", "", "鸿枢 Hongshu"),
     el("p", "muted", "所有手机的短信，在自己的中枢相遇。"),
@@ -153,6 +288,7 @@ function authView() {
   form.append(label);
   const submit = el("button", "primary", "登录");
   submit.type = "submit";
+  attachRipple(submit);
   form.append(submit);
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -173,74 +309,93 @@ function authView() {
     form,
     el(
       "small",
-      "",
+      "muted",
       "单用户中枢，无需用户名。所有设备统一使用中枢密码连接；短信不会离线保存在浏览器。",
     ),
   );
   root.append(card);
 }
 
+// -------------------------------------------------------------
+// App Shell Structure (Google Messages Slim Rail + Canvas)
+// -------------------------------------------------------------
 function shell() {
   const root = $("#app");
   root.replaceChildren();
 
-  // Wavy Indeterminate Progress Indicator (Expressive Feedback)
+  // Wavy Indeterminate Progress Indicator (Google Messages Top Bar)
   const progContainer = el("div", "progress-container");
   progContainer.id = "global-progress";
   progContainer.style.display = state.busy ? "block" : "none";
   progContainer.append(el("div", "progress-bar-wavy"));
 
   const container = el("div", "shell");
+
+  // Slim Navigation Rail (Google Messages Web Left Bar)
   const rail = el("aside", "rail");
+  rail.setAttribute("aria-label", "主导航");
+
   const brand = el("div", "brand");
-  brand.append(el("span", "mark", "枢"));
-  const brandLabel = el("div");
-  brandLabel.append(
-    el("strong", "", state.me.title),
-    el("div", "muted", "你的私人短信中枢"),
-  );
-  brand.append(brandLabel);
+  const mark = el("span", "mark", "枢");
+  brand.append(mark);
+  // Hidden text for test / screenreader compatibility
+  const brandTitle = el("strong", "", state.me?.title || "鸿枢");
+  brand.append(brandTitle);
   rail.append(brand);
 
   const nav = el("nav");
-  nav.setAttribute("aria-label", "主导航");
-  for (const [p, t] of [
-    ["inbox", "收件箱"],
-    ["devices", "设备"],
-    ["settings", "设置"],
+  for (const [p, t, icon] of [
+    ["inbox", "收件箱", ICONS.chat],
+    ["devices", "设备", ICONS.devices],
+    ["settings", "设置", ICONS.settings],
   ]) {
-    nav.append(
-      button(
-        t,
-        async () => {
-          state.page = p;
-          await reloadMetadata();
-          shell();
-        },
-        state.page === p ? "active" : "",
-      ),
+    const item = el(
+      "button",
+      "rail-item" + (state.page === p ? " active" : ""),
     );
+    item.type = "button";
+    item.setAttribute("aria-label", t);
+    attachRipple(item);
+
+    const iconWrapper = el("div", "rail-icon-wrapper");
+    iconWrapper.innerHTML = icon;
+    const label = el("span", "rail-label", t);
+    item.append(iconWrapper, label);
+
+    item.onclick = async () => {
+      state.page = p;
+      await reloadMetadata();
+      shell();
+    };
+    nav.append(item);
   }
   rail.append(nav);
 
+  // Status Indicator Dot (Google Messages Clean Bottom Status)
   const foot = el("div", "foot");
-  foot.append(
-    el("div", "status", "连接中"),
-    el("p", "muted", "历史长期保留 · 通知内容保护"),
-  );
+  const statusEl = el("div", "status", "实时连接");
+  statusEl.title = "已建立长连接实时通信";
+  const dot = el("span", "status-dot");
+  statusEl.prepend(dot);
+  foot.append(statusEl);
   rail.append(foot);
 
   const main = el("main", "main");
   main.append(progContainer);
+
   if (remoteHTTP()) {
-    main.append(
-      el(
-        "p",
-        "security-warning",
+    const banner = el("div", "security-banner");
+    const bannerText = el("div", "security-banner-text");
+    bannerText.innerHTML = ICONS.warning;
+    bannerText.append(
+      document.createTextNode(
         "当前 HTTP 连接未加密：密码、短信和登录凭据可能被窃听或篡改。浏览器离线应用与 Web Push 需要 HTTPS。",
       ),
     );
+    banner.append(bannerText);
+    main.append(banner);
   }
+
   container.append(rail, main);
   root.append(container);
 
@@ -257,17 +412,111 @@ function shell() {
 function setStatus(text, online) {
   const n = $(".status");
   if (n) {
-    n.textContent = text;
+    n.title = text;
+    // Keep text node content for compatibility
+    const dot = n.querySelector(".status-dot") || el("span", "status-dot");
+    n.replaceChildren(dot, document.createTextNode(text));
     n.className = "status" + (online ? " online" : "");
   }
 }
 
-function selectFilter(label, items, value, change) {
-  const s = el("select");
+// -------------------------------------------------------------
+// Inbox View: Pill Search + M3 Chips + Stream Layout
+// -------------------------------------------------------------
+function inboxView() {
+  const main = $(".main");
+
+  // Keep hidden h1 for screen reader / test locator compatibility
+  const srTitle = el("h1", "", "短信收件箱");
+  srTitle.style.position = "absolute";
+  srTitle.style.width = "1px";
+  srTitle.style.height = "1px";
+  srTitle.style.padding = "0";
+  srTitle.style.margin = "-1px";
+  srTitle.style.overflow = "hidden";
+  srTitle.style.clip = "rect(0, 0, 0, 0)";
+  srTitle.style.border = "0";
+  main.append(srTitle);
+
+  const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
+  const inbox = el("div", "inbox");
+
+  // Google Messages Top Search & Filters Bar
+  const topbar = el("div", "inbox-topbar");
+
+  // Pill Search Box
+  const searchContainer = el("div", "search-container");
+  searchContainer.innerHTML = `<span class="search-icon">${ICONS.search}</span>`;
+
+  const search = el("input", "search");
+  search.type = "search";
+  search.placeholder = "搜索联系人、号码或短信";
+  search.setAttribute("aria-label", "搜索短信");
+  search.value = state.q;
+
+  const clearBtn = iconButton(
+    ICONS.close,
+    "清空搜索",
+    () => {
+      search.value = "";
+      state.q = "";
+      clearBtn.classList.remove("visible");
+      state.offset = 0;
+      return refreshInbox();
+    },
+    "search-clear" + (state.q ? " visible" : ""),
+  );
+
+  let timer;
+  search.oninput = () => {
+    clearBtn.classList.toggle("visible", Boolean(search.value));
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      state.q = search.value;
+      state.offset = 0;
+      refreshInbox().catch((e) => toast(e.message));
+    }, 250);
+  };
+
+  searchContainer.append(search, clearBtn);
+  topbar.append(searchContainer);
+
+  // M3 Filter Chips
+  const filterRow = el("div", "filter-chips");
+  const phones = [
+    ...new Map(
+      state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
+    ).values(),
+  ];
+  filterRow.append(
+    createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
+    createFilterChip(
+      "所有设备",
+      state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
+      state.device,
+      (v) => (state.device = v),
+    ),
+  );
+  topbar.append(filterRow);
+
+  inbox.append(topbar, el("div", "list"));
+  layout.append(inbox, el("article", "detail"));
+  main.append(layout);
+
+  renderConversations();
+  renderDetail();
+  void refreshInbox().catch((e) => toast(e.message));
+}
+
+function createFilterChip(label, items, value, change) {
+  const wrapper = el("div", "filter-chip-wrapper");
+  const s = el("select", "filter-chip-select" + (value ? " active" : ""));
   s.setAttribute("aria-label", label);
+
   const all = el("option", "", label);
   all.value = "";
   s.append(all);
+
   for (const [v, t] of items) {
     const o = el("option", "", t);
     o.value = v;
@@ -276,63 +525,15 @@ function selectFilter(label, items, value, change) {
   s.value = value;
   s.onchange = () => {
     change(s.value);
+    s.classList.toggle("active", Boolean(s.value));
     state.offset = 0;
     void refreshInbox().catch((e) => toast(e.message));
   };
-  return s;
-}
 
-function inboxView() {
-  const main = $(".main");
-  const head = el("header", "page-head");
-  const title = el("div");
-  title.append(el("h1", "", "短信收件箱"), el("small", "", "跨设备历史会话"));
-  head.append(
-    title,
-    button("刷新", () => refreshInbox()),
-  );
-  main.append(head);
-
-  const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
-  const inbox = el("div", "inbox");
-  const search = el("input", "search");
-  search.type = "search";
-  search.placeholder = "搜索联系人、号码或短信";
-  search.setAttribute("aria-label", "搜索短信");
-  search.value = state.q;
-  let timer;
-  search.oninput = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      state.q = search.value;
-      state.offset = 0;
-      refreshInbox().catch((e) => toast(e.message));
-    }, 250);
-  };
-  inbox.append(search);
-
-  const f = el("div", "filters");
-  const phones = [
-    ...new Map(
-      state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
-    ).values(),
-  ];
-  f.append(
-    selectFilter("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
-    selectFilter(
-      "所有设备",
-      state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
-      state.device,
-      (v) => (state.device = v),
-    ),
-  );
-  inbox.append(f, el("div", "list"));
-  layout.append(inbox, el("article", "detail"));
-  main.append(layout);
-
-  renderConversations();
-  renderDetail();
-  void refreshInbox().catch((e) => toast(e.message));
+  const arrow = el("span", "filter-chip-arrow");
+  arrow.innerHTML = ICONS.arrowDropDown;
+  wrapper.append(s, arrow);
+  return wrapper;
 }
 
 let inboxAbortController = null;
@@ -350,16 +551,17 @@ async function refreshInbox() {
     setBusy(true);
     await reloadMetadata();
     if (signal.aborted) return;
-    const filters = $(".filters");
-    if (filters && gen === refreshGeneration) {
+
+    const filterRow = $(".filter-chips");
+    if (filterRow && gen === refreshGeneration) {
       const phones = [
         ...new Map(
           state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
         ).values(),
       ];
-      filters.replaceChildren(
-        selectFilter("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
-        selectFilter(
+      filterRow.replaceChildren(
+        createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
+        createFilterChip(
           "所有设备",
           state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
           state.device,
@@ -391,38 +593,56 @@ function renderConversations() {
   const list = $(".list");
   if (!list) return;
   list.replaceChildren();
+
   if (!state.conversations.length) {
-    list.append(
-      el("div", "empty", "暂无短信。请配置 Android 采集设备及 SIM 号码。"),
+    const empty = el("div", "empty-state");
+    empty.innerHTML = ICONS.emptyMessages;
+    empty.append(
+      el("h3", "", "暂无短信"),
+      el("p", "", "暂无短信。请配置 Android 采集设备及 SIM 号码。"),
     );
+    list.append(empty);
     return;
   }
-  for (const m of state.conversations) {
-    const b = button(
-      "",
-      async () => {
-        state.sender = m.sender;
-        state.receiver = m.receiver;
-        state.messages = [];
-        $(".layout")?.classList.add("has-detail");
-        renderConversations();
-        await loadHistory(false);
-      },
-      "conversation" +
-        (state.sender === m.sender && state.receiver === m.receiver
-          ? " selected"
-          : ""),
+
+  state.conversations.forEach((m, idx) => {
+    const isSelected =
+      state.sender === m.sender && state.receiver === m.receiver;
+    const b = el(
+      "button",
+      "conversation" + (isSelected ? " selected" : "") + " conversation-enter",
     );
-    const avatar = el("span", "avatar", (m.contact || m.sender).slice(0, 1));
+    b.type = "button";
+    b.style.animationDelay = `${Math.min(idx * 25, 250)}ms`;
+    attachRipple(b);
+
+    b.onclick = async () => {
+      state.sender = m.sender;
+      state.receiver = m.receiver;
+      state.messages = [];
+      $(".layout")?.classList.add("has-detail");
+      renderConversations();
+      await loadHistory(false);
+    };
+
+    const titleText = m.contact || m.sender;
+    const avatar = el("span", "avatar", titleText.slice(0, 1).toUpperCase());
+    avatar.setAttribute("style", getAvatarStyle(titleText));
+
     const preview = el("div", "preview");
-    preview.append(
-      el("strong", "", m.contact || m.sender),
-      el("p", "", [m.receiver, m.body].filter(Boolean).join(" · ")),
-      el("small", "", date(m.timestamp)),
+    const previewTop = el("div", "preview-top");
+    previewTop.append(
+      el("strong", "", titleText),
+      el("time", "", formatRelativeTime(m.timestamp)),
     );
+
+    const snippet = el("p", "", [m.receiver, m.body].filter(Boolean).join(" · "));
+    preview.append(previewTop, snippet);
+
     b.append(avatar, preview);
     list.append(b);
-  }
+  });
+
   const controls = el("div", "row");
   controls.style.padding = "1rem";
   if (state.offset > 0) {
@@ -446,6 +666,9 @@ function renderConversations() {
   }
 }
 
+// -------------------------------------------------------------
+// Detail Message Stream (Google Messages Layout & Grouping)
+// -------------------------------------------------------------
 let historyAbortController = null;
 async function loadHistory(older) {
   const sender = state.sender;
@@ -464,10 +687,15 @@ async function loadHistory(older) {
     limit: 100,
   };
   if (older && state.messages.length) args.before = state.messages[0].id;
+
   try {
     setBusy(true);
     const d = await api("/messages?" + query(args));
-    if (signal?.aborted || sender !== state.sender || receiver !== state.receiver) {
+    if (
+      signal?.aborted ||
+      sender !== state.sender ||
+      receiver !== state.receiver
+    ) {
       return;
     }
     state.messages = older
@@ -490,72 +718,146 @@ function renderDetail() {
   const detail = $(".detail");
   if (!detail) return;
   detail.replaceChildren();
+
   if (!state.sender) {
-    detail.append(el("div", "empty", "选择一个会话，查看完整历史"));
+    const empty = el("div", "empty-state");
+    empty.innerHTML = ICONS.emptyMessages;
+    empty.append(
+      el("h3", "", "开启跨设备短信"),
+      el("p", "", "选择一个会话，查看完整历史"),
+    );
+    detail.append(empty);
     return;
   }
-  const h = el("header", "detail-head");
-  h.append(
-    button(
-      "返回",
-      () => {
-        state.sender = "";
-        state.receiver = "";
-        $(".layout")?.classList.remove("has-detail");
-        renderDetail();
-      },
-      "back",
+
+  // Top App Bar
+  const head = el("header", "detail-head");
+  const backBtn = iconButton(
+    ICONS.arrowBack,
+    "返回",
+    () => {
+      state.sender = "";
+      state.receiver = "";
+      $(".layout")?.classList.remove("has-detail");
+      renderDetail();
+    },
+    "back",
+  );
+  head.append(backBtn);
+
+  const contactTitle = state.messages.at(-1)?.contact || state.sender;
+  const avatar = el("span", "avatar", contactTitle.slice(0, 1).toUpperCase());
+  avatar.style.width = "40px";
+  avatar.style.height = "40px";
+  avatar.style.minWidth = "40px";
+  avatar.setAttribute("style", getAvatarStyle(contactTitle));
+
+  const titleBox = el("div", "detail-head-info");
+  const infoText = el("div");
+  infoText.append(
+    el("strong", "", contactTitle),
+    el(
+      "div",
+      "sub-info",
+      [state.sender, state.receiver].filter(Boolean).join(" · "),
     ),
   );
-  const title = el("div");
-  const m = state.messages.at(-1);
-  title.append(
-    el("strong", "", m?.contact || state.sender),
-    el("div", "muted", [state.sender, state.receiver].filter(Boolean).join(" · ")),
-  );
-  h.append(title);
-  detail.append(h);
+  titleBox.append(avatar, infoText);
+  head.append(titleBox);
 
+  const headActions = el("div", "detail-head-actions");
+  headActions.append(
+    iconButton(ICONS.contentCopy, "复制号码", () => {
+      navigator.clipboard?.writeText(state.sender);
+      toast("已复制号码: " + state.sender);
+    }),
+  );
+  head.append(headActions);
+  detail.append(head);
+
+  // Message Stream
   const messages = el("div", "messages");
-  messages.append(button("加载更早记录", () => loadHistory(true)));
+  messages.append(button("加载更早记录", () => loadHistory(true), "text-button"));
+
   if (!state.messages.length) {
     messages.append(el("p", "empty", "没有符合筛选条件的消息"));
   }
-  for (const msg of state.messages) {
+
+  let lastDay = "";
+  let currentGroup = null;
+
+  state.messages.forEach((msg, idx) => {
+    const dayStr = dateDay(msg.timestamp);
+    if (dayStr !== lastDay) {
+      const divider = el("div", "date-divider");
+      divider.append(el("span", "", dayStr));
+      messages.append(divider);
+      lastDay = dayStr;
+      currentGroup = null;
+    }
+
+    if (!currentGroup) {
+      currentGroup = el("div", "bubble-group");
+      messages.append(currentGroup);
+    }
+
     const b = el("div", "bubble");
     b.append(document.createTextNode(msg.body));
+
     const name =
       state.devices.find((d) => d.id === msg.device_id)?.name || "来源设备";
     b.append(
       el(
         "div",
         "metadata",
-        date(msg.timestamp) + " · " + msg.receiver + " · " + name,
+        formatRelativeTime(msg.timestamp) + " · " + msg.receiver + " · " + name,
       ),
     );
-    messages.append(b);
-  }
+
+    // Hover Copy Quick Action
+    const actions = el("div", "bubble-actions");
+    const copyBtn = iconButton(ICONS.contentCopy, "复制短信", () => {
+      navigator.clipboard?.writeText(msg.body);
+      toast("已复制短信正文");
+    });
+    actions.append(copyBtn);
+    b.append(actions);
+
+    currentGroup.append(b);
+  });
+
   detail.append(messages);
 }
 
+// -------------------------------------------------------------
+// Devices Management View (Google Messages Material Cards)
+// -------------------------------------------------------------
 async function devicesView() {
   const main = $(".main");
-  main.append(el("h1", "", "设备与 SIM"));
+  const container = el("div", "page-container");
+
+  const head = el("header", "page-head");
+  head.append(el("h1", "", "设备与 SIM"));
+  container.append(head);
 
   if (state.me.device.admin) {
     const c = el("section", "card stack");
     c.append(
       el("h2", "", "连接新设备"),
-      el("p", "muted", "所有设备（Android 手机或其他浏览器）直接使用统一中枢密码连接，无需生成配对码。"),
+      el(
+        "p",
+        "muted",
+        "所有设备（Android 手机或其他浏览器）直接使用统一中枢密码连接，无需生成配对码。",
+      ),
     );
-    main.append(c);
+    container.append(c);
   }
 
   const grid = el("div", "cards");
   for (const d of state.devices) {
     const c = el("section", "card stack");
-    const head = el("div", "row spread");
-    head.append(
+    const cardHead = el("div", "row spread");
+    cardHead.append(
       el("h2", "", d.name),
       el(
         "span",
@@ -563,7 +865,7 @@ async function devicesView() {
         d.kind + (d.admin ? " · 管理员" : "") + (d.revoked ? " · 已撤销" : ""),
       ),
     );
-    c.append(head);
+    c.append(cardHead);
 
     const sims = state.sims.filter((s) => s.device_id === d.id);
     for (const s of sims) {
@@ -615,12 +917,20 @@ async function devicesView() {
     }
     grid.append(c);
   }
-  main.append(grid);
+  container.append(grid);
+  main.append(container);
 }
 
+// -------------------------------------------------------------
+// Settings View
+// -------------------------------------------------------------
 function settingsView() {
   const main = $(".main");
-  main.append(el("h1", "", "中枢设置"));
+  const container = el("div", "page-container");
+
+  const head = el("header", "page-head");
+  head.append(el("h1", "", "中枢设置"));
+  container.append(head);
 
   const card = el("section", "card stack");
   card.append(
@@ -644,7 +954,7 @@ function settingsView() {
     }),
   );
   card.append(notifyRow);
-  main.append(card);
+  container.append(card);
 
   if (state.me.device.admin) {
     const c = el("section", "card stack");
@@ -661,7 +971,7 @@ function settingsView() {
         shell();
       }),
     );
-    main.append(c);
+    container.append(c);
   }
 
   const privacy = el("section", "card stack");
@@ -686,9 +996,13 @@ function settingsView() {
       authView();
     }),
   );
-  main.append(privacy);
+  container.append(privacy);
+  main.append(container);
 }
 
+// -------------------------------------------------------------
+// Web Push Subscription Handlers
+// -------------------------------------------------------------
 async function enablePush() {
   if (!window.isSecureContext) {
     throw new Error("Web Push 需要 HTTPS 或 localhost；公网 HTTP 不支持安全上下文");
