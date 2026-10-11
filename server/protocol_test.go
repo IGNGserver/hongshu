@@ -140,7 +140,7 @@ func TestOriginAndCookie(t *testing.T) {
 	// Bearer token request bypasses Origin check
 	r = httptest.NewRequest("POST", "/api/messages", strings.NewReader(`{}`))
 	r.Host = "192.168.5.17:18473"
-	r.Header.Set("Authorization", "Bearer " + strings.Repeat("a", 64))
+	r.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 64))
 	r.Header.Set("Origin", "https://evil.example")
 	w = httptest.NewRecorder()
 	lanServer.routes("../web").ServeHTTP(w, r)
