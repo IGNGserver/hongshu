@@ -82,11 +82,11 @@ fun GoogleAccountDialog(
 
                     Text(
                         text = when (activeSubPage) {
-                            "hub_login" -> "中枢连接设置"
-                            "sim_settings" -> "SIM 卡与号码配置"
-                            "sync_control" -> "实时广播与同步控制"
-                            "import" -> "历史导入与通讯录"
-                            else -> "账号与设备"
+                            "hub_login" -> "中枢连接与凭据"
+                            "sim_settings" -> "SIM 卡与号码识别"
+                            "sync_control" -> "短信收发与通知"
+                            "import" -> "备份与历史导入"
+                            else -> "设置与设备"
                         },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -191,7 +191,7 @@ private fun AccountMainOverview(
                                 else MaterialTheme.colorScheme.surfaceContainerHigh,
                             ) {
                                 Text(
-                                    text = if (isConnected) "Pro · 已连接中枢" else "离线模式",
+                                    text = if (isConnected) "已连接私有中枢" else "未连接",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
@@ -229,7 +229,7 @@ private fun AccountMainOverview(
                                 modifier = Modifier.size(20.dp),
                             )
                             Text(
-                                text = if (isConnected) "管理中枢连接与凭据" else "连接您的私有短信中枢",
+                                text = if (isConnected) "管理中枢服务器与凭据" else "连接您的私有短信中枢",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.weight(1f),
@@ -267,7 +267,7 @@ private fun AccountMainOverview(
                         modifier = Modifier.size(22.dp),
                     )
                     Text(
-                        text = "立即执行双向云同步",
+                        text = "立即同步短信",
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),
@@ -299,13 +299,13 @@ private fun AccountMainOverview(
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.padding(horizontal = 16.dp))
                     SheetActionRow(
                         icon = Icons.Default.Sensors,
-                        title = "实时同步与推送链路",
+                        title = "短信收发与通知设置",
                         onClick = { onNavigate("sync_control") },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.padding(horizontal = 16.dp))
                     SheetActionRow(
                         icon = Icons.Default.ImportExport,
-                        title = "导入本地短信与通讯录",
+                        title = "备份与历史数据导入",
                         onClick = { onNavigate("import") },
                     )
                 }
@@ -322,7 +322,7 @@ private fun AccountMainOverview(
                 Column {
                     SheetActionRow(
                         icon = Icons.Default.Security,
-                        title = "本地中枢状态与待传队列",
+                        title = "同步健康与待传队列",
                         onClick = {
                             onAction {
                                 repo.store.retryBlocked()
@@ -534,8 +534,8 @@ private fun SimSettingsSubPage(
                     .padding(16.dp),
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("单 SIM 卡设备简易模式", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                    Text("未知来源短信默认归属此号码", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("单卡 / 默认归属模式", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Text("无法识别卡槽来源时，短信默认归属于此号码", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(
                     checked = singleSim,
@@ -588,7 +588,7 @@ private fun SimSettingsSubPage(
                         }
                     },
                 ) {
-                    Text("自动识别建议")
+                    Text("自动扫描卡槽")
                 }
             }
         }
@@ -633,7 +633,7 @@ private fun SimSettingsSubPage(
             OutlinedTextField(
                 value = phone,
                 onValueChange = { phone = it },
-                label = { Text("确认的接收号码") },
+                label = { Text("绑定本机手机号 (如 +8613800138000)") },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth(),
@@ -719,7 +719,7 @@ private fun SyncControlSubPage(
                     .padding(16.dp),
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("采集并上传本机短信", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Text("将本机新短信同步至中枢", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                     Text("关闭时仅接收和查看中枢历史", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(
@@ -761,8 +761,8 @@ private fun SyncControlSubPage(
                     .padding(16.dp),
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("接收跨设备推送通知", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                    Text("其他设备收到短信时本机发出系统通知", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("接收其他设备的新短信通知", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Text("当其他设备收到短信时，在本机弹出系统通知", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(
                     checked = notify,
@@ -806,17 +806,17 @@ private fun SyncControlSubPage(
                                     Intent(activity, RealtimeService::class.java),
                                 )
                             }
-                            "前台常驻服务已启动"
+                            "后台保活服务已启动"
                         }
                     },
                 ) {
-                    Text("启动前台常驻服务")
+                    Text("开启后台常驻保活")
                 }
                 OutlinedButton(
                     shape = RoundedCornerShape(14.dp),
                     onClick = { activity.stopService(Intent(activity, RealtimeService::class.java)) },
                 ) {
-                    Text("停止服务")
+                    Text("停止后台保活")
                 }
             }
         }
@@ -854,7 +854,7 @@ private fun ImportSubPage(
                     enabled = !busy && repo.config.upload,
                     onClick = { onAction { "已排队 ${importHistory(activity)} 条历史记录" } },
                 ) {
-                    Text("导入历史短信")
+                    Text("开始导入本地历史短信")
                 }
             }
         }
@@ -872,7 +872,7 @@ private fun ImportSubPage(
                     enabled = !busy,
                     onClick = { onAction { "已同步 ${importContacts(activity)} 个联系人" } },
                 ) {
-                    Text("同步联系人名称")
+                    Text("同步通讯录联系人姓名")
                 }
             }
         }
