@@ -18,9 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
-// Google Messages Dark Color Tokens (AMOLED Deep Charcoal)
-private val GoogleDarkColorScheme = darkColorScheme(
-    primary = Color(0xFFA8C7FA),          // Google Soft Blue
+// Hongshu Dark Color Tokens (AMOLED Deep Charcoal)
+private val HongshuDarkColorScheme = darkColorScheme(
+    primary = Color(0xFFA8C7FA),          // Soft Blue
     onPrimary = Color(0xFF062E6F),
     primaryContainer = Color(0xFF004A77),
     onPrimaryContainer = Color(0xFFC2E7FF),
@@ -32,7 +32,7 @@ private val GoogleDarkColorScheme = darkColorScheme(
     onTertiary = Color(0xFF062E6F),
     tertiaryContainer = Color(0xFF0842A0),
     onTertiaryContainer = Color(0xFFD3E3FD),
-    background = Color(0xFF111318),        // Google Messages AMOLED background
+    background = Color(0xFF111318),        // Hongshu AMOLED background
     onBackground = Color(0xFFE2E2E9),
     surface = Color(0xFF111318),           // Seamless surface
     onSurface = Color(0xFFE2E2E9),
@@ -40,15 +40,15 @@ private val GoogleDarkColorScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFFC4C6D0),
     surfaceContainerLowest = Color(0xFF0C0E13),
     surfaceContainerLow = Color(0xFF191C20),
-    surfaceContainer = Color(0xFF1E2025),  // Google Card background
+    surfaceContainer = Color(0xFF1E2025),  // Card background
     surfaceContainerHigh = Color(0xFF282A2F), // Dialog & Card item background
     surfaceContainerHighest = Color(0xFF33353A),
     outline = Color(0xFF8E9099),
     outlineVariant = Color(0xFF44474E),
 )
 
-// Google Messages Light Color Tokens (Clean White & Soft Blue)
-private val GoogleLightColorScheme = lightColorScheme(
+// Hongshu Light Color Tokens (Clean White & Soft Blue)
+private val HongshuLightColorScheme = lightColorScheme(
     primary = Color(0xFF0B57D0),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFD3E3FD),
@@ -76,12 +76,12 @@ private val GoogleLightColorScheme = lightColorScheme(
     outlineVariant = Color(0xFFC4C6D0),
 )
 
-// Google Messages Avatar Color Palette (Vibrant circular avatars)
-val GoogleAvatarPalette = listOf(
+// Hongshu Avatar Color Palette (Vibrant circular avatars)
+val HongshuAvatarPalette = listOf(
     Color(0xFFE08D3C), // Amber Orange
-    Color(0xFF34A853), // Google Forest Green
+    Color(0xFF34A853), // Forest Green
     Color(0xFFE91E63), // Rose Pink
-    Color(0xFF1A73E8), // Google Blue
+    Color(0xFF1A73E8), // Primary Blue
     Color(0xFF9C27B0), // Purple
     Color(0xFF00ACC1), // Cyan Teal
     Color(0xFFF25C54), // Coral Red
@@ -89,13 +89,13 @@ val GoogleAvatarPalette = listOf(
 )
 
 fun avatarColorFor(identifier: String): Color {
-    if (identifier.isEmpty()) return GoogleAvatarPalette[0]
+    if (identifier.isEmpty()) return HongshuAvatarPalette[0]
     val hash = Math.abs(identifier.hashCode())
-    return GoogleAvatarPalette[hash % GoogleAvatarPalette.size]
+    return HongshuAvatarPalette[hash % HongshuAvatarPalette.size]
 }
 
 @Composable
-fun GoogleMessagesTheme(
+fun HongshuTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
@@ -105,8 +105,8 @@ fun GoogleMessagesTheme(
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> GoogleDarkColorScheme
-        else -> GoogleLightColorScheme
+        darkTheme -> HongshuDarkColorScheme
+        else -> HongshuLightColorScheme
     }
 
     MaterialExpressiveTheme(

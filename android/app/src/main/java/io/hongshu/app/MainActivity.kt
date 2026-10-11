@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
-            GoogleMessagesTheme {
+            HongshuTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -82,12 +82,12 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Google Messages 风格日期格式化：
+ * 紧凑时间格式化：
  * - 今天：展示 HH:mm
  * - 今年：展示 M月d日
  * - 往年：展示 yyyy年M月d日
  */
-fun formatGoogleTimestamp(timestamp: Long): String {
+fun formatTimestamp(timestamp: Long): String {
     val now = Calendar.getInstance()
     val msg = Calendar.getInstance().apply { timeInMillis = timestamp }
 
@@ -120,7 +120,7 @@ fun HongshuUI(activity: MainActivity) {
     var simFilter by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
-    var showAccountDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     var loadedMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
     var messageLimit by remember { mutableIntStateOf(200) }
@@ -232,7 +232,7 @@ fun HongshuUI(activity: MainActivity) {
                             messageLimit = messageLimit,
                             changes = changes,
                             busy = busy,
-                            onOpenAccount = { showAccountDialog = true },
+                            onOpenSettings = { showSettingsDialog = true },
                             onSync = { action { syncNow(activity); "已完成中枢同步" } },
                         )
                     }
@@ -263,7 +263,7 @@ fun HongshuUI(activity: MainActivity) {
                                 }
                             }
                         } else {
-                            GoogleDetailPane(
+                            ConversationDetailPane(
                                 sender = selectedSender,
                                 contactName = loadedMessages.firstOrNull()?.contact ?: "",
                                 messages = loadedMessages,
@@ -286,7 +286,7 @@ fun HongshuUI(activity: MainActivity) {
                     label = "compact_detail_transition",
                 ) { inDetail ->
                     if (inDetail) {
-                        GoogleDetailPane(
+                        ConversationDetailPane(
                             sender = selectedSender,
                             contactName = loadedMessages.firstOrNull()?.contact ?: "",
                             messages = loadedMessages,
@@ -315,7 +315,7 @@ fun HongshuUI(activity: MainActivity) {
                             messageLimit = messageLimit,
                             changes = changes,
                             busy = busy,
-                            onOpenAccount = { showAccountDialog = true },
+                            onOpenSettings = { showSettingsDialog = true },
                             onSync = { action { syncNow(activity); "已完成中枢同步" } },
                         )
                     }
@@ -335,12 +335,12 @@ fun HongshuUI(activity: MainActivity) {
         }
     }
 
-    if (showAccountDialog) {
-        GoogleAccountDialog(
+    if (showSettingsDialog) {
+        SettingsDialog(
             activity = activity,
             repo = repo,
             busy = busy,
-            onDismissRequest = { showAccountDialog = false },
+            onDismissRequest = { showSettingsDialog = false },
             onRequestPermissions = permissionLauncher::launch,
             onAction = ::action,
         )
@@ -348,7 +348,7 @@ fun HongshuUI(activity: MainActivity) {
 }
 
 /**
- * Google Messages 首页会话列表视图（1:1 复刻截图 1）
+ * 鸿枢首页会话列表视图
  */
 @Composable
 private fun ConversationListView(
@@ -367,7 +367,7 @@ private fun ConversationListView(
     messageLimit: Int,
     changes: Long,
     busy: Boolean,
-    onOpenAccount: () -> Unit,
+    onOpenSettings: () -> Unit,
     onSync: () -> Unit,
 ) {
     val sims = remember(changes) {
@@ -376,7 +376,7 @@ private fun ConversationListView(
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            // Google Messages 顶栏：
+            // 顶栏：
             // "信息" 标题 + 搜索放大镜 + 圆形头像 (点击弹出账号弹窗)
             Row(
                 modifier = Modifier
@@ -417,9 +417,9 @@ private fun ConversationListView(
                     )
                 } else {
                     Text(
-                        text = "信息",
+                        text = "鸿枢",
                         style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
                         modifier = Modifier.weight(1f),
                     )
@@ -433,24 +433,21 @@ private fun ConversationListView(
                         )
                     }
 
-                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = onSync) {
+                        Icon(
+                            Icons.Default.Sync,
+                            contentDescription = "同步",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
 
-                    // Google Messages 标志性圆形头像（双圈边框设计）
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                            .padding(2.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFE08D3C))
-                            .clickable(onClick = onOpenAccount),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = (if (repo.config.deviceId.isNotEmpty()) android.os.Build.MODEL else "I").take(1).uppercase(),
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "设置",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }
@@ -513,7 +510,7 @@ private fun ConversationListView(
                         modifier = Modifier.padding(32.dp),
                     ) {
                         Text(
-                            if (repo.config.token.isEmpty()) "连接短信中枢以开始" else "暂无信息",
+                            if (repo.config.token.isEmpty()) "连接短信中枢以开始" else "暂无短信记录",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                         )
@@ -524,7 +521,7 @@ private fun ConversationListView(
                         )
                         if (repo.config.token.isEmpty()) {
                             Button(
-                                onClick = onOpenAccount,
+                                onClick = onOpenSettings,
                                 shape = RoundedCornerShape(20.dp),
                             ) {
                                 Text("立即配置中枢")
@@ -535,10 +532,10 @@ private fun ConversationListView(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 96.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
                     items(loadedMessages, key = { it.id }) { msg ->
-                        GoogleConversationRow(
+                        ConversationRow(
                             message = msg,
                             isSelected = selectedSender == msg.sender,
                             onClick = { onSelectConversation(msg.sender, msg.receiver) },
@@ -560,51 +557,7 @@ private fun ConversationListView(
             }
         }
 
-        // 右下角双悬浮按钮（辅助同步 FAB + 主 Extended FAB "开始聊天"）
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(24.dp)
-                .navigationBarsPadding(),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            // 上层辅助小 FAB: 闪烁星芒/同步触发键
-            SmallFloatingActionButton(
-                onClick = onSync,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = MaterialTheme.colorScheme.primary,
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Icon(
-                    Icons.Default.AutoAwesome,
-                    contentDescription = "同步",
-                    modifier = Modifier.size(20.dp),
-                )
-            }
 
-            // 下层主 FAB: Google Extended FAB "开始聊天"
-            ExtendedFloatingActionButton(
-                onClick = onOpenAccount,
-                icon = {
-                    Icon(
-                        Icons.Default.ChatBubble,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                },
-                text = {
-                    Text(
-                        "开始聊天",
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                },
-                shape = RoundedCornerShape(20.dp),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
-            )
-        }
     }
 }
 
@@ -615,7 +568,7 @@ private fun ConversationListView(
  * 副标题：最新内容，如果是自己发送的带 "您: " 前缀
  */
 @Composable
-private fun GoogleConversationRow(
+private fun ConversationRow(
     message: CachedMessage,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -672,7 +625,7 @@ private fun GoogleConversationRow(
                 )
 
                 Text(
-                    text = formatGoogleTimestamp(message.timestamp),
+                    text = formatTimestamp(message.timestamp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.outline,
                     modifier = Modifier.padding(start = 8.dp),
@@ -691,10 +644,10 @@ private fun GoogleConversationRow(
 }
 
 /**
- * 会话详情界面（Google Messages 风格气泡与顶栏）
+ * 会话详情界面
  */
 @Composable
-private fun GoogleDetailPane(
+private fun ConversationDetailPane(
     sender: String,
     contactName: String,
     messages: List<CachedMessage>,
@@ -763,7 +716,7 @@ private fun GoogleDetailPane(
         ) {
             items(messages, key = { it.id }) { msg ->
                 val isOutgoing = msg.deviceId == deviceId && msg.sender != sender
-                GoogleMessageBubble(msg = msg, isOutgoing = isOutgoing)
+                MessageBubble(msg = msg, isOutgoing = isOutgoing)
             }
             if (messages.size >= messageLimit) {
                 item {
@@ -780,10 +733,10 @@ private fun GoogleDetailPane(
 }
 
 /**
- * Google Messages 风格不对称圆角气泡
+ * 现代 Material 3 不对称圆角气泡
  */
 @Composable
-private fun GoogleMessageBubble(
+private fun MessageBubble(
     msg: CachedMessage,
     isOutgoing: Boolean,
 ) {

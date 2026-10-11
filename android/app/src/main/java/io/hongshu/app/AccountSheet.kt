@@ -39,7 +39,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 @Composable
-fun GoogleAccountDialog(
+fun SettingsDialog(
     activity: MainActivity,
     repo: Repository,
     busy: Boolean,
@@ -82,11 +82,12 @@ fun GoogleAccountDialog(
 
                     Text(
                         text = when (activeSubPage) {
-                            "hub_login" -> "中枢连接与凭据"
-                            "sim_settings" -> "SIM 卡与号码识别"
-                            "sync_control" -> "短信收发与通知"
-                            "import" -> "备份与历史导入"
-                            else -> "设置与设备"
+                            "hub_login" -> "中枢连接设置"
+                            "sim_settings" -> "SIM 卡与号码配置"
+                            "sync_control" -> "实时广播与同步控制"
+                            "import" -> "历史导入与通讯录"
+                            "about" -> "关于鸿枢"
+                            else -> "中枢与设置"
                         },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -103,7 +104,8 @@ fun GoogleAccountDialog(
                         "sim_settings" -> SimSettingsSubPage(activity, repo, onRequestPermissions, onAction)
                         "sync_control" -> SyncControlSubPage(activity, repo, onRequestPermissions, onAction)
                         "import" -> ImportSubPage(activity, repo, busy, onRequestPermissions, onAction)
-                        else -> AccountMainOverview(
+                        "about" -> AboutSubPage()
+                        else -> SettingsMainOverview(
                             activity = activity,
                             repo = repo,
                             busy = busy,
@@ -118,7 +120,7 @@ fun GoogleAccountDialog(
 }
 
 @Composable
-private fun AccountMainOverview(
+private fun SettingsMainOverview(
     activity: MainActivity,
     repo: Repository,
     busy: Boolean,
@@ -127,7 +129,7 @@ private fun AccountMainOverview(
 ) {
     val c = repo.config
     val isConnected = c.token.isNotEmpty()
-    val deviceName = if (c.deviceId.isNotEmpty()) Build.MODEL else "未连接设备"
+    val deviceName = if (c.deviceId.isNotEmpty()) Build.MODEL else "未命名设备"
     val hubDisplay = if (isConnected) c.url else "尚未连接短信中枢"
 
     LazyColumn(
@@ -137,7 +139,7 @@ private fun AccountMainOverview(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
-        // 1. Top Profile Card with Google Account Avatar style
+        // 1. Top Profile Card with Device status card style
         item {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -149,21 +151,18 @@ private fun AccountMainOverview(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        // Avatar with concentric border
                         Box(
                             modifier = Modifier
-                                .size(64.dp)
-                                .border(2.5.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                                .padding(3.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFE08D3C)),
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                text = (if (isConnected) deviceName else "枢").take(1).uppercase(),
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
+                            Icon(
+                                Icons.Default.Smartphone,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(28.dp),
                             )
                         }
 
@@ -184,14 +183,13 @@ private fun AccountMainOverview(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Spacer(Modifier.height(6.dp))
-                            // Status Badge
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = if (isConnected) MaterialTheme.colorScheme.primaryContainer
                                 else MaterialTheme.colorScheme.surfaceContainerHigh,
                             ) {
                                 Text(
-                                    text = if (isConnected) "已连接私有中枢" else "未连接",
+                                    text = if (isConnected) "已连接中枢" else "未连接",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.SemiBold,
@@ -199,10 +197,6 @@ private fun AccountMainOverview(
                                     else MaterialTheme.colorScheme.outline,
                                 )
                             }
-                        }
-
-                        IconButton(onClick = { onNavigate("hub_login") }) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "切换或配置")
                         }
                     }
 
@@ -261,7 +255,7 @@ private fun AccountMainOverview(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     Icon(
-                        Icons.Default.AutoAwesome,
+                        Icons.Default.Sync,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(22.dp),
@@ -283,7 +277,7 @@ private fun AccountMainOverview(
             }
         }
 
-        // 3. Functional Sections grouped in Rounded Cards (Exact Google Account Sheet layout)
+        // 3. Functional Sections grouped in Rounded Cards (Settings card layout)
         item {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -334,8 +328,8 @@ private fun AccountMainOverview(
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.padding(horizontal = 16.dp))
                     SheetActionRow(
                         icon = Icons.AutoMirrored.Filled.HelpOutline,
-                        title = "关于鸿枢跨设备短信",
-                        onClick = {},
+                        title = "关于鸿枢",
+                        onClick = { onNavigate("about") },
                     )
                 }
             }
@@ -878,3 +872,73 @@ private fun ImportSubPage(
         }
     }
 }
+
+
+
+@Composable
+private fun AboutSubPage() {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        item {
+            Spacer(Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.CloudSync,
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "鸿枢 (Hongshu)",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "跨设备私有短信同步与聚合平台",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        item {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("架构特性", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("• 自部署私有中枢 (Go / MySQL)", style = MaterialTheme.typography.bodyMedium)
+                    Text("• Android 多 SIM 卡识别与无感后台实时同步", style = MaterialTheme.typography.bodyMedium)
+                    Text("• Web / PWA 跨端查看与搜索管理", style = MaterialTheme.typography.bodyMedium)
+                    Text("• 现代化 Material 3 沉浸式界面设计", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+// 兼容别名
+@Composable
+fun GoogleAccountDialog(
+    activity: MainActivity,
+    repo: Repository,
+    busy: Boolean,
+    onDismissRequest: () -> Unit,
+    onRequestPermissions: (Array<String>) -> Unit,
+    onAction: (suspend () -> String) -> Unit,
+) = SettingsDialog(activity, repo, busy, onDismissRequest, onRequestPermissions, onAction)
