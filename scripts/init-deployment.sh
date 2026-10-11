@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 test ! -e .env || { echo '.env already exists; refusing to replace credentials' >&2; exit 1; }
+: "${HONGSHU_VERSION:?set HONGSHU_VERSION to an explicitly published SemVer}"
+[[ "$HONGSHU_VERSION" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]] || { echo 'HONGSHU_VERSION must be a fixed published SemVer, not latest' >&2; exit 1; }
 : "${PUBLIC_URL:=http://127.0.0.1:${PORT:-18473}}"
 [[ "$PUBLIC_URL" =~ ^https?://[^/]+$ && "$PUBLIC_URL" != *'?'* && "$PUBLIC_URL" != *'#'* && "$PUBLIC_URL" != *@* ]] || { echo 'PUBLIC_URL must be an HTTP(S) origin without credentials, path, query or fragment' >&2; exit 1; }
 if [[ -z "${HONGSHU_PASSWORD+x}" ]]; then
@@ -24,15 +26,14 @@ quote_compose_single() {
 }
 {
   printf 'PUBLIC_URL=%s\nPORT=%s\nBIND_ADDRESS=%s\n' "$PUBLIC_URL" "${PORT:-18473}" "${BIND_ADDRESS:-127.0.0.1}"
-  printf 'HONGSHU_VERSION=%s\n' "${HONGSHU_VERSION:-latest}"
+  printf 'HONGSHU_VERSION=%s\n' "$HONGSHU_VERSION"
+  printf 'TRUSTED_PROXY_CIDRS=%s\n' "${TRUSTED_PROXY_CIDRS:-}"
   printf "HONGSHU_PASSWORD='%s'\n" "$(quote_compose_single "$HONGSHU_PASSWORD")"
   printf 'MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'VAPID_SUBJECT=%s\n' "${VAPID_SUBJECT:-mailto:admin@example.invalid}"
 } > .env
-if [[ -f Dockerfile ]]; then
-  docker compose build hub || true
-fi
+docker compose pull hub
 docker compose run --rm --no-deps --entrypoint /vapid hub >> .env
 mkdir -p runtime-data/backups
 if [[ "$PUBLIC_URL" == http://* ]]; then

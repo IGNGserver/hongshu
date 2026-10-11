@@ -73,16 +73,47 @@ func migrate(ctx context.Context, db *sql.DB, dir string) error {
 		if _, e = conn.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?,?,TRUE)", version, checksum); e != nil {
 			return e
 		}
-		for _, stmt := range splitSQL(string(data)) {
+		for index, stmt := range splitSQL(string(data)) {
 			if _, e = conn.ExecContext(ctx, stmt); e != nil {
-				return fmt.Errorf("migration %s failed", version)
+				return fmt.Errorf("migration %s statement %d failed; inspect database availability/schema (sensitive details omitted)", version, index+1)
 			}
 		}
 		if _, e = conn.ExecContext(ctx, "UPDATE schema_migrations SET dirty=FALSE WHERE version=?", version); e != nil {
 			return e
 		}
 	}
-	return nil
+	return reconcileConversationHeads(ctx, conn)
+}
+
+// A rollback to a legacy writer can leave this derived index behind the clock.
+// Rebuild only then, under the same lock ordering used by uploads.
+func reconcileConversationHeads(ctx context.Context, db interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("conversation index transaction unavailable")
+	}
+	defer tx.Rollback()
+	var head, indexed int64
+	if err = tx.QueryRowContext(ctx, "SELECT seq FROM sync_clock WHERE id=1 FOR UPDATE").Scan(&head); err != nil {
+		return fmt.Errorf("conversation index clock unavailable")
+	}
+	if err = tx.QueryRowContext(ctx, "SELECT seq FROM conversation_heads_state WHERE id=1 FOR UPDATE").Scan(&indexed); err != nil {
+		return fmt.Errorf("conversation index state unavailable")
+	}
+	if head != indexed {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM conversation_heads"); err != nil {
+			return fmt.Errorf("conversation index reset failed")
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO conversation_heads (sender,receiver,message_id,timestamp) SELECT sender,receiver,id,timestamp FROM (SELECT sender,receiver,id,timestamp,ROW_NUMBER() OVER (PARTITION BY sender,receiver ORDER BY timestamp DESC,id DESC) rn FROM messages) ranked WHERE rn=1"); err != nil {
+			return fmt.Errorf("conversation index rebuild failed")
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE conversation_heads_state SET seq=? WHERE id=1", head); err != nil {
+			return fmt.Errorf("conversation index checkpoint failed")
+		}
+	}
+	return tx.Commit()
 }
 
 // splitSQL separates statements without treating a semicolon inside a quoted
@@ -191,6 +222,9 @@ func main() {
 	}
 	a, err := newApp(db, env("PUBLIC_URL", "http://localhost:8080"), password, os.Getenv("VAPID_PUBLIC_KEY"), os.Getenv("VAPID_PRIVATE_KEY"))
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err = a.configureTrustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")); err != nil {
 		log.Fatal(err)
 	}
 	go a.pushLoop(ctx)

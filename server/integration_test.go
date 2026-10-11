@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -229,6 +230,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 func TestIntegrationWebSocketRevocation(t *testing.T) {
 	db := testDB(t)
 	a, _ := newApp(db, "http://localhost:8080", strings.Repeat("s", 32), "", "")
+	a.wsCheckInterval = 20 * time.Millisecond
 	tx, _ := db.Begin()
 	d, token, e := insertDevice(context.Background(), tx, "test", "android", false)
 	if e != nil {
@@ -245,10 +247,27 @@ func TestIntegrationWebSocketRevocation(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer conn.Close()
-	_, _ = db.Exec("UPDATE devices SET revoked=TRUE WHERE id=?", d.ID)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Positive control: the still-authorized socket must receive a real change.
+	if _, e = db.Exec("INSERT INTO messages VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic WS fixture", time.Now().UnixMilli(), 1); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.Exec("UPDATE sync_clock SET seq=1 WHERE id=1"); e != nil {
+		t.Fatal(e)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var change map[string]any
+	if e = conn.ReadJSON(&change); e != nil || change["type"] != "changed" {
+		t.Fatal("unrevoked positive control failed", e)
+	}
+	if _, e = db.Exec("UPDATE devices SET revoked=TRUE WHERE id=?", d.ID); e != nil {
+		t.Fatal(e)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, _, e = conn.ReadMessage(); e == nil {
 		t.Fatal("revoked WS remained usable")
+	}
+	if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
+		t.Fatal("client timeout does not prove revocation")
 	}
 	h.Set("Origin", "https://evil.example")
 	_, res, e := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/api/ws", h)

@@ -104,12 +104,16 @@ class Repository(val context: Context) {
                     "/login",
                     "POST",
                     JSONObject()
-                        .put("password", password.trim())
+                        .put("password", password)
                         .put("name", name.trim())
                         .put("kind", "android"),
                     false,
                 )
-            store.resetForNewIdentity()
+            store.resetForNewIdentity(
+                connectedAt =
+                    r.getJSONObject("device").optLong("created_at", System.currentTimeMillis()),
+                clearCaptures = oldUrl.isNotEmpty() && oldUrl != config.url,
+            )
             config.token = r.getString("token")
             config.deviceId = r.getJSONObject("device").getString("id")
             config.upload = false
@@ -119,7 +123,4 @@ class Repository(val context: Context) {
             throw e
         }
     }
-
-    // 兼容可能遗留的调用
-    fun pair(url: String, password: String, name: String) = login(url, password, name)
 }

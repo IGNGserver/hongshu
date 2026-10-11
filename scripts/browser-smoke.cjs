@@ -60,7 +60,7 @@ async function request(path, token, method = "GET", body) {
         HONGSHU_PASSWORD: password,
         PUBLIC_URL: origin,
         LISTEN_ADDR: ":" + port,
-        WEB_DIR: resolve(root, "web"),
+        WEB_DIR: process.env.WEB_BUILD_DIR || resolve(root, "web"),
         MIGRATIONS_DIR: resolve(root, "db/migrations"),
       },
       stdio: "ignore",

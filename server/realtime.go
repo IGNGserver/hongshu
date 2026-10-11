@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -45,7 +47,11 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 		a.subsMu.Unlock()
 	}()
 
-	ticker := time.NewTicker(25 * time.Second)
+	interval := a.wsCheckInterval
+	if interval <= 0 {
+		interval = 25 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var observed int64 = -1
 	var lastPing time.Time
@@ -106,7 +112,7 @@ func publicIP(ip net.IP) bool {
 		return false
 	}
 	addr = addr.Unmap()
-	for _, block := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32", "64:ff9b::/96"} {
+	for _, block := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001::/32", "2001:db8::/32", "64:ff9b::/96", "fec0::/10"} {
 		if netip.MustParsePrefix(block).Contains(addr) {
 			return false
 		}
@@ -215,6 +221,113 @@ func (a *app) unsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+type claimedPush struct {
+	id, lease int64
+	device    string
+	attempts  int
+	sub       webpush.Subscription
+}
+
+func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, error) {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	jobs := []claimedPush{}
+	for rows.Next() {
+		j := claimedPush{lease: now.Add(60 * time.Second).UnixMilli()}
+		if err = rows.Scan(&j.id, &j.device, &j.attempts, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, j := range jobs {
+		if _, err = tx.ExecContext(ctx, "UPDATE push_jobs SET leased_until=? WHERE id=?", j.lease, j.id); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimedPush) error {
+	var active bool
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM push_jobs j JOIN devices d ON d.id=j.device_id JOIN push_subscriptions p ON p.device_id=j.device_id WHERE j.id=? AND j.leased_until=? AND d.revoked=FALSE AND d.notify=TRUE AND p.endpoint=? AND p.p256dh=? AND p.auth=?)", j.id, j.lease, j.sub.Endpoint, j.sub.Keys.P256dh, j.sub.Keys.Auth).Scan(&active)
+	if err != nil || !active {
+		return err
+	}
+	res, sendErr := webpush.SendNotificationWithContext(ctx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
+	status := 0
+	if res != nil {
+		status = res.StatusCode
+		res.Body.Close()
+	}
+	if sendErr == nil && status >= 200 && status < 300 {
+		_, err = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease)
+		if err == nil {
+			a.pushLastSuccess.Store(time.Now().UnixMilli())
+		}
+		return err
+	}
+	a.pushDeliveryFailures.Add(1)
+	if status == 404 || status == 410 {
+		tx, err := a.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", j.device, j.sub.Endpoint, j.sub.Keys.P256dh, j.sub.Keys.Auth); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	shift := j.attempts
+	if shift > 10 {
+		shift = 10
+	}
+	delay := time.Duration(1<<shift) * 30 * time.Second
+	if delay > 6*time.Hour {
+		delay = 6 * time.Hour
+	}
+	_, err = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=?,leased_until=0 WHERE id=? AND leased_until=?", time.Now().Add(delay).UnixMilli(), j.id, j.lease)
+	return err
+}
+
+func (a *app) processPushBatch(ctx context.Context, client *http.Client, now time.Time) error {
+	jobs, err := a.claimPushJobs(ctx, now)
+	if err != nil {
+		a.pushClaimFailures.Add(1)
+		return fmt.Errorf("push claim failed")
+	}
+	for _, j := range jobs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err = a.deliverPushJob(ctx, client, j); err != nil {
+			a.pushStateFailures.Add(1)
+			return fmt.Errorf("push state update failed")
+		}
+	}
+	return nil
+}
+
 func (a *app) pushLoop(ctx context.Context) {
 	if a.vapidPublic == "" || a.vapidPrivate == "" {
 		return
@@ -227,68 +340,10 @@ func (a *app) pushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Claim a short lease before sending so a slow delivery is not picked up
-			// again by the next tick. A crash releases the lease after 60s; the stable
-			// service-worker tag coalesces that at-least-once retry.
-			now := time.Now()
-			lease := now.Add(60 * time.Second).UnixMilli()
-			tx, e := a.db.BeginTx(ctx, nil)
-			if e != nil {
-				continue
-			}
-			if _, e = tx.ExecContext(ctx, "UPDATE push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id SET j.leased_until=? WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20", lease, now.UnixMilli(), now.UnixMilli()); e != nil {
-				tx.Rollback()
-				continue
-			}
-			rows, e := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.leased_until=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20", lease)
-			if e != nil {
-				tx.Rollback()
-				continue
-			}
-			type claimed struct {
-				id       int64
-				device   string
-				attempts int
-				sub      webpush.Subscription
-			}
-			claimedJobs := []claimed{}
-			for rows.Next() {
-				var j claimed
-				if rows.Scan(&j.id, &j.device, &j.attempts, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth) == nil {
-					claimedJobs = append(claimedJobs, j)
-				}
-			}
-			rows.Close()
-			if rows.Err() != nil || tx.Commit() != nil {
-				continue
-			}
-			for _, j := range claimedJobs {
-				if ctx.Err() != nil {
-					return
-				}
-				res, e := webpush.SendNotificationWithContext(ctx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
-				status := 0
-				if res != nil {
-					status = res.StatusCode
-					res.Body.Close()
-				}
-				if e == nil && status >= 200 && status < 300 {
-					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=?", j.id)
-				} else if status == 404 || status == 410 {
-					// Only this failed delivery is gone. Other queued jobs for the device stay
-					// until their own subscription is attempted or the user unsubscribes.
-					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=?", j.id)
-					_, _ = a.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=?", j.device, j.sub.Endpoint)
-				} else {
-					shift := j.attempts
-					if shift > 10 {
-						shift = 10
-					}
-					delay := time.Duration(1<<shift) * 30 * time.Second
-					if delay > 6*time.Hour {
-						delay = 6 * time.Hour
-					}
-					_, _ = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=?,leased_until=0 WHERE id=?", time.Now().Add(delay).UnixMilli(), j.id)
+			if err := a.processPushBatch(ctx, client, time.Now()); err != nil && ctx.Err() == nil {
+				failures := a.pushClaimFailures.Load() + a.pushStateFailures.Load()
+				if failures == 1 || failures%20 == 0 {
+					log.Print("push worker state failure; inspect healthz counters")
 				}
 			}
 		}

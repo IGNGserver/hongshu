@@ -21,15 +21,20 @@ fun importHistory(context: Context): Int {
     return count
 }
 
-fun catchUpInbox(context: Context) {
+fun catchUpInbox(context: Context): String {
+    if (!Config(context).upload) return "未启用本机采集"
     if (
-        !Config(context).upload ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) !=
-                PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) !=
+            PackageManager.PERMISSION_GRANTED
     )
-        return
+        return "补扫不可用：缺少读取短信权限"
     val store = Store(context)
+    if (store.captureSince() == 0L) {
+        store.close()
+        return "采集起点待中枢确认"
+    }
     store.use { scanInbox(context, store, historical = false, incremental = true) }
+    return "收件箱补扫正常"
 }
 
 internal fun scanInbox(
@@ -38,46 +43,51 @@ internal fun scanInbox(
     historical: Boolean,
     incremental: Boolean,
 ): Int {
-    val mark = if (incremental) store.inboxWatermark() else 0L to 0L
     val floor = if (incremental) store.captureSince() else 0L
-    val selection = if (incremental) "date>=? AND (date>? OR (date=? AND _id>?))" else null
+    // Provider IDs, not SMS dates, order insertion; a late older date remains eligible.
+    // Do not assume provider insertion order follows wall-clock dates.
+    val selection = if (incremental) "_id>? AND date>=?" else null
     val args =
-        if (incremental)
-            arrayOf(
-                floor.toString(),
-                mark.first.toString(),
-                mark.first.toString(),
-                mark.second.toString(),
-            )
-        else null
+        if (incremental) arrayOf(store.providerWatermark().toString(), floor.toString()) else null
     var count = 0
-    context.contentResolver
-        .query(Telephony.Sms.Inbox.CONTENT_URI, null, selection, args, "date ASC, _id ASC")
-        ?.use { c ->
-            val idIndex = c.getColumnIndexOrThrow("_id")
-            val address = c.getColumnIndexOrThrow("address")
-            val body = c.getColumnIndexOrThrow("body")
-            val date = c.getColumnIndexOrThrow("date")
-            val subIndex = c.getColumnIndex("sub_id")
-            while (c.moveToNext()) {
-                val sub = if (subIndex >= 0) c.getInt(subIndex) else -1
-                val text = c.getString(body) ?: continue
-                val sender = c.getString(address) ?: continue
-                if (text.isEmpty()) continue
-                val record =
-                    SmsRecord(
-                        store.receiver(sub, -1),
-                        sender,
-                        text,
-                        c.getLong(date),
-                        sub,
-                        historical = historical,
-                    )
-                if (!store.hasNearDuplicate(record)) store.queue(record)
-                if (incremental) store.advanceInboxWatermark(c.getLong(date), c.getLong(idIndex))
-                count++
+    val receiver = store.receiverResolver()
+    val batch = mutableListOf<Pair<Long, SmsRecord>>()
+    val cursor =
+        context.contentResolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI,
+            null,
+            selection,
+            args,
+            "_id ASC",
+        ) ?: error("SMS provider unavailable")
+    cursor.use { c ->
+        val idIndex = c.getColumnIndexOrThrow("_id")
+        val address = c.getColumnIndexOrThrow("address")
+        val body = c.getColumnIndexOrThrow("body")
+        val date = c.getColumnIndexOrThrow("date")
+        val subIndex = c.getColumnIndex("sub_id")
+        while (c.moveToNext()) {
+            val sub = if (subIndex >= 0) c.getInt(subIndex) else -1
+            val text = c.getString(body) ?: continue
+            val sender = c.getString(address) ?: continue
+            if (text.isEmpty()) continue
+            val record =
+                SmsRecord(
+                    receiver(sub),
+                    sender,
+                    text,
+                    c.getLong(date),
+                    sub,
+                    historical = historical,
+                )
+            batch.add(c.getLong(idIndex) to record)
+            if (batch.size == 100) {
+                count += store.captureProviders(batch, incremental)
+                batch.clear()
             }
         }
+        count += store.captureProviders(batch, incremental)
+    }
     return count
 }
 

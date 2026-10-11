@@ -5,6 +5,19 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun knownUnmappedSubscriptionNeverUsesSingleSimFallback() {
+        val mappings = listOf(SimMapping(7, 0, "+123456789", "synthetic"))
+        assertEquals("+123456789", resolvedReceiver(mappings, 7, 7))
+        assertEquals("", resolvedReceiver(mappings, 8, 7))
+        assertEquals("+123456789", resolvedReceiver(mappings, -1, 7))
+        assertEquals("", resolvedReceiver(mappings, -1, 8))
+        assertEquals(
+            "",
+            resolvedReceiver(mappings + SimMapping(8, 1, "+987654321", "other"), -1, 7),
+        )
+    }
+
+    @Test
     fun realtimeSupportsHTTPAndHTTPSOrigins() {
         assertEquals("http://sms.example.com:8080", hubOrigin("HTTP://sms.example.com:8080/"))
         assertEquals(

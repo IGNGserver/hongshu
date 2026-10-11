@@ -1,10 +1,12 @@
-const CACHE = "hongshu-shell-v1";
+const CACHE = "hongshu-shell-__HONGSHU_SHELL_VERSION__";
 const ASSETS = [
   "/",
   "/app.js",
   "/style.css",
   "/icon.svg",
   "/manifest.webmanifest",
+  "/icon-192.png",
+  "/icon-512.png",
 ];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
@@ -30,7 +32,12 @@ self.addEventListener("fetch", (e) => {
     !ASSETS.includes(new URL(e.request.url).pathname)
   )
     return;
-  e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+  e.respondWith(fetch(e.request).then(async response => {
+    if (response.ok) {
+      try { await (await caches.open(CACHE)).put(e.request, response.clone()); } catch { /* online shell still usable if quota is exhausted */ }
+    }
+    return response;
+  }).catch(() => caches.match(e.request)));
 });
 self.addEventListener("push", (e) => {
   e.waitUntil(

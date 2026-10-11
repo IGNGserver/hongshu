@@ -44,6 +44,8 @@ const state = {
   generation: 0,
   loggedOut: false,
   busy: false,
+  contacts: {},
+  inboxDirty: false,
 };
 
 const errors = {
@@ -144,23 +146,39 @@ function setBusy(b) {
   }
 }
 
-async function api(path, method = "GET", body) {
+const sessionRequests = new Set();
+class ApiError extends Error {
+  constructor(status, code) { super(errors[code] || code || "请求失败"); this.status = status; this.code = code; }
+}
+async function api(path, method = "GET", body, { signal } = {}) {
+  const generation = state.generation;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  sessionRequests.add(controller);
+  try {
   const res = await fetch("/api" + path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : undefined,
     credentials: "same-origin",
+    signal: controller.signal,
   });
   const data = await res.json();
+  if (generation !== state.generation || controller.signal.aborted) throw new DOMException("Session ended", "AbortError");
   if (!res.ok) {
     if (res.status === 401 && state.me) {
       disconnect();
-      state.me = null;
       authView();
     }
-    throw new Error(errors[data.error] || data.error || "请求失败");
+    throw new ApiError(res.status, data.error);
   }
   return data;
+  } finally {
+    sessionRequests.delete(controller);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 function el(tag, cls, text) {
@@ -236,17 +254,6 @@ function formatRelativeTime(t) {
     month: "numeric",
     day: "numeric",
   }).format(d);
-}
-
-function dateFull(t) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(t));
 }
 
 function dateDay(t) {
@@ -538,7 +545,7 @@ function createFilterChip(label, items, value, change) {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox() {
+async function refreshInbox({ metadata = true, preserveHistory = false } = {}) {
   if (!state.me) return;
   if (inboxAbortController) {
     inboxAbortController.abort();
@@ -549,7 +556,7 @@ async function refreshInbox() {
   const gen = ++refreshGeneration;
   try {
     setBusy(true);
-    await reloadMetadata();
+    if (metadata) await reloadMetadata();
     if (signal.aborted) return;
 
     const filterRow = $(".filter-chips");
@@ -576,11 +583,11 @@ async function refreshInbox() {
       offset: state.offset,
       limit: 100,
     };
-    const d = await api("/conversations?" + query(args));
+    const d = await api("/conversations?" + query(args), "GET", undefined, { signal });
     if (signal.aborted || gen !== refreshGeneration) return;
     state.conversations = d.conversations;
     renderConversations();
-    if (state.sender) await loadHistory(false);
+    if (state.sender) await loadHistory(false, { preserve: preserveHistory });
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return;
     throw err;
@@ -670,7 +677,7 @@ function renderConversations() {
 // Detail Message Stream (Google Messages Layout & Grouping)
 // -------------------------------------------------------------
 let historyAbortController = null;
-async function loadHistory(older) {
+async function loadHistory(older, { preserve = false } = {}) {
   const sender = state.sender;
   const receiver = state.receiver;
   if (!older) {
@@ -678,6 +685,11 @@ async function loadHistory(older) {
     historyAbortController = new AbortController();
   }
   const signal = historyAbortController?.signal;
+  const generation = state.generation;
+  const previousStream = $(".messages");
+  const scrollTop = previousStream?.scrollTop || 0;
+  const scrollHeight = previousStream?.scrollHeight || 0;
+  const atBottom = previousStream && scrollHeight - scrollTop - previousStream.clientHeight < 40;
 
   const args = {
     sender,
@@ -690,22 +702,22 @@ async function loadHistory(older) {
 
   try {
     setBusy(true);
-    const d = await api("/messages?" + query(args));
+    const d = await api("/messages?" + query(args), "GET", undefined, { signal });
     if (
       signal?.aborted ||
+      generation !== state.generation || !state.me ||
       sender !== state.sender ||
       receiver !== state.receiver
     ) {
       return;
     }
-    state.messages = older
+    state.messages = older || preserve
       ? mergeMessages(state.messages, d.messages)
       : mergeMessages([], d.messages);
     renderDetail();
-    if (!older) {
-      const n = $(".messages");
-      if (n) n.scrollTop = n.scrollHeight;
-    }
+    state.messages = state.messages.map(m => ({ ...m, contact: state.contacts[m.sender] || "" }));
+    const n = $(".messages");
+    if (n) n.scrollTop = older ? scrollTop + n.scrollHeight - scrollHeight : preserve && !atBottom ? scrollTop : n.scrollHeight;
   } catch (err) {
     if (err.name === "AbortError" || signal?.aborted) return;
     throw err;
@@ -961,11 +973,13 @@ function settingsView() {
     c.append(el("h2", "", "中枢名称"));
     const input = el("input");
     input.value = state.me.title;
+    input.dataset.loadedTitle = state.me.title;
     input.maxLength = 100;
     input.setAttribute("aria-label", "中枢名称");
     c.append(
       input,
       button("保存名称", async () => {
+        if (input.dataset.loadedTitle !== state.me.title) throw new Error("中枢名称已被其他设备修改，请重新打开设置后确认");
         await api("/settings", "PATCH", { title: input.value });
         state.me.title = input.value;
         shell();
@@ -1029,9 +1043,20 @@ async function enablePush() {
 }
 
 async function reloadMetadata() {
-  const [d, s] = await Promise.all([api("/devices"), api("/sims")]);
+  const generation = state.generation;
+  const [d, s, c] = await Promise.all([api("/devices"), api("/sims"), api("/contacts")]);
+  if (generation !== state.generation || !state.me) return;
   state.devices = d.devices;
   state.sims = s.sims;
+  state.contacts = c.contacts;
+}
+
+function refreshSettingsSnapshot() {
+  const input = $('[aria-label="中枢名称"]');
+  if (input && input.value === input.dataset.loadedTitle) {
+    input.value = state.me.title;
+    input.dataset.loadedTitle = state.me.title;
+  }
 }
 
 function disconnect() {
@@ -1040,6 +1065,19 @@ function disconnect() {
   state.ws?.close();
   state.ws = null;
   refreshGeneration++;
+  for (const request of sessionRequests) request.abort();
+  historyAbortController?.abort();
+  inboxAbortController?.abort();
+  state.me = null;
+  state.messages = [];
+  state.conversations = [];
+  state.devices = [];
+  state.sims = [];
+  state.contacts = {};
+  state.sender = state.receiver = state.q = state.sim = state.device = "";
+  state.offset = state.cursor = state.epoch = 0;
+  state.epochSeen = false;
+  state.inboxDirty = false;
 }
 
 function realtime() {
@@ -1047,62 +1085,61 @@ function realtime() {
   const ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/ws");
   state.ws = ws;
   ws.onopen = () => {
+    if (gen !== state.generation || !state.me) { ws.close(); return; }
     setStatus("实时连接", true);
     void catchUp().catch((e) => toast(e.message));
   };
-  ws.onmessage = () => void catchUp().catch((e) => toast(e.message));
+  ws.onmessage = () => { if (gen === state.generation && state.me) void catchUp().catch((e) => toast(e.message)); };
   ws.onclose = () => {
-    setStatus("断线，等待补齐", false);
+    if (gen === state.generation && state.me) setStatus("断线，等待补齐", false);
     if (!state.loggedOut && gen === state.generation) {
-      setTimeout(realtime, 5000 + Math.random() * 2000);
+      setTimeout(() => { if (!state.loggedOut && gen === state.generation) realtime(); }, 5000 + Math.random() * 2000);
     }
   };
   ws.onerror = () => ws.close();
 }
 
-let syncing = false;
+let syncingGeneration = null;
 async function catchUp() {
-  if (syncing || !state.me) return;
-  syncing = true;
+  const generation = state.generation;
+  if (syncingGeneration === generation || !state.me) return;
+  syncingGeneration = generation;
   try {
     const me = await api("/me");
-    let changed = false;
+    if (generation !== state.generation || !state.me) return;
+    const changed = me.cursor !== state.cursor || epochReset(state.epochSeen, state.epoch, me.epoch);
+    const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
       state.messages = [];
       state.conversations = [];
       state.cursor = 0;
-      changed = true;
     }
     state.epoch = me.epoch;
     state.epochSeen = true;
-    for (let i = 0; i < 100; i++) {
-      const d = await api(
-        "/sync?" + query({ after: state.cursor, limit: 200 }),
-      );
-      if (epochReset(state.epochSeen, state.epoch, d.epoch)) {
-        state.messages = [];
-        state.conversations = [];
-        state.cursor = 0;
-        state.epoch = d.epoch;
-        state.epochSeen = true;
-        changed = true;
-        continue;
-      }
-      if (d.messages.length) changed = true;
-      state.cursor = d.cursor;
-      state.epoch = d.epoch;
-      state.epochSeen = true;
-      if (!d.more) break;
+    // This browser has no durable message cache. Observe the authoritative head;
+    // fetch only displayed history, never replay/download discarded SMS bodies.
+    state.cursor = me.cursor;
+    state.me = me;
+    refreshSettingsSnapshot();
+    await reloadMetadata();
+    if (generation !== state.generation || !state.me) return;
+    const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
+    state.inboxDirty ||= changed || metadataChanged;
+    if (state.page === "inbox" && state.inboxDirty) {
+      await refreshInbox({ metadata: false, preserveHistory: true });
+      state.inboxDirty = false;
     }
-    if (state.page === "inbox") await refreshInbox();
   } finally {
-    syncing = false;
+    if (syncingGeneration === generation) syncingGeneration = null;
   }
 }
 
 async function start() {
+  disconnect();
+  const generation = state.generation;
   state.me = await api("/me");
-  state.cursor = 0;
+  if (generation !== state.generation) return;
+  state.cursor = state.me.cursor;
   state.epoch = state.me.epoch;
   state.epochSeen = true;
   state.loggedOut = false;

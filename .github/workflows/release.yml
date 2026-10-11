@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-publication
   cancel-in-progress: false
 
 jobs:
@@ -53,9 +53,8 @@ jobs:
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
           git fetch origin main --quiet
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; releases are immutable" >&2
-            exit 1
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/release-state" 2>/dev/null; then
+            test "$(cat "$RUNNER_TEMP/release-state")" = true || { echo 'Published release is immutable' >&2; exit 1; }
           fi
           is_prerelease=false
           if [[ "$version" =~ -(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
@@ -148,6 +147,20 @@ jobs:
             -PandroidKeyAlias="$ANDROID_KEY_ALIAS" \
             -PandroidKeyPassword="$ANDROID_KEY_PASSWORD"
 
+      - name: Assemble and preflight all assets before registry writes
+        run: |
+          set -euo pipefail
+          release="$HONGSHU_BUILD_DIR/release"
+          mkdir -p "$release"
+          test -s "docs/releases/${TAG}.md"
+          test -s "$HONGSHU_BUILD_DIR/app/outputs/apk/release/app-release.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$HONGSHU_BUILD_DIR/app/outputs/apk/release/app-release.apk"
+          cp "$HONGSHU_BUILD_DIR/app/outputs/apk/release/app-release.apk" "$release/hongshu-${TAG}-android.apk"
+          test -s "$HONGSHU_BUILD_DIR/hongshu-linux-amd64"
+          test -s "$HONGSHU_BUILD_DIR/vapid-linux-amd64"
+          test -s "$HONGSHU_BUILD_DIR/healthcheck-linux-amd64"
+          cp "docs/releases/${TAG}.md" "$release/RELEASE_NOTES.md"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -158,37 +171,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Hub container image
-        run: |
-          set -euo pipefail
-          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/${owner}/hongshu"
-          tags=("-t" "${image}:${VERSION}" "-t" "${image}:${TAG}")
-          if [[ "$IS_PRERELEASE" == "false" ]]; then
-            tags+=("-t" "${image}:latest")
-          fi
-          docker buildx build --push "${tags[@]}" .
-
-      - name: Assemble release assets
-        run: |
-          set -euo pipefail
-          release="$HONGSHU_BUILD_DIR/release"
-          mkdir -p "$release"
-          apk_source="$HONGSHU_BUILD_DIR/app/outputs/apk/release/app-release.apk"
-          if [[ ! -f "$apk_source" ]]; then
-            # fallback path depending on Gradle build layout
-            apk_source="$HOME/.cache/hongshu/build/app/outputs/apk/release/app-release.apk"
-          fi
-          cp "$apk_source" "$release/hongshu-${TAG}-android.apk"
-          (cd "$release" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
-
-      - name: Publish GitHub Release
+      - name: Stage digest, journal draft, promote version tags and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_IMAGE: ghcr.io/${{ github.repository_owner }}/hongshu
         run: |
-          set -euo pipefail
-          args=("$TAG" "$HONGSHU_BUILD_DIR/release"/* --verify-tag --title "Hongshu $TAG" --notes-file "docs/releases/${TAG}.md")
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            args+=(--prerelease)
-          fi
-          gh release create "${args[@]}"
+          bash scripts/publish-release.sh

@@ -1,4 +1,5 @@
-import { readFile, mkdir, copyFile } from "node:fs/promises";
+import { readFile, mkdir, copyFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = dirname(fileURLToPath(import.meta.url));
@@ -13,7 +14,7 @@ const manifest = JSON.parse(
 );
 if (manifest.start_url !== "/") throw new Error("Invalid manifest");
 await mkdir(out, { recursive: true });
-for (const file of [
+const assets = [
   "index.html",
   "app.js",
   "style.css",
@@ -22,6 +23,11 @@ for (const file of [
   "icon.svg",
   "icon-192.png",
   "icon-512.png",
-])
+];
+const hash = createHash("sha256");
+for (const file of assets) hash.update(file).update(await readFile(resolve(root, file)));
+for (const file of assets)
   await copyFile(resolve(root, file), resolve(out, file));
+const worker = (await readFile(resolve(root, "sw.js"), "utf8")).replace("__HONGSHU_SHELL_VERSION__", hash.digest("hex").slice(0, 24));
+await writeFile(resolve(out, "sw.js"), worker);
 console.log("Web production assets validated and copied");

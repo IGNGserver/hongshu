@@ -233,7 +233,7 @@ fun HongshuUI(activity: MainActivity) {
                             changes = changes,
                             busy = busy,
                             onOpenSettings = { showSettingsDialog = true },
-                            onSync = { action { syncNow(activity); "已完成中枢同步" } },
+                            onSync = { action { syncNow(activity, manual = true); "已请求中枢同步" } },
                         )
                     }
                     VerticalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -316,7 +316,7 @@ fun HongshuUI(activity: MainActivity) {
                             changes = changes,
                             busy = busy,
                             onOpenSettings = { showSettingsDialog = true },
-                            onSync = { action { syncNow(activity); "已完成中枢同步" } },
+                            onSync = { action { syncNow(activity, manual = true); "已请求中枢同步" } },
                         )
                     }
                 }
@@ -370,8 +370,11 @@ private fun ConversationListView(
     onOpenSettings: () -> Unit,
     onSync: () -> Unit,
 ) {
-    val sims = remember(changes) {
-        (repo.store.sims().map { it.phone } + repo.store.receivers()).distinct()
+    var sims by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(changes) {
+        sims = withContext(Dispatchers.IO) {
+            (repo.store.sims().map { it.phone } + repo.store.receivers()).distinct()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
