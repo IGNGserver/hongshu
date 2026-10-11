@@ -445,7 +445,18 @@ input::placeholder {
   transform: rotate(-5deg) scale(1.05);
 }
 
-.brand strong, .brand .muted {
+.brand strong {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant);
+  max-width: 64px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  display: block;
+  margin-top: 2px;
+}
+.brand .muted {
   display: none;
 }
 
