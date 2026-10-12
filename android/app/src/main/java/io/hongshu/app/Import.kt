@@ -8,34 +8,25 @@ import android.provider.Telephony
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
-fun importHistory(context: Context): Int {
-    check(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) ==
-            PackageManager.PERMISSION_GRANTED
-    ) {
-        "请先授予历史短信读取权限"
-    }
-    val store = Store(context)
-    val count = store.use { scanInbox(context, store, historical = true, incremental = false) }
-    syncNow(context)
-    return count
-}
+private val inboxScanLock = Any()
 
-fun catchUpInbox(context: Context): String {
-    if (!Config(context).upload) return "未启用本机采集"
-    if (
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) !=
-            PackageManager.PERMISSION_GRANTED
-    )
-        return "补扫不可用：缺少读取短信权限"
-    val store = Store(context)
-    if (store.captureSince() == 0L) {
-        store.close()
-        return "采集起点待中枢确认"
+fun catchUpInbox(context: Context): String =
+    synchronized(identityLock) {
+        synchronized(inboxScanLock) {
+            if (!Config(context).upload) return "未启用本机采集"
+            if (
+                ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) !=
+                    PackageManager.PERMISSION_GRANTED
+            )
+                return "补扫不可用：缺少读取短信权限"
+            refreshAutomaticSims(context)
+            Store(context).use { store ->
+                store.initializeHistoryBoundary(System.currentTimeMillis())
+                val count = scanInbox(context, store, historical = false, incremental = true)
+                return "短信读取正常 · 本次采集 $count 条（历史自动同步）"
+            }
+        }
     }
-    store.use { scanInbox(context, store, historical = false, incremental = true) }
-    return "收件箱补扫正常"
-}
 
 internal fun scanInbox(
     context: Context,
@@ -43,12 +34,10 @@ internal fun scanInbox(
     historical: Boolean,
     incremental: Boolean,
 ): Int {
-    val floor = if (incremental) store.captureSince() else 0L
     // Provider IDs, not SMS dates, order insertion; a late older date remains eligible.
     // Do not assume provider insertion order follows wall-clock dates.
-    val selection = if (incremental) "_id>? AND date>=?" else null
-    val args =
-        if (incremental) arrayOf(store.providerWatermark().toString(), floor.toString()) else null
+    val selection = if (incremental) "_id>?" else null
+    val args = if (incremental) arrayOf(store.providerWatermark().toString()) else null
     var count = 0
     val receiver = store.receiverResolver()
     val batch = mutableListOf<Pair<Long, SmsRecord>>()
@@ -66,11 +55,21 @@ internal fun scanInbox(
         val body = c.getColumnIndexOrThrow("body")
         val date = c.getColumnIndexOrThrow("date")
         val subIndex = c.getColumnIndex("sub_id")
+        var visited = 0
         while (c.moveToNext()) {
+            if (incremental && !Config(context).upload) break
+            if (incremental && visited++ == 1000) break
             val sub = if (subIndex >= 0) c.getInt(subIndex) else -1
-            val text = c.getString(body) ?: continue
-            val sender = c.getString(address) ?: continue
-            if (text.isEmpty()) continue
+            val text = c.getString(body)
+            val sender = c.getString(address)
+            if (text.isNullOrEmpty() || sender.isNullOrEmpty()) {
+                if (incremental) {
+                    count += store.captureProviders(batch, true)
+                    batch.clear()
+                    store.advanceProvider(c.getLong(idIndex))
+                }
+                continue
+            }
             val record =
                 SmsRecord(
                     receiver(sub),
@@ -78,7 +77,8 @@ internal fun scanInbox(
                     text,
                     c.getLong(date),
                     sub,
-                    historical = historical,
+                    historical =
+                        historical || isHistoricalSMS(c.getLong(date), store.historyBoundary()),
                 )
             batch.add(c.getLong(idIndex) to record)
             if (batch.size == 100) {
@@ -87,6 +87,7 @@ internal fun scanInbox(
             }
         }
         count += store.captureProviders(batch, incremental)
+        if (incremental) Config(context).inboxScanPending = visited > 1000
     }
     return count
 }

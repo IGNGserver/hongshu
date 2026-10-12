@@ -27,7 +27,10 @@ curl --fail http://127.0.0.1:18473/healthz
 
 `PUBLIC_URL` 必须与浏览器/Android 实际访问的 scheme、主机和端口完全一致。HTTP 会明文传输登录密码、会话凭据、短信正文和 API 数据，链路上的人可以窃听或篡改；弱密码也更容易被猜中。优先使用 HTTPS 或 VPN，不要把 MySQL 3306 暴露到外网。Web Push、Service Worker 与可安装离线应用在公网 HTTP 下不可用。
 
-Android 连接后打开本机采集开关、授予 RECEIVE_SMS、识别/确认每张 SIM 号码，再选择历史导入。
+Android 连接时填写设备名称并保存；连接后也可在中枢设置保存改名。配置 SIM1/SIM2 号码并保存，
+或切换自动模式核对匹配后保存。开启“同步本机短信”并授予 RECEIVE_SMS/READ_SMS 后，
+全部可读取的历史短信自动分批同步到中枢，断网或重启自动续传，无需手动导入。
+自动 SIM 模式会跟踪换卡/号码变化；运营商不提供号码时显示未识别，可切回手动模式。
 普通查看设备不需要短信权限。Android 构建见 android/README.md。
 
 ## 反向代理示例

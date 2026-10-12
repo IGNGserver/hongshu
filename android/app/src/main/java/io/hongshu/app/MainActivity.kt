@@ -70,14 +70,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        SimMonitor.start(this)
         Thread {
             try {
-                catchUpInbox(this)
+                Config(this).captureStatus = catchUpInbox(this)
             } catch (_: Exception) {
-                Config(this).status = "收件箱补扫失败，实时广播不受影响"
+                Config(this).captureStatus = "收件箱补扫失败，实时广播不受影响"
             }
         }.start()
         syncNow(this)
+        if (Config(this).keepAlive && Config(this).token.isNotEmpty() && !RuntimeHealth.connection.value.running) {
+            try {
+                androidx.core.content.ContextCompat.startForegroundService(this, android.content.Intent(this, RealtimeService::class.java))
+            } catch (_: Exception) {
+                RuntimeHealth.connection.value = ConnectionHealth(detail = "系统不允许启动后台服务")
+            }
+        }
     }
 }
 
@@ -146,6 +154,7 @@ fun HongshuUI(activity: MainActivity) {
         }
     }
 
+    var permissionContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             scope.launch {
@@ -154,6 +163,11 @@ fun HongshuUI(activity: MainActivity) {
                 )
             }
             Store.changes.value++
+            SimMonitor.start(activity)
+            syncNow(activity)
+            val continuation = permissionContinuation
+            permissionContinuation = null
+            if (grants.values.all { it }) continuation?.invoke()
         }
 
     LaunchedEffect(searchQuery, simFilter, selectedSender, threadReceiver) {
@@ -341,7 +355,14 @@ fun HongshuUI(activity: MainActivity) {
             repo = repo,
             busy = busy,
             onDismissRequest = { showSettingsDialog = false },
-            onRequestPermissions = permissionLauncher::launch,
+            onRequestPermissions = { permissions, continuation ->
+                val missing = permissions.filterNot { hasPermission(activity, it) }.toTypedArray()
+                if (missing.isEmpty()) continuation()
+                else {
+                    permissionContinuation = continuation
+                    permissionLauncher.launch(missing)
+                }
+            },
             onAction = ::action,
         )
     }

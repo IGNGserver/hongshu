@@ -101,6 +101,45 @@ class NetworkTest {
     }
 
     @Test
+    fun renameKeepsIdentityAndFailedReauthenticationKeepsCredentials() =
+        withConfig { context, config ->
+            val requests = LinkedBlockingQueue<Pair<String, JSONObject>>()
+            Hub { path, body ->
+                    requests.add(path to body)
+                    if (path == "/api/login") 401 to JSONObject().put("error", "invalid_password")
+                    else 200 to JSONObject().put("ok", true)
+                }
+                .use { hub ->
+                    config.url = hub.url
+                    config.token = "s".repeat(64)
+                    config.deviceId = "synthetic"
+                    config.deviceName = "before"
+                    Repository(context).apply {
+                        try {
+                            saveConnection(hub.url, "", "  after  ")
+                            assertEquals("after", config.deviceName)
+                            assertEquals("synthetic", config.deviceId)
+                            assertEquals("s".repeat(64), config.token)
+                            val rename = requests.poll(2, TimeUnit.SECONDS)!!
+                            assertEquals("/api/devices/synthetic", rename.first)
+                            assertEquals("after", rename.second.getString("name"))
+                            try {
+                                login(hub.url, "wrong synthetic password", "replacement")
+                                fail("bad password accepted")
+                            } catch (e: ApiException) {
+                                assertEquals(401, e.status)
+                            }
+                            assertEquals(hub.url, config.url)
+                            assertEquals("s".repeat(64), config.token)
+                            assertEquals("synthetic", config.deviceId)
+                        } finally {
+                            store.close()
+                        }
+                    }
+                }
+        }
+
+    @Test
     fun outagePreservesTokenAndPasswordsKeepExactWhitespace() = withConfig { context, config ->
         val status = java.util.concurrent.atomic.AtomicInteger(503)
         val loginBodies = LinkedBlockingQueue<String>()
@@ -136,6 +175,88 @@ class NetworkTest {
                 assertEquals("  synthetic password  ", loginBodies.poll(2, TimeUnit.SECONDS))
             }
     }
+
+    @Test
+    fun largeHistoryQueueContinuesAndRegistersCapturedNumbersAfterSIMChange() =
+        withConfig { context, config ->
+            val uploaded = java.util.concurrent.atomic.AtomicInteger()
+            val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            val oldPhone = "+1234567890"
+            val me =
+                JSONObject()
+                    .put("cursor", 0)
+                    .put("epoch", 1)
+                    .put(
+                        "device",
+                        JSONObject().put("notify", false).put("upload", true).put("created_at", 1),
+                    )
+            Hub { path, body ->
+                    200 to
+                        when {
+                            path == "/api/me" -> me
+                            path == "/api/contacts" -> JSONObject().put("contacts", JSONObject())
+                            path == "/api/sims" -> {
+                                registered.add(body.getString("phone"))
+                                JSONObject().put("ok", true)
+                            }
+                            path == "/api/messages" -> {
+                                val messages = body.getJSONArray("messages")
+                                val acks = JSONArray()
+                                for (i in 0 until messages.length()) {
+                                    assertTrue(messages.getJSONObject(i).getBoolean("historical"))
+                                    assertEquals(
+                                        oldPhone,
+                                        messages.getJSONObject(i).getString("receiver"),
+                                    )
+                                    assertTrue(registered.contains(oldPhone))
+                                    acks.put(JSONObject().put("id", uploaded.incrementAndGet()))
+                                }
+                                JSONObject().put("acks", acks)
+                            }
+                            else ->
+                                JSONObject()
+                                    .put("messages", JSONArray())
+                                    .put("cursor", 0)
+                                    .put("more", false)
+                                    .put("epoch", 1)
+                        }
+                }
+                .use { hub ->
+                    config.url = hub.url
+                    config.token = "s".repeat(64)
+                    config.deviceId = "synthetic"
+                    config.upload = true
+                    config.notify = false
+                    Store(context).use { store ->
+                        store.saveSim(SimMapping(19, 0, "+9876543210", "SIM1"))
+                        val baseID = System.currentTimeMillis()
+                        val records =
+                            (1..2005).map { id ->
+                                (baseID + id) to
+                                    SmsRecord(
+                                        oldPhone,
+                                        "10086",
+                                        "synthetic queue $baseID $id",
+                                        100 + id.toLong(),
+                                        19,
+                                        true,
+                                    )
+                            }
+                        val keys = records.map { "provider:${it.first}" }
+                        try {
+                            store.captureProviders(records, false)
+                            assertFalse(runBlocking { SyncEngine.run(context) })
+                            assertEquals(5, store.pendingCount())
+                            assertTrue(runBlocking { SyncEngine.run(context) })
+                            assertEquals(0, store.pendingCount())
+                            assertEquals(2005, uploaded.get())
+                            assertTrue(registered.contains("+9876543210"))
+                        } finally {
+                            store.ack(keys)
+                        }
+                    }
+                }
+        }
 
     @Test
     fun syncSuccessCannotHideMissingCapturePermissionAndTriggersCoalesce() =

@@ -22,7 +22,7 @@ data class CachedMessage(
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 4) {
+    SQLiteOpenHelper(context, databaseName, null, 5) {
     private val config = Config(context)
 
     companion object {
@@ -49,6 +49,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.execSQL("INSERT INTO meta VALUES ('epoch',0)")
         db.execSQL("INSERT INTO meta VALUES ('epoch_seen',0)")
         createReliabilityState(db)
+        db.execSQL("INSERT INTO meta VALUES ('history_boundary',0)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -67,6 +68,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.execSQL(
                 "INSERT OR IGNORE INTO captures (key,broadcast_key,receiver,sender,body,timestamp,sub,source) SELECT key,key,receiver,sender,body,timestamp,sub,'legacy' FROM outbox"
             )
+        }
+        if (oldVersion < 5) {
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('history_boundary',0)")
+            // Revisit the old connection-time filter once, without discarding dedup evidence.
+            db.execSQL("UPDATE meta SET value=0 WHERE key='provider_id'")
         }
     }
 
@@ -144,11 +150,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 else "source='broadcast' AND provider_id IS NULL"
             val match =
                 db.rawQuery(
-                        "SELECT key FROM captures WHERE $counterpart AND sender=? AND sub=? AND (receiver=? OR (sub>=0 AND (receiver='' OR ?=''))) AND timestamp BETWEEN ? AND ? AND body=? ORDER BY timestamp,key LIMIT 1",
+                        "SELECT key FROM captures WHERE $counterpart AND sender=? AND sub=? AND (sub>=0 OR receiver=?) AND timestamp BETWEEN ? AND ? AND body=? ORDER BY timestamp,key LIMIT 1",
                         arrayOf(
                             m.sender,
                             m.subscriptionId.toString(),
-                            m.receiver,
                             m.receiver,
                             (m.timestamp - 120000).toString(),
                             (m.timestamp + 120000).toString(),
@@ -231,6 +236,23 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    fun updateSimMappings(active: List<SimMapping>, automatic: Boolean) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (sim in active) {
+                if (confirmedNumber(sim.phone)) saveSim(sim)
+                else if (automatic) db.delete("sims", "sub=?", arrayOf(sim.sub.toString()))
+            }
+            // Retry only SIM failures; malformed messages must not be retried indefinitely.
+            db.execSQL("UPDATE outbox SET blocked='' WHERE blocked='sim_not_confirmed'")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+    }
+
     @Suppress("UNUSED_PARAMETER")
     fun receiver(sub: Int, slot: Int): String {
         // Slot is not an identity. A replaced SIM in the same tray must not inherit
@@ -240,9 +262,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     }
 
     fun receiverResolver(): (Int) -> String {
-        val mappings = sims()
+        val mappings =
+            if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
         val fallback = fallbackSubscription()
-        return { sub -> resolvedReceiver(mappings, sub, fallback) }
+        return { sub ->
+            resolvedReceiver(
+                if (sub < 0) mappings.filter { it.sub == fallback } else mappings,
+                sub,
+                fallback,
+            )
+        }
     }
 
     private fun fallbackSubscription(): Int {
@@ -271,7 +300,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     }
 
     fun pending(): List<Pair<String, SmsRecord>> {
-        val mappings = sims()
+        val mappings =
+            if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
         val fallback = fallbackSubscription()
         val subs = mappings.filter { it.sub >= 0 }.map { it.sub.toString() }
         val eligible =
@@ -297,7 +327,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         lastKey = c.getString(0)
                         val phone =
                             c.getString(1).ifEmpty {
-                                resolvedReceiver(mappings, c.getInt(5), fallback)
+                                val sub = c.getInt(5)
+                                resolvedReceiver(
+                                    if (sub < 0) mappings.filter { it.sub == fallback }
+                                    else mappings,
+                                    sub,
+                                    fallback,
+                                )
                             }
                         if (phone.isNotEmpty()) {
                             val m =
@@ -381,6 +417,22 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     fun providerWatermark(): Long = meta("provider_id")
 
+    fun historyBoundary(): Long = meta("history_boundary")
+
+    fun initializeHistoryBoundary(now: Long) {
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=? WHERE key='history_boundary' AND value=0",
+            arrayOf(now),
+        )
+    }
+
+    fun advanceProvider(id: Long) {
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=MAX(value,?) WHERE key='provider_id'",
+            arrayOf(id),
+        )
+    }
+
     fun advanceInboxWatermark(date: Long, id: Long) {
         val current = inboxWatermark()
         if (date < current.first || (date == current.first && id <= current.second)) return
@@ -389,8 +441,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.execSQL("UPDATE meta SET value=? WHERE key='inbox_id'", arrayOf(id))
     }
 
-    // First automatic scan starts at pairing time. Older inbox rows stay out of the
-    // live queue; the user can still import them explicitly as history.
+    // Pairing time is retained for compatibility; it is no longer a scan filter.
     fun captureSince(): Long {
         return meta("capture_since")
     }

@@ -5,6 +5,43 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun manualFieldsResolveSystemSlotsNotListOrderOrOldSubscriptions() {
+        val active = listOf(SimMapping(42, 1, "", ""), SimMapping(17, 0, "", ""))
+        val result = manualSimMappings(active, listOf("+86 138-0000-0000", "+8613900000000"))
+        assertEquals("+8613900000000", result[0].phone)
+        assertEquals(42, result[0].sub)
+        assertEquals("+8613800000000", result[1].phone)
+        assertEquals(17, result[1].sub)
+        assertEquals("SIM1", result[1].label)
+        assertEquals("+8613800000000", normalizeSimNumber("+86 (138) 0000-0000"))
+    }
+
+    @Test
+    fun manualModeRejectsAmbiguousSlotAndMissingActiveNumber() {
+        for (active in
+            listOf(
+                emptyList(),
+                listOf(SimMapping(7, -1, "", "")),
+                listOf(SimMapping(7, 0, "", ""), SimMapping(8, 0, "", "")),
+                listOf(SimMapping(8, 1, "", "")),
+            )) {
+            try {
+                manualSimMappings(active, listOf("+1234567890", ""))
+                fail("unsafe mapping accepted")
+            } catch (_: IllegalStateException) {}
+        }
+    }
+
+    @Test
+    fun oldSMSIsHistoricalWithoutFilteringItOut() {
+        assertTrue(isHistoricalSMS(10, 1000))
+        assertTrue(isHistoricalSMS(999, 1000))
+        assertFalse(isHistoricalSMS(1000, 1000))
+        assertFalse(isHistoricalSMS(1001, 1000))
+        assertFalse(isHistoricalSMS(10, 0))
+    }
+
+    @Test
     fun knownUnmappedSubscriptionNeverUsesSingleSimFallback() {
         val mappings = listOf(SimMapping(7, 0, "+123456789", "synthetic"))
         assertEquals("+123456789", resolvedReceiver(mappings, 7, 7))

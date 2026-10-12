@@ -12,6 +12,48 @@ import javax.crypto.spec.GCMParameterSpec
 
 class Config(context: Context) {
     private val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
+    var deviceName: String
+        get() = prefs.getString("device_name", android.os.Build.MODEL)!!
+        set(value) {
+            prefs.edit().putString("device_name", value).commit()
+        }
+
+    var automaticSim: Boolean
+        get() = prefs.getBoolean("automatic_sim", false)
+        set(value) {
+            prefs.edit().putBoolean("automatic_sim", value).commit()
+        }
+
+    var simRecognitionHealthy: Boolean
+        get() = prefs.getBoolean("sim_recognition_healthy", false)
+        set(value) {
+            prefs.edit().putBoolean("sim_recognition_healthy", value).commit()
+        }
+
+    var keepAlive: Boolean
+        get() = prefs.getBoolean("keep_alive", false)
+        set(value) {
+            prefs.edit().putBoolean("keep_alive", value).commit()
+        }
+
+    var syncHealthy: Boolean
+        get() = prefs.getBoolean("sync_healthy", false)
+        set(value) {
+            prefs.edit().putBoolean("sync_healthy", value).apply()
+        }
+
+    var serverUploadAllowed: Boolean
+        get() = prefs.getBoolean("server_upload_allowed", true)
+        set(value) {
+            prefs.edit().putBoolean("server_upload_allowed", value).apply()
+        }
+
+    var inboxScanPending: Boolean
+        get() = prefs.getBoolean("inbox_scan_pending", false)
+        set(value) {
+            prefs.edit().putBoolean("inbox_scan_pending", value).commit()
+        }
+
     var singleSimConfirmed: Boolean
         get() = singleSimSubscription >= 0
         set(value) {

@@ -19,6 +19,11 @@ class RealtimeService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socket: WebSocket? = null
     private var connection: Job? = null
+    @Volatile private var destroyed = false
+
+    private fun reportHealth(value: ConnectionHealth) {
+        if (!destroyed) RuntimeHealth.connection.value = value
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -54,29 +59,39 @@ class RealtimeService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
         if (intent?.action == "stop") {
+            Config(this).keepAlive = false
             stopSelf()
             return START_NOT_STICKY
         }
+        reportHealth(ConnectionHealth(running = true, detail = "服务运行中，正在连接中枢"))
         if (connection == null)
             connection =
                 scope.launch {
                     var attempts = 0
                     while (isActive) {
                         val c = Config(this@RealtimeService)
-                        if (c.token.isEmpty() || !c.notify) break
+                        if (c.token.isEmpty() || !c.keepAlive) break
                         val disconnected = CompletableDeferred<Unit>()
                         val client =
                             Api.client.newBuilder().pingInterval(25, TimeUnit.SECONDS).build()
+                        val request =
+                            synchronized(identityLock) {
+                                if (c.token.isEmpty() || !c.keepAlive) null
+                                else
+                                    Request.Builder()
+                                        .url(realtimeURL(c.url))
+                                        .header("Authorization", "Bearer ${c.token}")
+                                        .header("Cookie", "hongshu=${c.token}")
+                                        .build()
+                            } ?: break
                         socket =
                             client.newWebSocket(
-                                Request.Builder()
-                                    .url(realtimeURL(c.url))
-                                    .header("Authorization", "Bearer ${c.token}")
-                                    .header("Cookie", "hongshu=${c.token}")
-                                    .build(),
+                                request,
                                 object : WebSocketListener() {
                                     override fun onOpen(webSocket: WebSocket, response: Response) {
-                                        c.status = "实时连接已建立"
+                                        reportHealth(
+                                            ConnectionHealth(true, true, "服务运行中 · 实时连接已建立")
+                                        )
                                         attempts = 0
                                         syncNow(this@RealtimeService)
                                     }
@@ -90,9 +105,19 @@ class RealtimeService : Service() {
                                         t: Throwable,
                                         response: Response?,
                                     ) {
-                                        if (response?.code == 401) {
-                                            c.token = ""
-                                            c.status = "授权已撤销"
+                                        reportHealth(ConnectionHealth(true, false, "连接断开，自动重连中"))
+                                        synchronized(identityLock) {
+                                            if (
+                                                !destroyed &&
+                                                    response?.code == 401 &&
+                                                    request.header("Authorization") ==
+                                                        "Bearer ${c.token}" &&
+                                                    request.url.toString() == realtimeURL(c.url)
+                                            ) {
+                                                c.token = ""
+                                                c.status = "授权已撤销"
+                                                c.syncHealthy = false
+                                            }
                                         }
                                         disconnected.complete(Unit)
                                     }
@@ -102,6 +127,7 @@ class RealtimeService : Service() {
                                         code: Int,
                                         reason: String,
                                     ) {
+                                        reportHealth(ConnectionHealth(true, false, "连接断开，自动重连中"))
                                         disconnected.complete(Unit)
                                     }
 
@@ -110,6 +136,7 @@ class RealtimeService : Service() {
                                         code: Int,
                                         reason: String,
                                     ) {
+                                        reportHealth(ConnectionHealth(true, false, "连接断开，自动重连中"))
                                         webSocket.close(code, null)
                                         disconnected.complete(Unit)
                                     }
@@ -120,8 +147,7 @@ class RealtimeService : Service() {
                         } finally {
                             socket?.cancel()
                         }
-                        if (c.token.isEmpty() || !c.notify) break
-                        c.status = "实时连接断开，等待重连"
+                        if (c.token.isEmpty() || !c.keepAlive) break
                         delay((1000L shl attempts.coerceAtMost(6)) + Random.nextLong(1000))
                         attempts++
                     }
@@ -131,12 +157,21 @@ class RealtimeService : Service() {
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
-        Config(this).status = "系统实时服务时限已到，改用周期补齐"
+        destroyed = true
+        RuntimeHealth.connection.value = ConnectionHealth(detail = "系统后台运行时限已到，服务已停止")
         syncNow(this)
         stopSelf()
     }
 
     override fun onDestroy() {
+        destroyed = true
+        val last = RuntimeHealth.connection.value
+        RuntimeHealth.connection.value =
+            last.copy(
+                running = false,
+                connected = false,
+                detail = if (last.running) "服务已停止" else last.detail,
+            )
         socket?.cancel()
         scope.cancel()
         super.onDestroy()
