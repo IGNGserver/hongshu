@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish or recover
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -33,7 +39,7 @@ jobs:
       MYSQL_BIN: /usr/bin/mysql
       MYSQLDUMP_BIN: /usr/bin/mysqldump
     steps:
-      - name: Check out tagged source and history
+      - name: Check out release source and history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -44,7 +50,7 @@ jobs:
 
       - name: Verify release tag, VERSION, and main ancestry
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -52,7 +58,12 @@ jobs:
           test "$(tr -d '[:space:]' < VERSION)" = "$version"
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
           git fetch origin main --quiet
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --quiet
+          release_sha=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$release_sha" origin/main
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            test "$release_sha" = "$GITHUB_SHA"
+          fi
           if gh release view "$TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/release-state" 2>/dev/null; then
             test "$(cat "$RUNNER_TEMP/release-state")" = true || { echo 'Published release is immutable' >&2; exit 1; }
           fi
@@ -60,7 +71,7 @@ jobs:
           if [[ "$version" =~ -(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
             is_prerelease=true
           fi
-          printf 'TAG=%s\nVERSION=%s\nIS_PRERELEASE=%s\n' "$TAG" "$version" "$is_prerelease" >> "$GITHUB_ENV"
+          printf 'TAG=%s\nVERSION=%s\nRELEASE_SHA=%s\nIS_PRERELEASE=%s\n' "$TAG" "$version" "$release_sha" "$is_prerelease" >> "$GITHUB_ENV"
 
       - name: Verify repository contract and whitespace
         run: bash scripts/verify-repository.sh && git diff --check
@@ -175,5 +186,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_IMAGE: ghcr.io/${{ github.repository_owner }}/hongshu
+          RELEASE_OWNER: ${{ github.repository_owner }}
         run: |
           bash scripts/publish-release.sh
