@@ -1,5 +1,19 @@
 # 首版开发验证记录
 
+## 2026-10-12 icon2 项目图标发布准备
+
+| 检查 | 真实结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过，版本为 `0.1.0-alpha.12` |
+| `git diff --check` | 通过 |
+| 图标资源校验：PNG 尺寸/格式、Android 启动图标与 Web 512px 主图标 SHA256 | 通过；Web/Android 主图标一致，192px 资源由主图标派生 |
+| `python3 scripts/generate-icons.py` 派生资源检查 | 在隔离临时目录执行通过 |
+| `cd web && npm test && npm run check && WEB_BUILD_DIR=... npm run build` | 通过；16 个 Web 测试通过，语法检查和生产资源构建通过 |
+| `cd android && ./gradlew --no-daemon --offline --max-workers=2 :app:testDebugUnitTest`、`:app:lintDebug`、`:app:assembleDebug`（分别执行） | 三个任务均通过；Android 单元测试、lint 和 debug APK 构建通过。使用 Android SDK 35、Gradle 8.11.1，构建缓存和产物位于工作区外共享目录 |
+
+本机未安装 Go 工具链，也没有可用的 TEST_MYSQL_DSN/MySQL 实例，因此 `go test -race ./...`、`go vet ./...`、Go build 和浏览器 smoke 未在本机执行；发布工作流会在隔离 MySQL/CI 环境中执行这些检查。没有 Docker daemon，未在本机构建容器镜像。
+
+
 原始基线验证日期：2026-10-09；2026-10-10 增补了统一密码与 HTTP 支持的本地验证结果。仅记录实际运行的检查；不等同于生产上线、正式版发布或真机兼容性认证。
 原始基线记录在 PR 集成和预发布前完成；版本源为 `0.1.0-alpha.1`，不代表当时已有 Release。
 

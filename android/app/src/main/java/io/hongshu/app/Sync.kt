@@ -59,13 +59,7 @@ fun syncNow(context: Context, manual: Boolean = false): Job {
             val replaceBackoff =
                 manual &&
                     pending.any { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 }
-            if (
-                !replaceBackoff &&
-                    pending.any {
-                        it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED
-                    }
-            )
-                return@synchronized
+            if (!replaceBackoff && pending.isNotEmpty()) return@synchronized
             manager
                 .enqueueUniqueWork(
                     "hongshu-sync",
