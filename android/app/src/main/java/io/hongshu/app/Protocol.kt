@@ -22,6 +22,22 @@ fun sha256(value: String): String =
 
 fun confirmedNumber(value: String): Boolean = Regex("^\\+?[0-9]{3,20}$").matches(value)
 
+fun normalizeSimNumber(value: String): String = value.filterNot { it.isWhitespace() || it in "()-" }
+
+fun isHistoricalSMS(timestamp: Long, boundary: Long): Boolean = boundary > 0 && timestamp < boundary
+
+internal fun manualSimMappings(active: List<SimMapping>, phones: List<String>): List<SimMapping> {
+    check(active.isNotEmpty()) { "未检测到活动 SIM 卡" }
+    check(active.all { it.slot in 0..1 } && active.map { it.slot }.distinct().size == active.size) {
+        "当前 SIM 卡槽无法安全匹配"
+    }
+    return active.map { sim ->
+        val phone = normalizeSimNumber(phones[sim.slot].trim())
+        check(confirmedNumber(phone)) { "请填写 SIM${sim.slot + 1} 的有效手机号" }
+        sim.copy(phone = phone, label = "SIM${sim.slot + 1}")
+    }
+}
+
 fun combineParts(parts: List<String>): String = parts.joinToString("")
 
 internal fun resolvedReceiver(mappings: List<SimMapping>, sub: Int, confirmedSub: Int): String {

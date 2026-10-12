@@ -4,6 +4,11 @@ import android.content.Context
 import java.io.IOException
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -11,6 +16,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 class ApiException(val status: Int, val code: String) : IOException("中枢返回 $status ($code)")
+
+// Serialize identity replacement with capture and sync, so a concurrent worker cannot
+// send a prior hub's queue or bearer to the newly selected hub.
+internal val identityLock = Any()
+internal val identityMutex = Mutex()
 
 internal fun hubOrigin(url: String): String {
     val base = URI(url)
@@ -35,7 +45,7 @@ internal fun realtimeURL(url: String): String {
     return "$scheme://${URI(origin).rawAuthority}/api/ws"
 }
 
-class Api(private val config: Config) {
+class Api(private val config: Config, private val originOverride: String? = null) {
     companion object {
         val client =
             OkHttpClient.Builder()
@@ -52,11 +62,12 @@ class Api(private val config: Config) {
         body: JSONObject? = null,
         authorized: Boolean = true,
     ): JSONObject {
-        val origin = hubOrigin(config.url)
+        val (origin, token) =
+            synchronized(identityLock) { hubOrigin(originOverride ?: config.url) to config.token }
         val builder = Request.Builder().url(origin + "/api" + path)
         if (authorized) {
-            builder.header("Authorization", "Bearer ${config.token}")
-            builder.header("Cookie", "hongshu=${config.token}")
+            builder.header("Authorization", "Bearer $token")
+            builder.header("Cookie", "hongshu=$token")
         } else {
             builder.header("Origin", origin)
         }
@@ -76,9 +87,16 @@ class Api(private val config: Config) {
                     JSONObject()
                 }
             if (!response.isSuccessful) {
-                if (response.code == 401) {
-                    config.token = ""
-                    config.status = "授权已撤销，请重新连接"
+                synchronized(identityLock) {
+                    if (
+                        response.code == 401 &&
+                            authorized &&
+                            config.token == token &&
+                            config.url == origin
+                    ) {
+                        config.token = ""
+                        config.status = "授权已撤销，请重新连接"
+                    }
                 }
                 throw ApiException(response.code, json.optString("error", "network_error"))
             }
@@ -92,34 +110,77 @@ class Repository(val context: Context) {
     val store = Store(context)
     val api = Api(config)
 
-    fun login(url: String, password: String, name: String) {
+    fun saveConnection(url: String, password: String, name: String) = runBlocking {
+        identityMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val origin = hubOrigin(url.trim())
+                val savedName = name.trim()
+                check(
+                    savedName.isNotEmpty() &&
+                        savedName.toByteArray().size <= 100 &&
+                        !savedName.contains('\u0000')
+                ) {
+                    "请输入有效设备名称（最多 100 字节）"
+                }
+                if (config.token.isNotEmpty() && origin == config.url && password.isEmpty()) {
+                    api.request(
+                        "/devices/${config.deviceId}",
+                        "PATCH",
+                        JSONObject().put("name", savedName),
+                    )
+                    config.deviceName = savedName
+                } else {
+                    check(password.isNotEmpty()) { "首次连接或更换中枢时请填写中枢密码" }
+                    loginUnlocked(origin, password, savedName)
+                }
+                syncNow(context)
+            }
+        }
+    }
+
+    fun login(url: String, password: String, name: String) = runBlocking {
+        identityMutex.withLock {
+            withContext(Dispatchers.IO) { loginUnlocked(url, password, name) }
+        }
+    }
+
+    private fun loginUnlocked(url: String, password: String, name: String) {
         val oldUrl = config.url
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
             "旧中枢尚有未上传短信，不能更换中枢以免泄露内容"
         }
-        config.url = hubOrigin(url)
+        val newUrl = hubOrigin(url)
         try {
             val r =
-                api.request(
-                    "/login",
-                    "POST",
-                    JSONObject()
-                        .put("password", password)
-                        .put("name", name.trim())
-                        .put("kind", "android"),
-                    false,
+                Api(config, newUrl)
+                    .request(
+                        "/login",
+                        "POST",
+                        JSONObject()
+                            .put("password", password)
+                            .put("name", name.trim())
+                            .put("kind", "android"),
+                        false,
+                    )
+            synchronized(identityLock) {
+                check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
+                    "连接期间采集了尚未上传的短信，不能更换中枢"
+                }
+                store.resetForNewIdentity(
+                    connectedAt =
+                        r.getJSONObject("device").optLong("created_at", System.currentTimeMillis()),
+                    clearCaptures = oldUrl.isNotEmpty() && oldUrl != newUrl,
                 )
-            store.resetForNewIdentity(
-                connectedAt =
-                    r.getJSONObject("device").optLong("created_at", System.currentTimeMillis()),
-                clearCaptures = oldUrl.isNotEmpty() && oldUrl != config.url,
-            )
-            config.token = r.getString("token")
-            config.deviceId = r.getJSONObject("device").getString("id")
-            config.upload = false
-            config.status = "已连接"
+                config.url = newUrl
+                config.token = r.getString("token")
+                config.deviceId = r.getJSONObject("device").getString("id")
+                config.deviceName = r.getJSONObject("device").optString("name", name.trim())
+                config.upload = false
+                config.notify = r.getJSONObject("device").optBoolean("notify", true)
+                config.syncHealthy = false
+                config.status = "已连接"
+            }
         } catch (e: Exception) {
-            config.url = oldUrl
             throw e
         }
     }

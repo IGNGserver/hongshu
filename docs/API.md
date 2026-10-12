@@ -13,7 +13,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
 | GET /api/devices | 设备清单，不含 token |
-| PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；admin 不可通过此接口提权 |
+| PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；Android 连接后的保存改名复用现有身份；admin 不可通过此接口提权 |
 | DELETE /api/devices/{id} | 管理员撤销，保留消息；中枢密码可重新创建管理员 Web 身份 |
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
@@ -26,7 +26,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET/PATCH /api/settings | 管理员可修改 `{title}`，不允许远程修改凭据/DB/HTTPS |
 
 请求体最多 1 MiB；不接受未知 JSON 字段；正文最多 64000 UTF-8 bytes，时间限制在 Unix epoch 至未来 24h；客户端按实际 JSON 字节数拆批。
-号码不能包含 NUL，接收号码采用用户确认的国际号码（建议 E.164，服务端校验 + 和 3..20 位数字）。
+号码不能包含 NUL，接收号码采用用户确认的号码（建议 E.164，服务端校验 + 和 3..20 位数字）。Android 保存自动模式即授权持续使用系统读取的有效号码；每次变化仍先注册 /sims 再上传，不猜测无法读取的号码。
 token 和密码没有放在 URL 的接口。登录失败按来源地址限速。
 登录请求必须携带与 PUBLIC_URL 相同的 Origin；Android 原生客户端也显式发送该头，不依赖浏览器自动添加。
 显式 TRUSTED_PROXY_CIDRS 配置后才接受代理覆盖的单个 X-Forwarded-For 地址；客户端直连提交的转发头不可信。

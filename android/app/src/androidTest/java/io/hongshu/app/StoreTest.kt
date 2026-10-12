@@ -40,7 +40,7 @@ class StoreTest {
                 db.version = 3
             }
             Store(context, name).use { store ->
-                assertEquals(4, store.readableDatabase.version)
+                assertEquals(5, store.readableDatabase.version)
                 assertEquals(1, store.pendingCount())
                 assertEquals(1, store.sims().size)
                 assertEquals(1L, store.cursor())
@@ -49,6 +49,54 @@ class StoreTest {
         } finally {
             context.deleteDatabase(name)
         }
+    }
+
+    @Test
+    fun versionFourRevisitsOldHistoryWithoutLosingCapturedEvidence() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val name = "history-upgrade-${java.util.UUID.randomUUID()}.db"
+        val sms = SmsRecord("+1234567890", "10086", "synthetic", 100, 7)
+        try {
+            Store(context, name).use { store ->
+                store.captureProvider(50, sms, advance = true)
+                store.saveSim(SimMapping(7, 0, sms.receiver, "SIM1"))
+                store.initializeHistoryBoundary(200)
+                store.writableDatabase.execSQL("DELETE FROM meta WHERE key='history_boundary'")
+                store.writableDatabase.version = 4
+            }
+            Store(context, name).use { store ->
+                assertEquals(5, store.readableDatabase.version)
+                assertEquals(0L, store.providerWatermark())
+                assertEquals(1, store.pendingCount())
+                assertEquals(1, store.sims().size)
+                assertFalse(store.captureProvider(50, sms, advance = true))
+                assertTrue(store.captureProvider(10, sms.copy(body = "older missed SMS")))
+                assertEquals(2, store.pendingCount())
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun automaticUpdatesDoNotRewriteCapturedNumbersOrDropUnresolvedSMS() = withStore { store ->
+        val old = SimMapping(7, 0, "+1234567890", "SIM1")
+        store.updateSimMappings(listOf(old), true)
+        store.queue(SmsRecord(old.phone, "10086", "before change", 100, 7))
+        store.updateSimMappings(listOf(old.copy(phone = "+9876543210")), true)
+        assertFalse(
+            store.captureProvider(101, SmsRecord("+9876543210", "10086", "before change", 101, 7))
+        )
+        assertEquals(old.phone, store.pending().single().second.receiver)
+        store.queue(SmsRecord("", "10086", "unresolved", 200, 7))
+        store.updateSimMappings(listOf(old.copy(phone = "")), true)
+        assertTrue(store.sims().isEmpty())
+        assertEquals(2, store.pendingCount())
+        assertEquals(1, store.pending().size)
+        store.updateSimMappings(listOf(old.copy(sub = 8)), true)
+        assertEquals(1, store.pending().size) // new card must not resolve old subscription
+        store.updateSimMappings(listOf(old), true)
+        assertEquals(2, store.pending().size)
     }
 
     @Test

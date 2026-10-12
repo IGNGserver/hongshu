@@ -18,7 +18,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -29,6 +28,7 @@ class HongshuApp : Application() {
         super.onCreate()
         channels(this)
         schedule(this)
+        SimMonitor.start(this)
     }
 }
 
@@ -117,9 +117,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
+            config.syncHealthy = false
             config.status = e.message ?: "同步失败"
             if (e.status == 401) Result.failure() else Result.retry()
         } catch (_: Exception) {
+            config.syncHealthy = false
             config.status = "同步失败：网络、协议或本地存储；将重试"
             Result.retry()
         }
@@ -127,7 +129,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 }
 
 object SyncEngine {
-    private val mutex = Mutex()
+    private val mutex = identityMutex
 
     suspend fun run(context: Context): Boolean =
         mutex.withLock {
@@ -139,6 +141,8 @@ object SyncEngine {
                     if (c.token.isEmpty()) return@withContext true
                     val session = repo.api.request("/me")
                     val me = session.getJSONObject("device")
+                    c.serverUploadAllowed = me.getBoolean("upload")
+                    if (me.has("name")) c.deviceName = me.getString("name")
                     if (store.captureSince() == 0L) {
                         store.initializeCaptureSince(me.getLong("created_at"))
                         try {
@@ -156,7 +160,8 @@ object SyncEngine {
                     store.initializeSyncHead(session.getLong("cursor"))
                     c.notify = me.getBoolean("notify")
                     store.applyContacts(repo.api.request("/contacts").getJSONObject("contacts"))
-                    // Local capture remains independent; server can deny upload without deleting
+                    // Local capture remains independent; server can deny upload without
+                    // deleting
                     // its queue.
                     if (c.upload && me.getBoolean("upload")) {
                         for (sim in store.sims()) repo.api.request(
@@ -178,6 +183,23 @@ object SyncEngine {
                                     )
                                 )
                             if (pending.isEmpty()) break
+                            // Queued captures retain the number used before an offline SIM
+                            // change.
+                            // Register those snapshots too; never rewrite them to the new
+                            // number.
+                            for (message in
+                                pending
+                                    .map { it.second }
+                                    .distinctBy { it.receiver to it.subscriptionId }) {
+                                repo.api.request(
+                                    "/sims",
+                                    "PUT",
+                                    JSONObject()
+                                        .put("phone", message.receiver)
+                                        .put("label", "SIM")
+                                        .put("subscription_id", message.subscriptionId),
+                                )
+                            }
                             val result =
                                 repo.api.request(
                                     "/messages",
@@ -235,13 +257,17 @@ object SyncEngine {
                             store.acknowledgeNotification(pendingNotice)
                         if (!data.getBoolean("more")) {
                             c.lastSync = System.currentTimeMillis()
+                            c.syncHealthy = true
                             c.status =
-                                if (store.pendingCount() > 0)
+                                if (c.inboxScanPending) "历史短信采集中，自动继续"
+                                else if (store.pendingCount() > 0)
                                     "已同步 · ${store.pendingCount()} 条等待上传或 SIM 配置"
                                 else "同步完成"
-                            if (c.upload && me.getBoolean("upload") && store.pending().isNotEmpty())
-                                syncNow(context)
-                            return@withContext true
+                            // Enqueuing from inside the current worker is coalesced. Retry the
+                            // worker itself so queues over 20 batches and history pages drain.
+                            return@withContext !(c.upload &&
+                                (c.inboxScanPending ||
+                                    (me.getBoolean("upload") && store.pending().isNotEmpty())))
                         }
                     }
                     false
@@ -254,6 +280,15 @@ object SyncEngine {
 }
 
 fun notifyMessage(context: Context): Boolean {
+    if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
+        return false
+    if (
+        context
+            .getSystemService(NotificationManager::class.java)
+            .getNotificationChannel("messages")
+            ?.importance == NotificationManager.IMPORTANCE_NONE
+    )
+        return false
     if (
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED && android.os.Build.VERSION.SDK_INT >= 33

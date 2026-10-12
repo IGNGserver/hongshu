@@ -1,5 +1,39 @@
 # 首版开发验证记录
 
+## 2026-10-12 Android 设置精简与全量历史自动同步
+
+版本保持 `0.1.0-alpha.13`，未发布、未部署。基线 `f3b67d2`；本次日志、构建产物与隔离模拟器在
+`/home/lvziw/tmp/opencode/hongshu-android-sync-validation/`，不在 worktree 产生构建缓存。
+Android 使用 JDK 17、SDK/API 35、Gradle 8.11.1；可变依赖缓存复用 `/dev/shm/hongshu-gradle`。
+
+| 实际命令/任务 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check` | 通过；仓库结构、版本、凭据样式扫描及 7 项运维测试 |
+| `TEST_MYSQL_DSN=... MYSQL_BIN=... MYSQLDUMP_BIN=... go test -race -count=1 -v ./...` | Go 1.26.4、独立本地 MySQL 8.4.11；24 项通过，无 skip，含隔离逻辑备份/重复恢复 |
+| `go vet ./...`、`go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .`、Go `gofmt` 检查 | 通过；构建目录和 Go 缓存位于工作区外 |
+| `npm test`、`npm run check`、`WEB_BUILD_DIR=... npm run build` | Web 16 项通过，语法检查与生产资源构建通过 |
+| `./gradlew --no-daemon --offline --max-workers=2 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`（另指定工作区外 project/Kotlin 缓存） | 全部通过；12 项 JVM 单测、lint、debug APK 与测试 APK |
+| `adb -s emulator-5582 install -r ...`、`adb -s emulator-5582 shell am instrument -w io.hongshu.app.test/androidx.test.runner.AndroidJUnitRunner` | 本次独立 API 35 模拟器，17 项全部通过 |
+| `python3 /home/lvziw/tmp/opencode/hongshu-android-sync-validation/ui-smoke.py` | 实际 Android 界面操作通过：手动模式两输入框、自动模式无输入框、六项同步元素、首次连接填写名称并保存、已连接留空密码改名保存且不新增身份；中枢为本地合成 HTTP fixture |
+
+新增覆盖：手动输入按真实卡槽绑定订阅、拒绝歧义卡槽；首次补扫纳入连接前的 1205 条历史、
+1000 条分页后重启续扫、增量新短信、关闭后停止采集；v4→v5 保留队列/捕获账本/映射并补扫旧历史；
+自动号码变化不重写已捕获接收号码，不将旧卡未知来源归到新卡；广播/provider 在号码变化后仍去重。
+实际 HTTP 与 SQLite 测试验证：2005 条队列超过 20 上传批次后仍自动继续，离线期间号码变化仍注册并上传旧号码快照；
+改名复用原设备身份、错误密码不销毁原凭据；短信采集权限异常不被网络成功掩盖，100 次同步触发仍合并且保留退避。
+
+失败记录不算通过：首次组合构建因工具的 120 秒超时中断；增加超时后完成。测试注解曾触发
+`UseSdkSuppress` lint，已按规则只保留 `SdkSuppress`，未创建 baseline 或禁用检查。
+首次 instrumentation 为 16/17 通过：模拟器没有默认网络，网络约束任务未启动。
+通过 `cmd wifi connect-network AndroidWifi open` 建立真实模拟器连接，确认 `VALIDATED` 后完整重跑为 17/17，未放宽断言。
+首轮密集按键 UI 自动化出现渲染等待 ANR，主线程栈在 `HardwareRenderer.syncAndDrawFrame`。
+保留 trace；将本次隔离模拟器降为 720×1600/280dpi，并改用 Ctrl+A 替换文本后完整 UI 链路通过，
+没有修改应用的渲染配置或关闭检查。这不是已完成真机输入性能验收的声明。
+
+边界：历史来源是系统可读取收件箱，不包括已删除短信、其他应用已消失的通知、MMS/RCS。
+没有真实双卡/运营商换号硬件验收；系统不给本机号码时不会猜测。旧卡无法安全匹配的历史会保留待传，
+不会为了声称“全部入库”错填接收号码。前台服务系统时限、省电限制与公网通知端到端仍不能由模拟器代替验证。
+
 ## 2026-10-12 icon2 项目图标发布准备
 
 | 检查 | 真实结果 |
@@ -89,7 +123,7 @@ Android 12+ 云备份和设备迁移已显式排除全部应用数据，厂商�
 
 - Android 15+ dataSync 前台服务最长约 6h/24h，Doze/省电/强制停止可延迟通知；不保证全天即时。
 - 系统限制可能让非默认短信应用无法读取部分敏感验证码；权限授予不是万能保证。
-- 未知双卡来源先保留，必须补齐用户确认映射；唯一 SIM 兜底须用户明确确认本机单卡。卡槽不再当作号码身份。
+- 未知双卡来源先保留；保存唯一活动 SIM 的号码后才启用单卡兜底，换卡或变为多卡自动失效。卡槽不当作号码身份。
 - Android 私有缓存、MySQL 和备份包含短信明文；传输 HTTPS，凭据 Keystore，但非 E2EE/SQL 字段加密。
 - Web 离线仅提供应用壳，不缓存短信正文；Android 可离线查看已补齐历史。
 - 异常超长/不合法短信在本地保留，不阻塞其他消息；首版没有异常队列编辑/导出 UI。
