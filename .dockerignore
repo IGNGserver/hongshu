@@ -9,4 +9,3 @@ runtime-data
 **/test-results
 web/test
 web/package.json
-web/build.mjs
