@@ -31,7 +31,17 @@ if pathlib.Path(sys.argv[0]).name=='docker':
   s['tags'][tag]=digest;save()
  else:sys.exit(2)
 else:
- if args[:2]==['release','view']:
+ if args[:1]==['api']:
+  if s.get('outage'):print('connection refused',file=sys.stderr);sys.exit(1)
+  query=args[args.index('--jq')+1]
+  if '.name ==' in query:
+   wanted=query.split('.name == "',1)[1].split('"',1)[0]
+   values=[value for value in s['tags'].values() if value==wanted]
+  else:
+   wanted=query.split('index("',1)[1].split('"',1)[0]
+   values=[s['tags'][wanted]] if wanted in s['tags'] else []
+  for value in values: print(value)
+ elif args[:2]==['release','view']:
   if not s['release']:print('release not found',file=sys.stderr);sys.exit(1)
   print('true' if s['release']=='draft' else 'false')
  elif args[:2]==['release','create']:
@@ -67,7 +77,8 @@ class Operations(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(tools)+':'+os.environ['PATH'], MOCK_STATE=str(self.state),
                         HONGSHU_BUILD_DIR=str(self.root/'build'), RUNNER_TEMP=str(self.root/'runner'),
                         TAG='v0.1.0-alpha.99', VERSION='0.1.0-alpha.99', IS_PRERELEASE='true',
-                        RELEASE_IMAGE='ghcr.io/synthetic/hongshu', GITHUB_SHA='b'*40,
+                        RELEASE_IMAGE='ghcr.io/synthetic/hongshu', RELEASE_OWNER='synthetic',
+                        RELEASE_SHA='b'*40, GH_TOKEN='synthetic-token', GITHUB_SHA='b'*40,
                         GITHUB_RUN_ID='1', GITHUB_RUN_ATTEMPT='1')
 
     def tearDown(self):
