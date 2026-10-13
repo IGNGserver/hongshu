@@ -3,11 +3,80 @@ set -euo pipefail
 # Complete drafts are a recovery journal; version tags are never overwritten.
 : "${TAG:?}" "${VERSION:?}" "${RELEASE_SHA:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
 : "${HONGSHU_BUILD_DIR:?}" "${RUNNER_TEMP:?}" "${RELEASE_IMAGE:?}" "${RELEASE_OWNER:?}" "${IS_PRERELEASE:?}" "${GH_TOKEN:?}"
-image=${RELEASE_IMAGE,,}
+image=$(printf '%s' "$RELEASE_IMAGE" | tr '[:upper:]' '[:lower:]')
 package=${image##*/}
 release="$HONGSHU_BUILD_DIR/release"
 state="$RUNNER_TEMP/publish-state"
 mkdir -p "$state"
+apk_asset="hongshu-${TAG}-android.apk"
+server_asset="hongshu-${TAG}-server-tools-linux-amd64.tar.gz"
+deployment_asset="hongshu-${TAG}-deployment.tar.gz"
+release_notes="${RELEASE_NOTES_FILE:-docs/releases/${TAG}.md}"
+assets=("$apk_asset" "$server_asset" "$deployment_asset")
+
+validate_asset_set() {
+  local directory=$1 asset
+  test -d "$directory" || { echo 'Release asset directory is missing' >&2; return 1; }
+  for asset in "${assets[@]}"; do
+    test -s "$directory/$asset" || { echo "Missing release asset: $asset" >&2; return 1; }
+  done
+  while IFS= read -r -d '' asset; do
+    asset=${asset##*/}
+    case " $apk_asset $server_asset $deployment_asset " in
+      *" $asset "*) ;;
+      *) echo "Unexpected release asset: $asset" >&2; return 1 ;;
+    esac
+  done < <(find "$directory" -maxdepth 1 -type f -print0)
+  test "$(find "$directory" -maxdepth 1 -type f | wc -l)" -eq 3 || {
+    echo 'Release must contain exactly three assets' >&2
+    return 1
+  }
+}
+
+validate_release_notes() {
+  local notes=$1
+  test -s "$notes" || { echo 'Release notes file is missing' >&2; return 1; }
+  grep -Fq '## 本次更新' "$notes" || { echo 'Release notes must contain a 本次更新 section' >&2; return 1; }
+  grep -Fq '## 快捷下载' "$notes" || { echo 'Release notes must contain a 快捷下载 section' >&2; return 1; }
+  grep -Fq "releases/download/$TAG/$apk_asset" "$notes" || {
+    echo 'Release notes must contain a direct Android APK download link' >&2
+    return 1
+  }
+}
+
+asset_hashes_json() {
+  local directory=$1 asset hash result='{}'
+  for asset in "${assets[@]}"; do
+    hash=$(sha256sum "$directory/$asset" | awk '{print $1}')
+    result=$(jq -c --arg name "$asset" --arg hash "$hash" '. + {($name): $hash}' <<<"$result")
+  done
+  printf '%s\n' "$result"
+}
+
+validate_asset_hashes() {
+  local directory=$1 metadata_file=$2 asset expected actual
+  for asset in "${assets[@]}"; do
+    expected=$(jq -er --arg name "$asset" '.assets[$name]' "$metadata_file")
+    actual=$(sha256sum "$directory/$asset" | awk '{print $1}')
+    test "$actual" = "$expected" || {
+      echo "Release asset hash mismatch: $asset" >&2
+      return 1
+    }
+  done
+}
+
+metadata_from_body() {
+  local body_file=$1 metadata
+  metadata=$(sed -n 's/^<!-- hongshu-release-metadata \(.*\) -->$/\1/p' "$body_file")
+  test -n "$metadata" || { echo 'Release metadata journal is missing' >&2; return 1; }
+  printf '%s\n' "$metadata" | jq -e . > "$state/metadata.json"
+  jq -e --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" \
+    --arg apk "$apk_asset" --arg server "$server_asset" --arg deployment "$deployment_asset" \
+    '.sha==$sha and .image==$image and .version==$version and (.digest|test("^sha256:[0-9a-f]{64}$")) and
+     (.assets|type=="object") and (.assets|length==3) and
+     (.assets[$apk]|type=="string") and (.assets[$server]|type=="string") and (.assets[$deployment]|type=="string")' \
+    "$state/metadata.json" >/dev/null
+}
 
 # GitHub Packages exposes the immutable manifest digest and its tags through the
 # GitHub API. This works for private GHCR packages too, while registry inspection
@@ -35,30 +104,36 @@ inspect() {
 
 if gh release view "$TAG" --json isDraft --jq '.isDraft' > "$state/draft" 2>"$state/release-error"; then
   test "$(cat "$state/draft")" = true || { echo 'Published release is immutable' >&2; exit 1; }
+  gh release view "$TAG" --json body --jq '.body' > "$state/body"
+  validate_release_notes "$state/body"
+  metadata_from_body "$state/body"
   release="$state/recovered"
+  rm -rf "$release"
   mkdir -p "$release"
   gh release download "$TAG" --dir "$release"
-  (cd "$release" && sha256sum --check --strict SHA256SUMS)
-  jq -e --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" \
-    '.sha==$sha and .image==$image and .version==$version and (.digest|test("^sha256:[0-9a-f]{64}$"))' "$release/IMAGE.json" >/dev/null
-  digest=$(jq -r '.digest' "$release/IMAGE.json")
+  validate_asset_set "$release"
+  validate_asset_hashes "$release" "$state/metadata.json"
+  digest=$(jq -r '.digest' "$state/metadata.json")
   test "$(inspect "$image@$digest")" = "$digest"
 else
   grep -Eqi 'release not found|HTTP 404' "$state/release-error" || { echo 'Release lookup unavailable; refusing publication' >&2; exit 1; }
   for tag in "$VERSION" "$TAG"; do
     test "$(inspect "$image:$tag")" = absent || { echo 'Existing tag without a recoverable draft; manual reconciliation required' >&2; exit 1; }
   done
-  for asset in "hongshu-${TAG}-android.apk" RELEASE_NOTES.md; do
-    test -s "$release/$asset" || { echo 'Incomplete release assets' >&2; exit 1; }
-  done
+  validate_asset_set "$release"
+  validate_release_notes "$release_notes"
   staging="$image:staging-${RELEASE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
   docker buildx build --push -t "$staging" --metadata-file "$state/image.json" .
   digest=$(jq -er '."containerimage.digest"' "$state/image.json")
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-  jq -n --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" --arg digest "$digest" \
-    '{sha:$sha,image:$image,version:$version,digest:$digest}' > "$release/IMAGE.json"
-  (cd "$release" && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum --check --strict SHA256SUMS)
-  args=("$TAG" "$release"/* --verify-tag --draft --title "Hongshu $TAG" --notes-file "$release/RELEASE_NOTES.md")
+  asset_hashes=$(asset_hashes_json "$release")
+  jq -n --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" --arg digest "$digest" --argjson assets "$asset_hashes" \
+    '{sha:$sha,image:$image,version:$version,digest:$digest,assets:$assets}' > "$state/metadata.json"
+  {
+    cat "$release_notes"
+    printf '\n\n<!-- hongshu-release-metadata %s -->\n' "$(jq -c . "$state/metadata.json")"
+  } > "$state/release-notes.md"
+  args=("$TAG" "$release/$server_asset" "$release/$deployment_asset" "$release/$apk_asset" --verify-tag --draft --title "Hongshu $TAG" --notes-file "$state/release-notes.md")
   if [[ "$IS_PRERELEASE" == true ]]; then args+=(--prerelease); fi
   gh release create "${args[@]}"
 fi

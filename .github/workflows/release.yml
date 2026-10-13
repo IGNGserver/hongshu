@@ -162,6 +162,8 @@ jobs:
         run: |
           set -euo pipefail
           release="$HONGSHU_BUILD_DIR/release"
+          server_stage="$HONGSHU_BUILD_DIR/server-tools"
+          deployment_stage="$HONGSHU_BUILD_DIR/deployment"
           mkdir -p "$release"
           test -s "docs/releases/${TAG}.md"
           test -s "$HONGSHU_BUILD_DIR/app/outputs/apk/release/app-release.apk"
@@ -170,7 +172,32 @@ jobs:
           test -s "$HONGSHU_BUILD_DIR/hongshu-linux-amd64"
           test -s "$HONGSHU_BUILD_DIR/vapid-linux-amd64"
           test -s "$HONGSHU_BUILD_DIR/healthcheck-linux-amd64"
-          cp "docs/releases/${TAG}.md" "$release/RELEASE_NOTES.md"
+
+          rm -rf "$server_stage" "$deployment_stage"
+          mkdir -p "$server_stage/bin" "$deployment_stage/scripts" "$deployment_stage/docs"
+          cp "$HONGSHU_BUILD_DIR/hongshu-linux-amd64" "$server_stage/bin/"
+          cp "$HONGSHU_BUILD_DIR/vapid-linux-amd64" "$server_stage/bin/"
+          cp "$HONGSHU_BUILD_DIR/healthcheck-linux-amd64" "$server_stage/bin/"
+          cp compose.yml .env.example VERSION "$deployment_stage/"
+          cp scripts/backup.sh scripts/init-deployment.sh scripts/next-restore-epoch.sh "$deployment_stage/scripts/"
+          cp docs/DEPLOYMENT.md "$deployment_stage/docs/"
+
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$server_stage" -cf - bin | gzip -n > "$release/hongshu-${TAG}-server-tools-linux-amd64.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$deployment_stage" -cf - .env.example VERSION compose.yml scripts docs | gzip -n > "$release/hongshu-${TAG}-deployment.tar.gz"
+
+          test "$(find "$release" -maxdepth 1 -type f | wc -l)" -eq 3
+          test -s "$release/hongshu-${TAG}-server-tools-linux-amd64.tar.gz"
+          test -s "$release/hongshu-${TAG}-deployment.tar.gz"
+          tar -tzf "$release/hongshu-${TAG}-server-tools-linux-amd64.tar.gz" | grep -Fx 'bin/hongshu-linux-amd64'
+          tar -tzf "$release/hongshu-${TAG}-server-tools-linux-amd64.tar.gz" | grep -Fx 'bin/vapid-linux-amd64'
+          tar -tzf "$release/hongshu-${TAG}-server-tools-linux-amd64.tar.gz" | grep -Fx 'bin/healthcheck-linux-amd64'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'compose.yml'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/init-deployment.sh'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/backup.sh'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/next-restore-epoch.sh'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'docs/DEPLOYMENT.md'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
