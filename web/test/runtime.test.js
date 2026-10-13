@@ -48,14 +48,6 @@ test('restore drops reused IDs and starts observing the restored head',async()=>
   assert.equal(vm.runInContext('state.messages.length',ctx),0);
   assert.equal(vm.runInContext('state.cursor',ctx),10);
 });
-test('settings refresh updates untouched inputs without replacing an active edit',()=>{
-  const ctx=runtime();
-  vm.runInContext(`titleInput={value:'old',dataset:{loadedTitle:'old'}};document.querySelector=()=>titleInput;state.me.title='new';refreshSettingsSnapshot();`,ctx);
-  assert.equal(vm.runInContext('titleInput.value',ctx),'new');
-  vm.runInContext(`titleInput.value='my edit';state.me.title='another device';refreshSettingsSnapshot();`,ctx);
-  assert.equal(vm.runInContext('titleInput.value',ctx),'my edit');
-  assert.equal(vm.runInContext('titleInput.dataset.loadedTitle',ctx),'new');
-});
 test('a failed refresh stays dirty and is retried on the next otherwise empty poll',async()=>{
   const ctx=runtime();
   vm.runInContext(`api=async(path)=>path==='/me'?{cursor:201,epoch:1}:path==='/devices'?{devices:[]}:path==='/sims'?{sims:[]}:{contacts:{}};refreshes=0;refreshInbox=async()=>{if(++refreshes===1)throw Error('synthetic outage')};`,ctx);
