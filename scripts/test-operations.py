@@ -43,12 +43,16 @@ else:
   for value in values: print(value)
  elif args[:2]==['release','view']:
   if not s['release']:print('release not found',file=sys.stderr);sys.exit(1)
-  print('true' if s['release']=='draft' else 'false')
+  if '--jq' in args and '.body' in args[args.index('--jq')+1]:print(s.get('body',''))
+  else:print('true' if s['release']=='draft' else 'false')
  elif args[:2]==['release','create']:
   assets=pathlib.Path(os.environ['HONGSHU_BUILD_DIR'])/'release'
   journal=path.parent/'journal';journal.mkdir()
-  for file in assets.iterdir():shutil.copyfile(file,journal/file.name)
-  s['release']='draft';save()
+  for file in args[3:]:
+   if file.startswith('-'):break
+   shutil.copyfile(file,journal/pathlib.Path(file).name)
+  notes_file=pathlib.Path(args[args.index('--notes-file')+1])
+  s['body']=notes_file.read_text();s['release']='draft';save()
  elif args[:2]==['release','download']:
   target=pathlib.Path(args[args.index('--dir')+1])
   for file in (path.parent/'journal').iterdir():shutil.copyfile(file,target/file.name)
@@ -72,10 +76,15 @@ class Operations(unittest.TestCase):
         self.state.write_text(json.dumps(dict(tags={}, release=None, builds=0, promotions=[])))
         release = self.root / 'build/release'
         release.mkdir(parents=True)
-        for name in ('hongshu-v0.1.0-alpha.99-android.apk', 'RELEASE_NOTES.md'):
+        for name in ('hongshu-v0.1.0-alpha.99-android.apk',
+                     'hongshu-v0.1.0-alpha.99-server-tools-linux-amd64.tar.gz',
+                     'hongshu-v0.1.0-alpha.99-deployment.tar.gz'):
             (release / name).write_text('synthetic fixture')
+        self.notes = self.root / 'release-notes.md'
+        self.notes.write_text('''# Synthetic release\n\n## 本次更新\n\n- Synthetic fixture\n\n## 快捷下载\n\n- [APK](https://github.com/synthetic/hongshu/releases/download/v0.1.0-alpha.99/hongshu-v0.1.0-alpha.99-android.apk)\n''')
         self.env = dict(os.environ, PATH=str(tools)+':'+os.environ['PATH'], MOCK_STATE=str(self.state),
                         HONGSHU_BUILD_DIR=str(self.root/'build'), RUNNER_TEMP=str(self.root/'runner'),
+                        RELEASE_NOTES_FILE=str(self.notes),
                         TAG='v0.1.0-alpha.99', VERSION='0.1.0-alpha.99', IS_PRERELEASE='true',
                         RELEASE_IMAGE='ghcr.io/synthetic/hongshu', RELEASE_OWNER='synthetic',
                         RELEASE_SHA='b'*40, GH_TOKEN='synthetic-token', GITHUB_SHA='b'*40,
@@ -91,7 +100,17 @@ class Operations(unittest.TestCase):
         state=json.loads(self.state.read_text());state.update(values);self.state.write_text(json.dumps(state))
 
     def test_preflight_missing_asset_prevents_registry_build(self):
-        (self.root/'build/release/RELEASE_NOTES.md').unlink()
+        (self.root/'build/release/hongshu-v0.1.0-alpha.99-deployment.tar.gz').unlink()
+        self.assertNotEqual(0,self.run_publish())
+        self.assertEqual(0,json.loads(self.state.read_text())['builds'])
+
+    def test_release_notes_contract_prevents_registry_build(self):
+        self.notes.write_text('# Synthetic release\n\nNo download section.\n')
+        self.assertNotEqual(0,self.run_publish())
+        self.assertEqual(0,json.loads(self.state.read_text())['builds'])
+
+    def test_auxiliary_asset_prevents_registry_build(self):
+        (self.root/'build/release/IMAGE.json').write_text('must not be uploaded')
         self.assertNotEqual(0,self.run_publish())
         self.assertEqual(0,json.loads(self.state.read_text())['builds'])
 
@@ -99,6 +118,10 @@ class Operations(unittest.TestCase):
         self.update(fail_once=True)
         self.assertNotEqual(0,self.run_publish())
         state=json.loads(self.state.read_text());self.assertEqual('draft',state['release'])
+        self.assertEqual(
+            sorted(file.name for file in (self.root/'journal').iterdir()),
+            sorted(file.name for file in (self.root/'build/release').iterdir()),
+        )
         self.env['RUNNER_TEMP']=str(self.root/'retry')
         self.assertEqual(0,self.run_publish())
         state=json.loads(self.state.read_text())
@@ -115,7 +138,7 @@ class Operations(unittest.TestCase):
 
     def test_corrupted_partial_draft_is_not_overwritten(self):
         self.update(fail_once=True);self.assertNotEqual(0,self.run_publish())
-        (self.root/'journal/RELEASE_NOTES.md').write_text('tampered')
+        (self.root/'journal/hongshu-v0.1.0-alpha.99-deployment.tar.gz').write_text('tampered')
         self.env['RUNNER_TEMP']=str(self.root/'retry')
         self.assertNotEqual(0,self.run_publish())
         self.assertEqual(1,json.loads(self.state.read_text())['builds'])
