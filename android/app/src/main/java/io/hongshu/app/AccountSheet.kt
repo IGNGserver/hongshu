@@ -580,7 +580,12 @@ private fun SyncControlSubPage(
                 }
             }
         }
-        item { Text("实时接收只需接收短信权限。拒绝历史读取不会阻止保存新短信。", style = MaterialTheme.typography.bodyMedium) }
+        item {
+            Text(
+                "实时广播只需接收短信权限，但系统可能不向鸿枢投递部分验证码。可开启新短信补漏；拒绝读取权限仍可保存实际收到的广播。",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
         if (c.upload && !hasPermission(activity, Manifest.permission.RECEIVE_SMS))
             item {
                 FilledTonalButton(
@@ -594,6 +599,58 @@ private fun SyncControlSubPage(
                     Text("授予实时短信权限")
                 }
             }
+        item {
+            SettingSwitch("新短信补漏", c.recoveryEnabled, !busy) { enabled ->
+                onAction {
+                    c.recoveryEnabled = enabled
+                    if (enabled)
+                        withContext(Dispatchers.Main) {
+                            onRequestPermissions(arrayOf(Manifest.permission.READ_SMS)) {
+                                syncNow(activity, manual = true)
+                            }
+                        }
+                    syncNow(activity, manual = true)
+                    if (enabled) "新短信补漏已开启 · 只读取开启后的短信，不开启全量历史" else "新短信补漏已关闭，已收到的广播仍会保存"
+                }
+            }
+        }
+        item {
+            Text(
+                "补漏需系统允许读取短信；重新进入应用及周期任务会补扫，后台可能延迟。补漏新增 0 条不代表验证码可读；开启前遗漏的短信需使用历史补齐。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (c.upload && c.recoveryEnabled && !hasPermission(activity, Manifest.permission.READ_SMS))
+            item {
+                FilledTonalButton(
+                    onClick = {
+                        onRequestPermissions(arrayOf(Manifest.permission.READ_SMS)) {
+                            syncNow(activity, manual = true)
+                        }
+                    },
+                    enabled = !busy,
+                ) {
+                    Text("授予新短信补漏权限")
+                }
+            }
+        item {
+            FilledTonalButton(
+                enabled = !busy && c.upload && (c.recoveryEnabled || c.historyEnabled),
+                onClick = {
+                    onAction {
+                        val result =
+                            if (c.recoveryEnabled) recoverRecentInbox(activity)
+                            else catchUpInbox(activity)
+                        if (c.recoveryEnabled) c.recoveryStatus = result
+                        else c.captureStatus = result
+                        syncNow(activity, manual = true).await()
+                        result
+                    }
+                },
+            ) {
+                Text("立即读取并检查收件箱")
+            }
+        }
         item {
             SettingSwitch("补齐历史短信", c.historyEnabled, !busy) { enabled ->
                 onAction {
@@ -644,6 +701,8 @@ private fun SyncControlSubPage(
             }
         }
         item { StatusRow("实时短信采集", realtimeSmsStatus(activity, diagnostics)) }
+        item { StatusRow("系统短信权限与访问策略", smsPermissionStatus(activity)) }
+        item { StatusRow("新短信收件箱补漏", recoverySmsStatus(activity)) }
         item { StatusRow("历史短信读取", historySmsStatus(activity)) }
         item { StatusRow("本地队列", "$queued 条待同步 · $unresolved 条待确认号码 · $invalid 条被阻塞") }
         item { FilledTonalButton(onClick = onPending) { Text("查看本机待同步短信") } }

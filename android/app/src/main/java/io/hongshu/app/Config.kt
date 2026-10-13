@@ -45,6 +45,64 @@ class Config(context: Context) {
     val historyGeneration: Long
         get() = prefs.getLong("history_generation", 0)
 
+    var recoveryEnabled: Boolean
+        get() = prefs.getBoolean("recovery_enabled", false)
+        set(value) {
+            synchronized(identityLock) {
+                if (value != recoveryEnabled)
+                    prefs
+                        .edit()
+                        .putBoolean("recovery_enabled", value)
+                        .putLong("recovery_since", if (value) System.currentTimeMillis() else 0)
+                        .putLong("recovery_generation", recoveryGeneration + 1)
+                        .putBoolean("recovery_pending", false)
+                        .putString("recovery_state", if (value) "NOT_SCANNED" else "DISABLED")
+                        .commit()
+            }
+        }
+
+    val recoverySince: Long
+        get() = prefs.getLong("recovery_since", 0)
+
+    val recoveryGeneration: Long
+        get() = prefs.getLong("recovery_generation", 0)
+
+    var recoveryPending: Boolean
+        get() = prefs.getBoolean("recovery_pending", false)
+        set(value) {
+            prefs.edit().putBoolean("recovery_pending", value).commit()
+        }
+
+    var recoveryState: HistoryState
+        get() =
+            runCatching { HistoryState.valueOf(prefs.getString("recovery_state", "NOT_SCANNED")!!) }
+                .getOrDefault(HistoryState.NOT_SCANNED)
+        set(value) {
+            prefs.edit().putString("recovery_state", value.name).apply()
+        }
+
+    var recoveryStatus: String
+        get() = prefs.getString("recovery_status", "尚未补漏")!!
+        set(value) {
+            prefs.edit().putString("recovery_status", value).apply()
+        }
+
+    val receivedBroadcasts: Long
+        get() = prefs.getLong("received_broadcasts", 0)
+
+    val lastReceivedBroadcast: Long
+        get() = prefs.getLong("last_received_broadcast", 0)
+
+    fun noteReceivedBroadcast(now: Long) {
+        synchronized(identityLock) {
+            prefs
+                .edit()
+                .putLong("received_broadcasts", receivedBroadcasts + 1)
+                .putLong("last_received_broadcast", now)
+                .commit()
+        }
+    }
+
     fun invalidateCaptureSession() {
         synchronized(identityLock) {
             prefs.edit().putLong("capture_generation", captureGeneration + 1).commit()
@@ -163,7 +221,15 @@ class Config(context: Context) {
             synchronized(identityLock) {
                 val edit = prefs.edit().putBoolean("upload", v)
                 if (v != upload) edit.putLong("capture_generation", captureGeneration + 1)
-                if (!v) edit.putBoolean("inbox_scan_pending", false)
+                if (!v) {
+                    edit.putBoolean("inbox_scan_pending", false)
+                    edit.putBoolean("recovery_pending", false)
+                } else if (!upload && recoveryEnabled) {
+                    edit
+                        .putLong("recovery_since", System.currentTimeMillis())
+                        .putLong("recovery_generation", recoveryGeneration + 1)
+                        .putString("recovery_state", "NOT_SCANNED")
+                }
                 edit.commit()
             }
         }

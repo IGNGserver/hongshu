@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import java.util.concurrent.Executors
+import kotlinx.coroutines.runBlocking
 
 internal data class IncomingSms(
     val sender: String,
@@ -65,6 +66,35 @@ internal fun persistIncomingSms(
         true
     }
 
+internal suspend fun saveAndScheduleIncomingSms(
+    context: Context,
+    message: IncomingSms,
+    generation: Long,
+    receivedAt: Long,
+    databaseName: String = "hongshu.db",
+    enqueue: suspend () -> Unit = { syncNow(context).await() },
+) {
+    fun failure(value: CaptureFailure) =
+        synchronized(identityLock) {
+            if (Config(context).captureGeneration == generation)
+                Config(context).captureFailure = value
+        }
+    val saved =
+        try {
+            persistIncomingSms(context, message, generation, receivedAt, databaseName)
+        } catch (_: Exception) {
+            failure(CaptureFailure.STORAGE)
+            return
+        }
+    if (!saved) return
+    try {
+        enqueue()
+    } catch (_: Exception) {
+        // The SMS is already durable. A scheduling failure must not report lost storage.
+        failure(CaptureFailure.SCHEDULING)
+    }
+}
+
 class SmsReceiver : BroadcastReceiver() {
     companion object {
         private val executor = Executors.newSingleThreadExecutor()
@@ -73,13 +103,14 @@ class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         val app = context.applicationContext
+        val receivedAt = System.currentTimeMillis()
+        Config(app).noteReceivedBroadcast(receivedAt)
         val generation =
             synchronized(identityLock) {
                 val config = Config(app)
                 if (!config.upload || !hasPermission(app, Manifest.permission.RECEIVE_SMS)) return
                 config.captureGeneration
             }
-        val receivedAt = System.currentTimeMillis()
         val message =
             try {
                 parseIncomingSms(intent) ?: error("Empty SMS broadcast")
@@ -93,12 +124,7 @@ class SmsReceiver : BroadcastReceiver() {
         val pending = goAsync()
         executor.execute {
             try {
-                if (persistIncomingSms(app, message, generation, receivedAt)) syncNow(app)
-            } catch (_: Exception) {
-                synchronized(identityLock) {
-                    if (Config(app).captureGeneration == generation)
-                        Config(app).captureFailure = CaptureFailure.STORAGE
-                }
+                runBlocking { saveAndScheduleIncomingSms(app, message, generation, receivedAt) }
             } finally {
                 pending.finish()
             }

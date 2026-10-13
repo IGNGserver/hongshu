@@ -208,11 +208,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun captureProvider(id: Long, m: SmsRecord, advance: Boolean = false): Boolean =
         capture(m, -1, id, advance)
 
-    fun captureProviders(records: List<Pair<Long, SmsRecord>>, advance: Boolean): Int {
+    fun captureProviders(
+        records: List<Pair<Long, SmsRecord>>,
+        advance: Boolean,
+        recovery: Boolean = false,
+    ): Int {
         val db = writableDatabase
         db.beginTransaction()
         try {
             val count = records.count { (id, message) -> captureProvider(id, message, advance) }
+            if (recovery) records.lastOrNull()?.let { advanceRecoveryProvider(it.first) }
             db.setTransactionSuccessful()
             return count
         } finally {
@@ -561,6 +566,17 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun inboxWatermark(): Pair<Long, Long> = meta("inbox_date") to meta("inbox_id")
 
     fun providerWatermark(): Long = meta("provider_id")
+
+    fun recoveryWatermark(): Long = meta("recovery_provider_id")
+
+    fun advanceRecoveryProvider(id: Long) {
+        // v6's extensible meta table permits additive state without a schema downgrade barrier.
+        writableDatabase.execSQL("INSERT OR IGNORE INTO meta VALUES ('recovery_provider_id',0)")
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=MAX(value,?) WHERE key='recovery_provider_id'",
+            arrayOf(id),
+        )
+    }
 
     fun historyBoundary(): Long = meta("history_boundary")
 

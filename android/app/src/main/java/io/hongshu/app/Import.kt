@@ -10,6 +10,73 @@ import org.json.JSONObject
 
 private val inboxScanLock = Any()
 
+fun recoverRecentInbox(context: Context, databaseName: String = "hongshu.db"): String =
+    synchronized(inboxScanLock) {
+        val config = Config(context)
+        val generation: Long
+        val recoveryGeneration: Long
+        val since: Long
+        synchronized(identityLock) {
+            if (!config.upload || !config.recoveryEnabled) {
+                config.recoveryState = HistoryState.DISABLED
+                config.recoveryPending = false
+                return "新短信补漏已关闭"
+            }
+            generation = config.captureGeneration
+            recoveryGeneration = config.recoveryGeneration
+            since = config.recoverySince
+        }
+        fun current() =
+            config.upload &&
+                config.recoveryEnabled &&
+                config.captureGeneration == generation &&
+                config.recoveryGeneration == recoveryGeneration
+        if (!hasPermission(context, Manifest.permission.READ_SMS)) {
+            synchronized(identityLock) {
+                if (current()) {
+                    config.recoveryState = HistoryState.NO_PERMISSION
+                    config.recoveryPending = false
+                }
+            }
+            return "缺少读取短信权限 · 无法补漏未收到广播的新短信"
+        }
+        try {
+            check(since > 0) { "Missing recovery consent boundary" }
+            synchronized(identityLock) {
+                if (!current()) return "新短信补漏已取消"
+                config.recoveryState = HistoryState.SCANNING
+            }
+            Store(context, databaseName).use { store ->
+                val count =
+                    scanInbox(
+                        context,
+                        store,
+                        historical = false,
+                        incremental = true,
+                        generation = generation,
+                        recoverySince = since,
+                        recoveryGeneration = recoveryGeneration,
+                    )
+                synchronized(identityLock) {
+                    if (!current()) return "新短信补漏已取消"
+                    config.recoveryState =
+                        if (config.recoveryPending) HistoryState.SCANNING else HistoryState.COMPLETE
+                }
+                return "最近补漏 ${formatTimestamp(System.currentTimeMillis())} · 新增 $count 条（仅系统可访问的新短信）"
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            synchronized(identityLock) {
+                if (current()) {
+                    config.recoveryState = HistoryState.FAILED
+                    config.recoveryPending = false
+                }
+            }
+            return "收件箱补漏查询失败 · 请检查系统读取/验证码权限"
+        }
+    }
+
 fun catchUpInbox(context: Context, databaseName: String = "hongshu.db"): String =
     synchronized(inboxScanLock) {
         val config = Config(context)
@@ -63,7 +130,7 @@ fun catchUpInbox(context: Context, databaseName: String = "hongshu.db"): String 
                         else HistoryState.COMPLETE
                     config.lastHistoryScan = System.currentTimeMillis()
                 }
-                return "短信读取正常 · 本次采集 $count 条（历史自动同步）"
+                return "最近查询 ${formatTimestamp(System.currentTimeMillis())} · 新增 $count 条（仅系统可访问收件箱，0 条不代表无短信）"
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -85,26 +152,39 @@ internal fun scanInbox(
     incremental: Boolean,
     generation: Long = Config(context).captureGeneration,
     historyGeneration: Long = Config(context).historyGeneration,
+    recoverySince: Long? = null,
+    recoveryGeneration: Long = Config(context).recoveryGeneration,
 ): Int {
     val config = Config(context)
     fun current() =
         !incremental ||
             (config.upload &&
-                config.historyEnabled &&
                 config.captureGeneration == generation &&
-                config.historyGeneration == historyGeneration)
+                (if (recoverySince != null)
+                    config.recoveryEnabled && config.recoveryGeneration == recoveryGeneration
+                else config.historyEnabled && config.historyGeneration == historyGeneration))
     if (!current()) return 0
     // Provider IDs, not SMS dates, order insertion; a late older date remains eligible.
     // Do not assume provider insertion order follows wall-clock dates.
-    val selection = if (incremental) "_id>?" else null
-    val args = if (incremental) arrayOf(store.providerWatermark().toString()) else null
+    val selection =
+        if (!incremental) null else if (recoverySince != null) "_id>? AND date>=?" else "_id>?"
+    val args =
+        if (!incremental) null
+        else if (recoverySince != null)
+            arrayOf(store.recoveryWatermark().toString(), recoverySince.toString())
+        else arrayOf(store.providerWatermark().toString())
     var count = 0
     val receiver = store.receiverResolver()
     val batch = mutableListOf<Pair<Long, SmsRecord>>()
     fun flush(): Boolean =
         synchronized(identityLock) {
             if (!current()) return@synchronized false
-            count += store.captureProviders(batch, incremental)
+            count +=
+                store.captureProviders(
+                    batch,
+                    incremental && recoverySince == null,
+                    recovery = recoverySince != null,
+                )
             batch.clear()
             true
         }
@@ -133,7 +213,11 @@ internal fun scanInbox(
                 if (incremental) {
                     if (!flush()) break
                     synchronized(identityLock) {
-                        if (current()) store.advanceProvider(c.getLong(idIndex))
+                        if (current()) {
+                            if (recoverySince != null)
+                                store.advanceRecoveryProvider(c.getLong(idIndex))
+                            else store.advanceProvider(c.getLong(idIndex))
+                        }
                     }
                 }
                 continue
@@ -146,7 +230,9 @@ internal fun scanInbox(
                     c.getLong(date),
                     sub,
                     historical =
-                        historical || isHistoricalSMS(c.getLong(date), store.historyBoundary()),
+                        historical ||
+                            (recoverySince == null &&
+                                isHistoricalSMS(c.getLong(date), store.historyBoundary())),
                 )
             batch.add(c.getLong(idIndex) to record)
             if (batch.size == 100) {
@@ -155,7 +241,10 @@ internal fun scanInbox(
         }
         flush()
         synchronized(identityLock) {
-            if (incremental && current()) config.inboxScanPending = visited > 1000
+            if (incremental && current()) {
+                if (recoverySince != null) config.recoveryPending = visited > 1000
+                else config.inboxScanPending = visited > 1000
+            }
         }
     }
     return count

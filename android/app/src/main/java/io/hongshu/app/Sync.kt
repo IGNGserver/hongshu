@@ -14,9 +14,10 @@ import androidx.work.*
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -47,9 +48,21 @@ fun channels(context: Context) {
 private val syncSchedulingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private val schedulingLock = Any()
 
-fun syncNow(context: Context, manual: Boolean = false): Job {
+internal fun syncWorkPolicy(
+    pending: List<Pair<WorkInfo.State, Int>>,
+    manual: Boolean,
+): ExistingWorkPolicy? {
+    val active = pending.filterNot { it.first.isFinished }
+    if (manual && active.any { it.first == WorkInfo.State.ENQUEUED && it.second > 0 })
+        return ExistingWorkPolicy.REPLACE
+    // One successor covers arrivals after the running worker has read its last batch.
+    if (active.any { it.first != WorkInfo.State.RUNNING }) return null
+    return ExistingWorkPolicy.APPEND_OR_REPLACE
+}
+
+fun syncNow(context: Context, manual: Boolean = false): Deferred<Unit> {
     val app = context.applicationContext
-    return syncSchedulingScope.launch {
+    return syncSchedulingScope.async<Unit> {
         synchronized(schedulingLock) {
             val manager = WorkManager.getInstance(app)
             enqueueCaptureMaintenance(app)
@@ -57,15 +70,13 @@ fun syncNow(context: Context, manual: Boolean = false): Job {
                 manager.getWorkInfosForUniqueWork("hongshu-sync").get().filter {
                     !it.state.isFinished
                 }
-            val replaceBackoff =
-                manual &&
-                    pending.any { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 }
-            if (!replaceBackoff && pending.isNotEmpty()) return@synchronized
+            val policy =
+                syncWorkPolicy(pending.map { it.state to it.runAttemptCount }, manual)
+                    ?: return@synchronized
             manager
                 .enqueueUniqueWork(
                     "hongshu-sync",
-                    if (replaceBackoff) ExistingWorkPolicy.REPLACE
-                    else ExistingWorkPolicy.APPEND_OR_REPLACE,
+                    policy,
                     OneTimeWorkRequestBuilder<SyncWorker>()
                         .setConstraints(
                             Constraints.Builder()
@@ -77,19 +88,26 @@ fun syncNow(context: Context, manual: Boolean = false): Job {
                 )
                 .result
                 .get()
+            Unit
         }
     }
 }
 
 private fun enqueueCaptureMaintenance(context: Context) {
-    WorkManager.getInstance(context)
+    val manager = WorkManager.getInstance(context)
+    val pending = manager.getWorkInfosForUniqueWork("hongshu-capture").get()
+    val policy =
+        syncWorkPolicy(pending.map { it.state to it.runAttemptCount }, manual = false) ?: return
+    manager
         .enqueueUniqueWork(
             "hongshu-capture",
-            ExistingWorkPolicy.KEEP,
+            policy,
             OneTimeWorkRequestBuilder<CaptureWorker>()
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build(),
         )
+        .result
+        .get()
 }
 
 // No network constraint. A blocked provider/SIM service must not serialize uploads.
@@ -112,6 +130,7 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 return@withContext Result.retry()
             }
             try {
+                config.recoveryStatus = recoverRecentInbox(applicationContext)
                 config.captureStatus = catchUpInbox(applicationContext)
             } catch (e: CancellationException) {
                 throw e
@@ -122,7 +141,12 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             Store(applicationContext).use {
                 if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
             }
-            if (config.upload && config.historyEnabled && config.inboxScanPending) Result.retry()
+            if (
+                config.upload &&
+                    ((config.historyEnabled && config.inboxScanPending) ||
+                        (config.recoveryEnabled && config.recoveryPending))
+            )
+                Result.retry()
             else Result.success()
         }
 }
@@ -133,11 +157,13 @@ private fun enqueueSyncOnly(context: Context) =
         val pending =
             manager.getWorkInfosForUniqueWork("hongshu-sync").get().filter { !it.state.isFinished }
         // At most one successor to a running sync; offline/backoff work already covers new rows.
-        if (pending.any { it.state != WorkInfo.State.RUNNING }) return@synchronized
+        val policy =
+            syncWorkPolicy(pending.map { it.state to it.runAttemptCount }, manual = false)
+                ?: return@synchronized
         manager
             .enqueueUniqueWork(
                 "hongshu-sync",
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                policy,
                 OneTimeWorkRequestBuilder<SyncWorker>()
                     .setConstraints(
                         Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
@@ -172,10 +198,10 @@ class BootReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         schedule(context)
-        syncNow(context)
         val pending = goAsync()
         syncSchedulingScope.launch {
             try {
+                syncNow(context).await()
                 val config = Config(context)
                 if (
                     restoreRealtimeOnBoot(
@@ -339,6 +365,8 @@ object SyncEngine {
                         if (!data.getBoolean("more")) {
                             c.lastSync = System.currentTimeMillis()
                             c.syncHealthy = true
+                            if (c.captureFailure == CaptureFailure.SCHEDULING)
+                                c.captureFailure = CaptureFailure.NONE
                             c.status =
                                 if (c.upload && c.historyEnabled && c.inboxScanPending)
                                     "历史短信采集中，自动继续"
