@@ -1,10 +1,12 @@
 package io.hongshu.app
 
 import android.Manifest
+import android.app.AppOpsManager
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -18,14 +20,61 @@ object RuntimeHealth {
     val connection = MutableStateFlow(ConnectionHealth())
 }
 
+fun smsPermissionStatus(context: Context): String {
+    @Suppress("DEPRECATION")
+    fun policy(permission: String): String {
+        if (!hasPermission(context, permission)) return "未授予"
+        val mode =
+            runCatching {
+                    val op = AppOpsManager.permissionToOp(permission) ?: return@runCatching null
+                    context
+                        .getSystemService(AppOpsManager::class.java)
+                        .checkOpNoThrow(op, Process.myUid(), context.packageName)
+                }
+                .getOrNull()
+        if (Build.VERSION.SDK_INT >= 29 && mode == AppOpsManager.MODE_FOREGROUND)
+            return "权限已授予 · 系统策略仅限前台"
+        return when (mode) {
+            AppOpsManager.MODE_ALLOWED -> "权限已授予 · 系统策略允许"
+            AppOpsManager.MODE_IGNORED,
+            AppOpsManager.MODE_ERRORED -> "权限已授予但系统访问策略拒绝"
+            AppOpsManager.MODE_DEFAULT -> "权限已授予 · 系统默认策略"
+            else -> "权限已授予 · 无法确认系统策略"
+        }
+    }
+    return "接收：${policy(Manifest.permission.RECEIVE_SMS)}；读取：${policy(Manifest.permission.READ_SMS)}。不代表厂商已允许验证码/通知类短信。"
+}
+
 fun realtimeSmsStatus(context: Context, diagnostics: CaptureDiagnostics): String {
     val c = Config(context)
     if (!c.upload) return "已关闭"
     if (!hasPermission(context, Manifest.permission.RECEIVE_SMS)) return "缺少接收权限 · 历史读取不受此权限影响"
+    val arrived =
+        "系统广播到达 ${c.receivedBroadcasts} 次" +
+            if (c.lastReceivedBroadcast > 0) " · 最近到达 ${formatTimestamp(c.lastReceivedBroadcast)}"
+            else ""
     if (c.captureFailure != CaptureFailure.NONE)
-        return "最近采集失败：${if (c.captureFailure == CaptureFailure.PARSE) "短信解析" else "本地存储"}"
-    if (diagnostics.broadcasts == 0L) return "接收权限已授予 · 等待实际短信验证"
-    return "最近处理 ${formatTimestamp(diagnostics.lastBroadcast)} · 已保存 ${diagnostics.saved} 条 · 重复 ${diagnostics.duplicates} 次"
+        return "$arrived · ${when (c.captureFailure) {
+            CaptureFailure.PARSE -> "短信解析失败"
+            CaptureFailure.STORAGE -> "本地存储失败"
+            CaptureFailure.SCHEDULING -> "短信已保存 · 后台任务调度失败，重新进入后重试"
+            CaptureFailure.NONE -> ""
+        }}"
+    if (diagnostics.broadcasts == 0L) return "$arrived · 接收权限已授予，不代表系统已投递验证码；请用普通短信对照"
+    return "$arrived · 最近成功处理 ${formatTimestamp(diagnostics.lastBroadcast)} · 已保存 ${diagnostics.saved} 条 · 重复 ${diagnostics.duplicates} 次"
+}
+
+fun recoverySmsStatus(context: Context): String {
+    val c = Config(context)
+    if (!c.upload || !c.recoveryEnabled) return "已关闭 · 未收到广播时不会自动补漏新短信"
+    if (!hasPermission(context, Manifest.permission.READ_SMS)) return "缺少读取短信权限 · 无法补漏"
+    return when (c.recoveryState) {
+        HistoryState.NOT_SCANNED,
+        HistoryState.DISABLED,
+        HistoryState.NO_PERMISSION -> "等待收件箱补漏"
+        HistoryState.SCANNING -> "正在补漏新短信"
+        else -> c.recoveryStatus
+    }
 }
 
 fun historySmsStatus(context: Context): String {
@@ -37,7 +86,7 @@ fun historySmsStatus(context: Context): String {
         HistoryState.DISABLED -> "等待扫描"
         HistoryState.NO_PERMISSION -> "权限已恢复 · 等待扫描"
         HistoryState.SCANNING -> "历史短信采集中"
-        HistoryState.COMPLETE -> "最近扫描 ${formatTimestamp(c.lastHistoryScan)} · 仅覆盖系统可访问收件箱"
+        HistoryState.COMPLETE -> c.captureStatus
         HistoryState.FAILED -> "历史查询失败 · 不影响实时接收和已保存队列"
     }
 }

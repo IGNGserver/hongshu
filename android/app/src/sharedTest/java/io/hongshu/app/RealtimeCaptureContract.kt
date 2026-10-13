@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -149,7 +150,8 @@ abstract class RealtimeCaptureContract {
         }
     }
 
-    private class Inbox(val queryRows: () -> Cursor) : ContentProvider() {
+    private class Inbox(val queryRows: (String?, Array<out String>?) -> Cursor) :
+        ContentProvider() {
         override fun onCreate() = true
 
         override fun getType(uri: Uri) = "vnd.android.cursor.dir/sms"
@@ -171,13 +173,14 @@ abstract class RealtimeCaptureContract {
             selection: String?,
             selectionArgs: Array<out String>?,
             sortOrder: String?,
-        ) = queryRows()
+        ) = queryRows(selection, selectionArgs)
     }
 
     private fun fixture(
         read: Boolean = false,
         receive: Boolean = true,
         query: () -> Cursor = { error("Realtime capture must not query provider") },
+        queryRequest: ((String?, Array<out String>?) -> Cursor)? = null,
         test: (Context, Config, String) -> Unit,
     ) {
         val base = ApplicationProvider.getApplicationContext<Context>()
@@ -185,11 +188,15 @@ abstract class RealtimeCaptureContract {
         val saved = prefs.all
         val name = "realtime-${java.util.UUID.randomUUID()}.db"
         val provider =
-            Inbox(query).apply { attachInfo(base, ProviderInfo().apply { authority = "sms" }) }
+            Inbox(queryRequest ?: { _, _ -> query() }).apply {
+                attachInfo(base, ProviderInfo().apply { authority = "sms" })
+            }
         val resolver = providerResolver(provider)
         val context =
             object : ContextWrapper(base) {
                 override fun getContentResolver() = resolver
+
+                override fun getApplicationContext(): Context = this
 
                 override fun checkPermission(permission: String, pid: Int, uid: Int): Int =
                     when (permission) {
@@ -224,6 +231,260 @@ abstract class RealtimeCaptureContract {
 
     private fun message(sub: Int = 7) =
         IncomingSms("10086", combineParts(listOf("synthetic long ", "短信分段")), 1700000000000, sub, 0)
+
+    @Test
+    fun recoveryNeedsExplicitConsentAndDoesNotEnableHistory() =
+        fixture(read = true) { context, config, name ->
+            config.historyEnabled = false
+            assertFalse(config.recoveryEnabled)
+            assertTrue(recoverRecentInbox(context, name).contains("已关闭"))
+            config.recoveryEnabled = true
+            assertFalse(config.historyEnabled)
+            assertTrue(config.recoverySince > 0)
+            config.upload = false
+            assertTrue(recoverRecentInbox(context, name).contains("已关闭"))
+        }
+
+    @Test
+    fun recoveryPermissionFailureIsVisibleWithoutBlockingBroadcasts() =
+        fixture { context, config, name ->
+            config.historyEnabled = false
+            config.recoveryEnabled = true
+            assertTrue(recoverRecentInbox(context, name).contains("权限"))
+            assertEquals(HistoryState.NO_PERMISSION, config.recoveryState)
+            assertTrue(persistIncomingSms(context, message(), config.captureGeneration, 100, name))
+            Store(context, name).use { assertEquals(1, it.pendingCount()) }
+        }
+
+    @Test
+    fun missedBroadcastIsRecoveredWithoutImportingOlderHistoryOrAdvancingHistoryWatermark() {
+        var queries = 0
+        fixture(
+            read = true,
+            receive = false,
+            queryRequest = { selection, args ->
+                queries++
+                assertEquals("_id>? AND date>=?", selection)
+                val after = args!![0].toLong()
+                val since = args[1].toLong()
+                MatrixCursor(arrayOf("_id", "address", "body", "date", "sub_id")).apply {
+                    for (id in 1L..2L) {
+                        val date = if (id == 1L) since - 1 else since + 1
+                        if (id > after && date >= since)
+                            addRow(arrayOf<Any>(id, "10086", "synthetic $id", date, 7))
+                    }
+                }
+            },
+        ) { context, config, name ->
+            config.historyEnabled = false
+            config.recoveryEnabled = true
+            assertTrue(recoverRecentInbox(context, name).contains("新增 1 条"))
+            Store(context, name).use { store ->
+                assertEquals(1, store.pendingCount())
+                assertEquals("synthetic 2", store.localPending().single().body)
+                assertFalse(store.localPending().single().historical)
+                assertEquals(2L, store.recoveryWatermark())
+                assertEquals(0L, store.providerWatermark())
+                assertEquals(CaptureDiagnostics(), store.captureDiagnostics())
+            }
+            assertTrue(recoverRecentInbox(context, name).contains("新增 0 条"))
+            assertEquals(2, queries)
+        }
+    }
+
+    @Test
+    fun recoveryResumesInPagesAndLaterHistoryStillImportsOldRows() {
+        fixture(
+            read = true,
+            queryRequest = { selection, args ->
+                val after = args!![0].toLong()
+                val since =
+                    Config(ApplicationProvider.getApplicationContext<Context>()).recoverySince
+                MatrixCursor(arrayOf("_id", "address", "body", "date", "sub_id")).apply {
+                    for (id in 1L..1206L) {
+                        val date = if (id == 1L) since - 1 else since + id
+                        if (id > after && (selection == "_id>?" || date >= args[1].toLong()))
+                            addRow(arrayOf<Any>(id, "10086", "synthetic $id", date, 7))
+                    }
+                }
+            },
+        ) { context, config, name ->
+            config.historyEnabled = false
+            config.recoveryEnabled = true
+            recoverRecentInbox(context, name)
+            assertTrue(config.recoveryPending)
+            Store(context, name).use { assertEquals(1000, it.pendingCount()) }
+            recoverRecentInbox(context, name)
+            assertFalse(config.recoveryPending)
+            Store(context, name).use { assertEquals(1205, it.pendingCount()) }
+            config.historyEnabled = true
+            catchUpInbox(context, name)
+            assertTrue(config.inboxScanPending)
+            catchUpInbox(context, name)
+            Store(context, name).use { assertEquals(1206, it.pendingCount()) }
+        }
+    }
+
+    @Test
+    fun recoveryAndBroadcastShareDedupLedgerAfterAck() {
+        val timestamp = System.currentTimeMillis() + 1000
+        fixture(
+            read = true,
+            queryRequest = { _, _ ->
+                MatrixCursor(arrayOf("_id", "address", "body", "date", "sub_id")).apply {
+                    addRow(arrayOf<Any>(1, "10086", message().body, timestamp, 7))
+                }
+            },
+        ) { context, config, name ->
+            config.historyEnabled = false
+            config.recoveryEnabled = true
+            Store(context, name).use { it.saveSim(SimMapping(7, 0, "+1234567890", "SIM1")) }
+            recoverRecentInbox(context, name)
+            Store(context, name).use { it.ack(it.localPending().map { row -> row.key }) }
+            assertTrue(
+                persistIncomingSms(
+                    context,
+                    message().copy(timestamp = timestamp),
+                    config.captureGeneration,
+                    timestamp,
+                    name,
+                )
+            )
+            Store(context, name).use {
+                assertEquals(0, it.pendingCount())
+                assertEquals(1L, it.captureDiagnostics().duplicates)
+            }
+        }
+    }
+
+    @Test
+    fun recoveryFailureDoesNotClaimEmptyInboxOrLoseQueuedBroadcast() =
+        fixture(read = true, query = { throw SecurityException("synthetic") }) {
+            context,
+            config,
+            name ->
+            config.recoveryEnabled = true
+            assertTrue(recoverRecentInbox(context, name).contains("失败"))
+            assertEquals(HistoryState.FAILED, config.recoveryState)
+            assertTrue(persistIncomingSms(context, message(), config.captureGeneration, 100, name))
+        }
+
+    @Test
+    fun changingRecoveryConsentCancelsInFlightProviderCommit() {
+        fixture(
+            read = true,
+            query = {
+                val c = Config(ApplicationProvider.getApplicationContext<Context>())
+                c.recoveryEnabled = false
+                c.recoveryEnabled = true
+                MatrixCursor(arrayOf("_id", "address", "body", "date", "sub_id")).apply {
+                    addRow(arrayOf<Any>(1, "10086", "synthetic", System.currentTimeMillis(), 7))
+                }
+            },
+        ) { context, config, name ->
+            config.recoveryEnabled = true
+            assertTrue(recoverRecentInbox(context, name).contains("取消"))
+            Store(context, name).use {
+                assertEquals(0, it.pendingCount())
+                assertEquals(0L, it.recoveryWatermark())
+            }
+        }
+    }
+
+    @Test
+    fun broadcastCompletionWaitsForDurableEnqueueAndSchedulingFailureKeepsSms() =
+        fixture { context, config, name ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val completed = CountDownLatch(1)
+            val outcome = AtomicReference<Throwable?>()
+            val worker = thread {
+                try {
+                    runBlocking {
+                        saveAndScheduleIncomingSms(
+                            context,
+                            message(),
+                            config.captureGeneration,
+                            100,
+                            name,
+                        ) {
+                            Store(context, name).use { assertEquals(1, it.pendingCount()) }
+                            entered.countDown()
+                            check(release.await(5, TimeUnit.SECONDS))
+                            throw IllegalStateException("synthetic scheduling failure")
+                        }
+                    }
+                } catch (e: Throwable) {
+                    outcome.set(e)
+                } finally {
+                    completed.countDown()
+                }
+            }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                assertFalse(
+                    "Broadcast finished before enqueue",
+                    completed.await(100, TimeUnit.MILLISECONDS),
+                )
+            } finally {
+                release.countDown()
+                worker.join(10000)
+            }
+            assertFalse(worker.isAlive)
+            outcome.get()?.let { throw it }
+            assertEquals(CaptureFailure.SCHEDULING, config.captureFailure)
+            Store(context, name).use { assertEquals(1, it.pendingCount()) }
+        }
+
+    @Test
+    fun reopeningMasterCaptureDoesNotRecoverDisabledInterval() =
+        fixture(read = true) { context, config, name ->
+            config.recoveryEnabled = true
+            val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
+            prefs.edit().putLong("recovery_since", 1).commit()
+            val oldGeneration = config.recoveryGeneration
+            config.upload = false
+            config.upload = true
+            assertTrue(config.recoverySince > 1)
+            assertTrue(config.recoveryGeneration > oldGeneration)
+            assertEquals(HistoryState.NOT_SCANNED, config.recoveryState)
+            Store(context, name).use { assertEquals(0, it.pendingCount()) }
+        }
+
+    @Test
+    fun failedPersistenceDoesNotEnqueueOrMisreportSchedulingFailure() =
+        fixture { context, config, name ->
+            Store(context, name).use {
+                it.writableDatabase.execSQL(
+                    "CREATE TRIGGER fail_queue BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT,'synthetic'); END"
+                )
+            }
+            runBlocking {
+                saveAndScheduleIncomingSms(
+                    context,
+                    message(),
+                    config.captureGeneration,
+                    100,
+                    name,
+                ) {
+                    fail("Must not enqueue after failed storage")
+                }
+            }
+            assertEquals(CaptureFailure.STORAGE, config.captureFailure)
+            Store(context, name).use { assertEquals(0, it.pendingCount()) }
+        }
+
+    @Test
+    fun malformedBroadcastEntryRemainsVisibleBeforeSuccessfulPersistence() =
+        fixture { context, config, name ->
+            SmsReceiver().onReceive(context, Intent(Telephony.Sms.Intents.SMS_RECEIVED_ACTION))
+            Store(context, name).use {
+                assertEquals(CaptureDiagnostics(), it.captureDiagnostics())
+                assertEquals(1L, config.receivedBroadcasts)
+                assertTrue(config.lastReceivedBroadcast > 0)
+                assertTrue(realtimeSmsStatus(context, it.captureDiagnostics()).contains("解析失败"))
+            }
+        }
 
     @Test
     fun receiveOnlySavesOfflineAndSurvivesRestartWithoutProviderOrSimCalls() =

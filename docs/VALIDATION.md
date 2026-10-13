@@ -1,5 +1,38 @@
 # 首版开发验证记录
 
+## 2026-10-13 后台验证码采集排查与恢复缺口修复
+
+基线 `fe11daf`，分支 `agent/sms-background-ingestion`，版本保持 `0.1.0-alpha.15`。
+详细因果分析、系统假设及真机最小复现矩阵见 [SMS_INGESTION_DIAGNOSIS.md](SMS_INGESTION_DIAGNOSIS.md)。
+本轮没有 PR、合并、发布、部署或向手机安装；没有真实短信/验证码记录进入日志。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `PATH=<共享 GNU 工具>:$PATH TMPDIR=<工作区外目录> bash scripts/verify-repository.sh` | 通过；版本/结构/凭据样式检查及 7 项运维测试 |
+| `git diff --check`、`gitleaks dir --no-banner --redact .` | 通过；无凭据泄漏 |
+| `go test -race -count=1 -v ./...`、`go vet ./...`、`go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .`、Go `gofmt` 检查 | 通过；13 项通过，11 项真实 MySQL/逻辑备份测试因缺少隔离 DSN/mysql 客户端而 skip，不记作已验证 |
+| `cd web && npm test && npm run check && npm run build` | 16 项测试、语法检查、工作区外生产资源构建通过 |
+| `./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir <外部目录> -Pkotlin.project.persistent.dir=<外部目录> :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | JDK 21/SDK 35/Gradle 8.11.1，全部通过；50 项 JVM 测试，无失败/skip；lint 0 errors、64 warnings；debug APK 和设备测试 APK 构建成功，最终日志 android-final.log |
+| `ktfmt --kotlinlang-style --dry-run --set-exit-if-changed`（本轮 Kotlin 文件）、`apksigner verify --verbose .../app-debug.apk` | 格式检查通过；debug APK v2 签名有效，未安装 |
+| `adb devices -l` | 无设备；未执行 instrumentation/用户手机/真实验证码、双卡或长时后台验收 |
+
+日志在 `/Users/lvziw/tmp/opencode/hongshu-sms-background/`；Gradle 依赖复用本机共享缓存
+`/Users/lvziw/.cache/hongshu-gradle-macos/`。Android、Go 可变缓存位于
+`/Users/lvziw/.cache/hongshu-build/sms-background-ingestion/`；Web 与 Go 二进制位于
+`/Users/lvziw/项目/.build-cache/hongshu/sms-background-ingestion/`，不在 worktree。
+
+失败/中断记录：首轮 Android 组合任务在测试通过后因 600 秒超时中断，不能记作整轮构建通过；
+后续重跑完整成功。首轮 Go 使用新建 NFS 可变缓存耗时超限，没有测试结果；改用本机共享缓存后
+完整测试、vet、build 通过。未改动断言、禁用 lint 或跳过失败检查。
+
+新增 18 项 JVM 回归：11 项共用设备/宿主的权限、收件箱补漏、分页、独立水位、ACK 去重、
+代次取消、关闭期间排除、存储失败、广播入口和等待持久入队合同；4 项同步调度策略；3 项
+权限/AppOps 分离诊断。共享合同用 API 35 Robolectric native SQLite 执行，设备版本只完成构建。
+
+边界：合成系统 provider/PDU、原生 SQLite 和 WorkManager 策略合同不证明用户手机广播投递。
+新短信补漏默认关闭、需明确开启与 READ_SMS 授权，只有系统可访问收件箱才能恢复；周期调度
+可能延迟，不能声称验证码全部/即时可读，也不能把通知 OTP 脱敏等同于 SMS 广播受限。
+
 ## 2026-10-13 Android 最近任务隐藏与后台实时连接
 
 基线 `869ec7f`，分支 `agent/android-background-keepalive`；版本保持 `0.1.0-alpha.14`，未发布、未部署。

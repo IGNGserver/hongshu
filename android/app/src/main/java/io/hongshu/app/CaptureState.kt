@@ -13,6 +13,7 @@ enum class CaptureFailure {
     NONE,
     PARSE,
     STORAGE,
+    SCHEDULING,
 }
 
 data class CaptureDiagnostics(
