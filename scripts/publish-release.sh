@@ -117,15 +117,22 @@ if gh release view "$TAG" --json isDraft --jq '.isDraft' > "$state/draft" 2>"$st
   test "$(inspect "$image@$digest")" = "$digest"
 else
   grep -Eqi 'release not found|HTTP 404' "$state/release-error" || { echo 'Release lookup unavailable; refusing publication' >&2; exit 1; }
-  for tag in "$VERSION" "$TAG"; do
-    test "$(inspect "$image:$tag")" = absent || { echo 'Existing tag without a recoverable draft; manual reconciliation required' >&2; exit 1; }
-  done
   validate_asset_set "$release"
   validate_release_notes "$release_notes"
+  for tag in "$VERSION" "$TAG"; do
+    inspect "$image:$tag" >/dev/null
+  done
   staging="$image:staging-${RELEASE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
   docker buildx build --push -t "$staging" --metadata-file "$state/image.json" .
   digest=$(jq -er '."containerimage.digest"' "$state/image.json")
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  for tag in "$VERSION" "$TAG"; do
+    existing=$(inspect "$image:$tag")
+    if [[ "$existing" != absent && "$existing" != "$digest" ]]; then
+      echo 'Version tag has another digest; refusing to overwrite' >&2
+      exit 1
+    fi
+  done
   asset_hashes=$(asset_hashes_json "$release")
   jq -n --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" --arg digest "$digest" --argjson assets "$asset_hashes" \
     '{sha:$sha,image:$image,version:$version,digest:$digest,assets:$assets}' > "$state/metadata.json"
