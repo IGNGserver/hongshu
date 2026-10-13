@@ -134,7 +134,16 @@ class Operations(unittest.TestCase):
         self.assertNotEqual(0,self.run_publish())
         self.update(tags={},outage=True)
         self.assertNotEqual(0,self.run_publish())
-        self.assertEqual(0,json.loads(self.state.read_text())['builds'])
+        self.assertEqual(1,json.loads(self.state.read_text())['builds'])
+
+    def test_existing_matching_tags_can_publish_without_overwrite(self):
+        self.update(tags={'0.1.0-alpha.99':'sha256:'+'a'*64,
+                          'v0.1.0-alpha.99':'sha256:'+'a'*64})
+        self.assertEqual(0,self.run_publish())
+        state=json.loads(self.state.read_text())
+        self.assertEqual(1,state['builds'])
+        self.assertEqual('published',state['release'])
+        self.assertEqual([],state['promotions'])
 
     def test_corrupted_partial_draft_is_not_overwritten(self):
         self.update(fail_once=True);self.assertNotEqual(0,self.run_publish())
