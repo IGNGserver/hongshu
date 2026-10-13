@@ -20,6 +20,10 @@ export function pushKey(key) {
   );
 }
 
+export function restoreScrollPosition(scrollTop, previousHeight, nextHeight) {
+  return scrollTop + Math.max(0, nextHeight - previousHeight);
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -46,6 +50,9 @@ const state = {
   busy: false,
   contacts: {},
   inboxDirty: false,
+  railExpanded: true,
+  historyHasMore: true,
+  historyLoading: false,
 };
 
 const errors = {
@@ -61,9 +68,15 @@ const errors = {
 const ICONS = {
   chat: `<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>`,
   devices: `<svg viewBox="0 0 24 24"><path d="M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z"/></svg>`,
+  menu: `<svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>`,
+  chevronLeft: `<svg viewBox="0 0 24 24"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>`,
+  chevronRight: `<svg viewBox="0 0 24 24"><path d="m10 6-1.41 1.41L13.17 12l-4.58 4.59L10 18l6-6z"/></svg>`,
   settings: `<svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
   search: `<svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>`,
   arrowDropDown: `<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>`,
+  check: `<svg viewBox="0 0 24 24"><path d="m9 16.17-3.88-3.88L3.71 13.7 9 19l11.29-11.29-1.41-1.42z"/></svg>`,
+  person: `<svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>`,
+  phoneAndroid: `<svg viewBox="0 0 24 24"><path d="M17 1H7c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2zm0 18H7V5h10v14zm-5 3c-.83 0-1.5-.67-1.5-1.5S11.17 19 12 19s1.5.67 1.5 1.5S12.83 22 12 22z"/></svg>`,
   arrowBack: `<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>`,
   close: `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
   contentCopy: `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`,
@@ -98,6 +111,15 @@ function getAvatarStyle(str) {
   const idx = Math.abs(hash) % AVATAR_PALETTES.length;
   const p = AVATAR_PALETTES[idx];
   return `background-color: ${p.bg}; color: ${p.color};`;
+}
+
+function defaultAvatar(label, extraClass = "") {
+  const avatar = el("span", `avatar ${extraClass}`.trim());
+  avatar.innerHTML = ICONS.person;
+  avatar.setAttribute("role", "img");
+  avatar.setAttribute("aria-label", `${label}默认头像`);
+  avatar.setAttribute("style", getAvatarStyle(label));
+  return avatar;
 }
 
 // Attach Material 3 Ripple effect to interactive DOM elements
@@ -324,7 +346,7 @@ function authView() {
 }
 
 // -------------------------------------------------------------
-// App Shell Structure (Google Messages Slim Rail + Canvas)
+// App Shell Structure (M3 Expressive Navigation Rail + Canvas)
 // -------------------------------------------------------------
 function shell() {
   const root = $("#app");
@@ -338,17 +360,35 @@ function shell() {
 
   const container = el("div", "shell");
 
-  // Slim Navigation Rail (Google Messages Web Left Bar)
-  const rail = el("aside", "rail");
+  const rail = el("aside", `rail${state.railExpanded ? " expanded" : " collapsed"}`);
+  rail.dataset.expanded = String(state.railExpanded);
   rail.setAttribute("aria-label", "主导航");
 
+  const railHeader = el("div", "rail-header");
   const brand = el("div", "brand");
-  const mark = el("span", "mark", "枢");
-  brand.append(mark);
-  // Hidden text for test / screenreader compatibility
-  const brandTitle = el("strong", "", state.me?.title || "鸿枢");
-  brand.append(brandTitle);
-  rail.append(brand);
+  const brandLogo = el("img", "brand-logo");
+  brandLogo.src = "/icon.svg";
+  brandLogo.alt = "鸿枢";
+  const brandTitle = el("strong", "brand-title", "鸿枢");
+  brand.append(brandLogo, brandTitle);
+  railHeader.append(brand);
+
+  const railToggle = el("button", "icon-button rail-toggle");
+  railToggle.type = "button";
+  railToggle.innerHTML = state.railExpanded ? ICONS.chevronLeft : ICONS.chevronRight;
+  railToggle.setAttribute(
+    "aria-label",
+    state.railExpanded ? "收起侧边栏" : "展开侧边栏",
+  );
+  railToggle.title = railToggle.getAttribute("aria-label");
+  railToggle.setAttribute("aria-expanded", String(state.railExpanded));
+  attachRipple(railToggle);
+  railToggle.onclick = () => {
+    state.railExpanded = !state.railExpanded;
+    shell();
+  };
+  railHeader.append(railToggle);
+  rail.append(railHeader);
 
   const nav = el("nav");
   for (const [p, t, icon] of [
@@ -362,6 +402,7 @@ function shell() {
     );
     item.type = "button";
     item.setAttribute("aria-label", t);
+    if (state.page === p) item.setAttribute("aria-current", "page");
     attachRipple(item);
 
     const iconWrapper = el("div", "rail-icon-wrapper");
@@ -378,12 +419,11 @@ function shell() {
   }
   rail.append(nav);
 
-  // Status Indicator Dot (Google Messages Clean Bottom Status)
   const foot = el("div", "foot");
-  const statusEl = el("div", "status", "实时连接");
+  const statusEl = el("div", "status");
   statusEl.title = "已建立长连接实时通信";
   const dot = el("span", "status-dot");
-  statusEl.prepend(dot);
+  statusEl.append(dot, el("span", "status-copy"));
   foot.append(statusEl);
   rail.append(foot);
 
@@ -420,9 +460,13 @@ function setStatus(text, online) {
   const n = $(".status");
   if (n) {
     n.title = text;
-    // Keep text node content for compatibility
     const dot = n.querySelector(".status-dot") || el("span", "status-dot");
-    n.replaceChildren(dot, document.createTextNode(text));
+    const copy = el("span", "status-copy");
+    copy.append(
+      el("strong", "status-label", online ? "实时连接" : "自动补齐"),
+      el("small", "status-state", online ? "已连接" : "等待连接"),
+    );
+    n.replaceChildren(dot, copy);
     n.className = "status" + (online ? " online" : "");
   }
 }
@@ -499,7 +543,9 @@ function inboxView() {
     createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
     createFilterChip(
       "所有设备",
-      state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
+      state.devices
+        .filter((d) => d.kind === "android" && !d.revoked)
+        .map((d) => [d.id, d.name]),
       state.device,
       (v) => (state.device = v),
     ),
@@ -515,31 +561,131 @@ function inboxView() {
   void refreshInbox().catch((e) => toast(e.message));
 }
 
+let activeFilterMenu = null;
+let filterMenuEventsInstalled = false;
+
+function installFilterMenuEvents() {
+  if (filterMenuEventsInstalled || typeof document === "undefined") return;
+  filterMenuEventsInstalled = true;
+  document.addEventListener("click", (event) => {
+    if (activeFilterMenu && !activeFilterMenu.wrapper.contains(event.target)) {
+      activeFilterMenu.close();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && activeFilterMenu) {
+      activeFilterMenu.close(true);
+    }
+  });
+}
+
 function createFilterChip(label, items, value, change) {
+  installFilterMenuEvents();
   const wrapper = el("div", "filter-chip-wrapper");
-  const s = el("select", "filter-chip-select" + (value ? " active" : ""));
-  s.setAttribute("aria-label", label);
+  const trigger = el("button", "filter-chip" + (value ? " active" : ""));
+  trigger.type = "button";
+  trigger.setAttribute("aria-label", label);
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
 
-  const all = el("option", "", label);
-  all.value = "";
-  s.append(all);
-
-  for (const [v, t] of items) {
-    const o = el("option", "", t);
-    o.value = v;
-    s.append(o);
-  }
-  s.value = value;
-  s.onchange = () => {
-    change(s.value);
-    s.classList.toggle("active", Boolean(s.value));
-    state.offset = 0;
-    void refreshInbox().catch((e) => toast(e.message));
-  };
-
+  const selected = items.find(([v]) => v === value);
+  const triggerLabel = el("span", "filter-chip-label", selected?.[1] || label);
   const arrow = el("span", "filter-chip-arrow");
   arrow.innerHTML = ICONS.arrowDropDown;
-  wrapper.append(s, arrow);
+  trigger.append(triggerLabel, arrow);
+
+  const menu = el("div", "filter-menu-popup");
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+  menu.setAttribute("aria-label", label);
+
+  const options = [["", label], ...items];
+  const optionButtons = [];
+  let selectedIndex = Math.max(0, options.findIndex(([v]) => v === value));
+
+  function updateSelected(nextValue) {
+    selectedIndex = Math.max(0, options.findIndex(([v]) => v === nextValue));
+    triggerLabel.textContent = options[selectedIndex][1];
+    trigger.classList.toggle("active", Boolean(nextValue));
+    optionButtons.forEach((option, index) => {
+      const selected = index === selectedIndex;
+      option.classList.toggle("selected", selected);
+      option.setAttribute("aria-selected", String(selected));
+    });
+  }
+
+  function close(focus = false) {
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (activeFilterMenu?.wrapper === wrapper) activeFilterMenu = null;
+    if (focus) trigger.focus();
+  }
+
+  function open() {
+    if (activeFilterMenu && activeFilterMenu.wrapper !== wrapper) {
+      activeFilterMenu.close();
+    }
+    activeFilterMenu = { wrapper, close };
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    optionButtons[selectedIndex]?.focus();
+  }
+
+  function choose(nextValue) {
+    updateSelected(nextValue);
+    close(true);
+    change(nextValue);
+    state.offset = 0;
+    void refreshInbox().catch((e) => toast(e.message));
+  }
+
+  options.forEach(([optionValue, optionLabel], index) => {
+    const option = el("button", "filter-menu-option");
+    option.type = "button";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === selectedIndex));
+    option.classList.toggle("selected", index === selectedIndex);
+    option.tabIndex = -1;
+    const check = el("span", "filter-menu-check");
+    check.innerHTML = ICONS.check;
+    option.append(check, el("span", "filter-menu-option-label", optionLabel));
+    option.onclick = (event) => {
+      event.stopPropagation();
+      choose(optionValue);
+    };
+    optionButtons.push(option);
+    menu.append(option);
+  });
+
+  trigger.onclick = (event) => {
+    event.stopPropagation();
+    if (menu.hidden) open();
+    else close();
+  };
+  trigger.onkeydown = (event) => {
+    if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      open();
+    }
+  };
+  menu.onkeydown = (event) => {
+    const current = optionButtons.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const next = (current + direction + optionButtons.length) % optionButtons.length;
+      optionButtons[next]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      optionButtons[event.key === "Home" ? 0 : optionButtons.length - 1]?.focus();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = optionButtons[current];
+      if (option) choose(options[current][0]);
+    }
+  };
+
+  wrapper.append(trigger, menu);
   return wrapper;
 }
 
@@ -570,7 +716,9 @@ async function refreshInbox({ metadata = true, preserveHistory = false } = {}) {
         createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
         createFilterChip(
           "所有设备",
-          state.devices.filter((d) => !d.revoked).map((d) => [d.id, d.name]),
+          state.devices
+            .filter((d) => d.kind === "android" && !d.revoked)
+            .map((d) => [d.id, d.name]),
           state.device,
           (v) => (state.device = v),
         ),
@@ -627,14 +775,15 @@ function renderConversations() {
       state.sender = m.sender;
       state.receiver = m.receiver;
       state.messages = [];
+      state.historyHasMore = true;
+      state.historyLoading = false;
       $(".layout")?.classList.add("has-detail");
       renderConversations();
       await loadHistory(false);
     };
 
     const titleText = m.contact || m.sender;
-    const avatar = el("span", "avatar", titleText.slice(0, 1).toUpperCase());
-    avatar.setAttribute("style", getAvatarStyle(titleText));
+    const avatar = defaultAvatar(titleText);
 
     const preview = el("div", "preview");
     const previewTop = el("div", "preview-top");
@@ -677,52 +826,107 @@ function renderConversations() {
 // Detail Message Stream (Google Messages Layout & Grouping)
 // -------------------------------------------------------------
 let historyAbortController = null;
+let historyRequestId = 0;
+const MESSAGE_PAGE_SIZE = 100;
+
+function updateHistoryStatus() {
+  const status = $(".history-status");
+  if (!status) return;
+  if (state.historyLoading) {
+    status.textContent = "正在加载更早记录…";
+  } else if (!state.historyHasMore) {
+    status.textContent = state.messages.length ? "已到最早记录" : "暂无历史记录";
+  } else {
+    status.textContent = "向上滚动加载更早记录";
+  }
+}
+
 async function loadHistory(older, { preserve = false } = {}) {
   const sender = state.sender;
   const receiver = state.receiver;
+  if (!sender || (older && (!state.historyHasMore || state.historyLoading))) return;
+
   if (!older) {
     if (historyAbortController) historyAbortController.abort();
     historyAbortController = new AbortController();
+    state.historyHasMore = true;
   }
   const signal = historyAbortController?.signal;
+  const requestId = ++historyRequestId;
   const generation = state.generation;
   const previousStream = $(".messages");
   const scrollTop = previousStream?.scrollTop || 0;
   const scrollHeight = previousStream?.scrollHeight || 0;
-  const atBottom = previousStream && scrollHeight - scrollTop - previousStream.clientHeight < 40;
-
+  const atBottom = previousStream &&
+    scrollHeight - scrollTop - previousStream.clientHeight < 40;
   const args = {
     sender,
     sim: receiver || state.sim,
     device: state.device,
     q: state.q,
-    limit: 100,
+    limit: MESSAGE_PAGE_SIZE,
   };
   if (older && state.messages.length) args.before = state.messages[0].id;
 
+  state.historyLoading = true;
+  updateHistoryStatus();
   try {
     setBusy(true);
     const d = await api("/messages?" + query(args), "GET", undefined, { signal });
     if (
       signal?.aborted ||
+      requestId !== historyRequestId ||
       generation !== state.generation || !state.me ||
       sender !== state.sender ||
       receiver !== state.receiver
     ) {
       return;
     }
+
+    const incoming = d.messages || [];
     state.messages = older || preserve
-      ? mergeMessages(state.messages, d.messages)
-      : mergeMessages([], d.messages);
+      ? mergeMessages(state.messages, incoming)
+      : mergeMessages([], incoming);
+    state.messages = state.messages.map((message) => ({
+      ...message,
+      contact: state.contacts[message.sender] || message.contact || "",
+    }));
+    if (older) {
+      state.historyHasMore = incoming.length === MESSAGE_PAGE_SIZE;
+    } else if (!preserve) {
+      state.historyHasMore = incoming.length === MESSAGE_PAGE_SIZE;
+    } else {
+      state.historyHasMore ||= incoming.length === MESSAGE_PAGE_SIZE;
+    }
+    state.historyLoading = false;
     renderDetail();
-    state.messages = state.messages.map(m => ({ ...m, contact: state.contacts[m.sender] || "" }));
-    const n = $(".messages");
-    if (n) n.scrollTop = older ? scrollTop + n.scrollHeight - scrollHeight : preserve && !atBottom ? scrollTop : n.scrollHeight;
+
+    const nextStream = $(".messages");
+    if (nextStream) {
+      if (older) {
+        nextStream.scrollTop = restoreScrollPosition(
+          scrollTop,
+          scrollHeight,
+          nextStream.scrollHeight,
+        );
+      } else if (preserve) {
+        nextStream.scrollTop = atBottom
+          ? nextStream.scrollHeight
+          : Math.min(scrollTop, nextStream.scrollHeight);
+      } else {
+        nextStream.scrollTop = nextStream.scrollHeight;
+      }
+    }
   } catch (err) {
     if (err.name === "AbortError" || signal?.aborted) return;
+    state.historyHasMore = true;
     throw err;
   } finally {
-    setBusy(false);
+    if (requestId === historyRequestId) {
+      state.historyLoading = false;
+      updateHistoryStatus();
+      setBusy(false);
+    }
   }
 }
 
@@ -758,11 +962,7 @@ function renderDetail() {
   head.append(backBtn);
 
   const contactTitle = state.messages.at(-1)?.contact || state.sender;
-  const avatar = el("span", "avatar", contactTitle.slice(0, 1).toUpperCase());
-  avatar.style.width = "40px";
-  avatar.style.height = "40px";
-  avatar.style.minWidth = "40px";
-  avatar.setAttribute("style", getAvatarStyle(contactTitle));
+  const avatar = defaultAvatar(contactTitle, "avatar-detail");
 
   const titleBox = el("div", "detail-head-info");
   const infoText = el("div");
@@ -789,7 +989,20 @@ function renderDetail() {
 
   // Message Stream
   const messages = el("div", "messages");
-  messages.append(button("加载更早记录", () => loadHistory(true), "text-button"));
+  const historyStatus = el("div", "history-status");
+  historyStatus.setAttribute("role", "status");
+  historyStatus.setAttribute("aria-live", "polite");
+  messages.append(historyStatus);
+  messages.addEventListener("scroll", () => {
+    if (
+      messages.scrollTop <= 80 &&
+      state.historyHasMore &&
+      !state.historyLoading
+    ) {
+      void loadHistory(true).catch((error) => toast(error.message));
+    }
+  });
+  updateHistoryStatus();
 
   if (!state.messages.length) {
     messages.append(el("p", "empty", "没有符合筛选条件的消息"));
@@ -842,95 +1055,126 @@ function renderDetail() {
 }
 
 // -------------------------------------------------------------
-// Devices Management View (Google Messages Material Cards)
+// Devices View (read-only Android phone inventory)
 // -------------------------------------------------------------
-async function devicesView() {
+function devicesView() {
   const main = $(".main");
   const container = el("div", "page-container");
 
   const head = el("header", "page-head");
-  head.append(el("h1", "", "设备与 SIM"));
+  head.append(el("h1", "", "设备"));
   container.append(head);
 
-  if (state.me.device.admin) {
-    const c = el("section", "card stack");
-    c.append(
-      el("h2", "", "连接新设备"),
-      el(
-        "p",
-        "muted",
-        "所有设备（Android 手机或其他浏览器）直接使用统一中枢密码连接，无需生成配对码。",
-      ),
-    );
-    container.append(c);
-  }
-
+  const phones = state.devices.filter((device) =>
+    device.kind === "android" && !device.revoked,
+  );
   const grid = el("div", "cards");
-  for (const d of state.devices) {
-    const c = el("section", "card stack");
+  for (const d of phones) {
+    const c = el("section", "card stack device-card");
     const cardHead = el("div", "row spread");
+    const title = el("div", "device-title");
+    const phoneIcon = el("span", "device-icon");
+    phoneIcon.innerHTML = ICONS.phoneAndroid;
+    title.append(phoneIcon, el("h2", "", d.name));
     cardHead.append(
-      el("h2", "", d.name),
-      el(
-        "span",
-        "badge",
-        d.kind + (d.admin ? " · 管理员" : "") + (d.revoked ? " · 已撤销" : ""),
-      ),
+      title,
+      el("span", "badge", "Android 手机"),
     );
     c.append(cardHead);
 
     const sims = state.sims.filter((s) => s.device_id === d.id);
-    for (const s of sims) {
-      c.append(el("p", "muted", (s.label || "SIM") + " · " + s.phone));
-    }
-
-    if (!d.revoked && (state.me.device.admin || d.id === state.me.device.id)) {
-      const row = el("div", "row");
-      row.append(
-        button("重命名", async () => {
-          const name = prompt("设备名称", d.name);
-          if (!name?.trim()) return;
-          await api("/devices/" + d.id, "PATCH", { name: name.trim() });
-          await reloadMetadata();
-          shell();
-        }),
-      );
-      row.append(
-        button(d.notify ? "关闭通知" : "开启通知", async () => {
-          await api("/devices/" + d.id, "PATCH", { notify: !d.notify });
-          await reloadMetadata();
-          shell();
-        }),
-      );
-      if (d.kind === "android") {
-        row.append(
-          button(d.upload ? "禁止上传" : "允许上传", async () => {
-            await api("/devices/" + d.id, "PATCH", { upload: !d.upload });
-            await reloadMetadata();
-            shell();
-          }),
+    if (sims.length) {
+      for (const s of sims) {
+        const sim = el("div", "device-sim");
+        sim.append(
+          el("span", "device-sim-label", s.label || "SIM"),
+          el("span", "device-sim-phone", s.phone),
         );
+        c.append(sim);
       }
-      if (state.me.device.admin && d.id !== state.me.device.id) {
-        row.append(
-          button(
-            "撤销授权",
-            async () => {
-              if (!confirm("撤销 " + d.name + "？历史短信仍保留。")) return;
-              await api("/devices/" + d.id, "DELETE");
-              await reloadMetadata();
-              shell();
-            },
-            "danger",
-          ),
-        );
-      }
-      c.append(row);
+    } else {
+      c.append(el("p", "muted device-empty-sim", "暂无 SIM 信息"));
     }
     grid.append(c);
   }
-  container.append(grid);
+  if (!phones.length) {
+    const empty = el("div", "empty-state device-empty");
+    empty.innerHTML = ICONS.phoneAndroid;
+    empty.append(
+      el("h3", "", "暂无已连接手机"),
+      el("p", "", "连接 Android 手机后，设备信息会显示在这里。"),
+    );
+    container.append(empty);
+  } else {
+    container.append(grid);
+  }
   main.append(container);
+}
+
+function createSwitch(checked, onChange) {
+  let value = Boolean(checked);
+  const control = el("button", "m3-switch");
+  control.type = "button";
+  control.setAttribute("role", "switch");
+  control.setAttribute("aria-label", "浏览器通知");
+  control.setAttribute("aria-checked", String(value));
+  const thumb = el("span", "m3-switch-thumb");
+  control.append(thumb);
+  attachRipple(control);
+
+  control.setChecked = (next) => {
+    value = Boolean(next);
+    control.setAttribute("aria-checked", String(value));
+    control.classList.toggle("checked", value);
+  };
+  control.setDisabled = (disabled) => {
+    control.disabled = disabled;
+  };
+  control.onclick = async () => {
+    if (control.disabled) return;
+    await onChange(!value);
+  };
+  control.setChecked(value);
+  return control;
+}
+
+function pushCapability() {
+  return Boolean(
+    window.isSecureContext &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    typeof Notification !== "undefined" &&
+    state.me?.vapid_public_key,
+  );
+}
+
+async function browserPushEnabled() {
+  if (!pushCapability() || Notification.permission !== "granted") return false;
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscription = await registration?.pushManager.getSubscription();
+  return Boolean(state.me?.device?.notify && subscription);
+}
+
+function setLocalNotificationState(enabled) {
+  if (state.me?.device) state.me.device.notify = enabled;
+  const current = state.devices.find((device) => device.id === state.me?.device?.id);
+  if (current) current.notify = enabled;
+}
+
+async function disablePush() {
+  await api("/push", "DELETE");
+  if ("serviceWorker" in navigator) {
+    const registration = await navigator.serviceWorker.getRegistration();
+    await (await registration?.pushManager.getSubscription())?.unsubscribe();
+  }
+  await api("/devices/" + state.me.device.id, "PATCH", { notify: false });
+  setLocalNotificationState(false);
+}
+
+async function logout() {
+  await api("/logout", "POST", {});
+  disconnect();
+  authView();
 }
 
 // -------------------------------------------------------------
@@ -938,80 +1182,50 @@ async function devicesView() {
 // -------------------------------------------------------------
 function settingsView() {
   const main = $(".main");
-  const container = el("div", "page-container");
+  const container = el("div", "page-container settings-container");
 
   const head = el("header", "page-head");
-  head.append(el("h1", "", "中枢设置"));
+  head.append(el("h1", "", "设置"));
   container.append(head);
 
-  const card = el("section", "card stack");
-  card.append(
-    el("h2", "", "浏览器通知"),
-    el(
-      "p",
-      "muted",
-      "在线使用实时连接，后台通过标准 Web Push（无需 Firebase）。Web Push、Service Worker 和可安装离线应用需要 HTTPS 或 localhost；公网 HTTP 不支持。",
-    ),
-  );
-  const notifyRow = el("div", "row");
-  notifyRow.append(
-    button("启用安全通知", enablePush, "primary"),
-    button("关闭浏览器推送", async () => {
-      await api("/push", "DELETE");
-      if (window.isSecureContext && "serviceWorker" in navigator) {
-        const reg = await navigator.serviceWorker.getRegistration();
-        await (await reg?.pushManager.getSubscription())?.unsubscribe();
-      }
-      toast("已关闭浏览器推送");
-    }),
-  );
-  card.append(notifyRow);
+  const card = el("section", "card notification-card");
+  const copy = el("div", "settings-copy");
+  copy.append(el("h2", "", "浏览器通知"));
+  const status = el("p", "notification-state", "正在读取通知状态…");
+  status.setAttribute("aria-live", "polite");
+  copy.append(status);
+
+  const toggle = createSwitch(false, async (next) => {
+    toggle.setDisabled(true);
+    setBusy(true);
+    try {
+      if (next) await enablePush();
+      else await disablePush();
+      toggle.setChecked(next);
+      status.textContent = next ? "通知已开启" : "通知已关闭";
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      toggle.setDisabled(false);
+      setBusy(false);
+    }
+  });
+  toggle.setDisabled(!pushCapability());
+  card.append(el("div", "settings-row"));
+  card.querySelector(".settings-row").append(copy, toggle);
   container.append(card);
 
-  if (state.me.device.admin) {
-    const c = el("section", "card stack");
-    c.append(el("h2", "", "中枢名称"));
-    const input = el("input");
-    input.value = state.me.title;
-    input.dataset.loadedTitle = state.me.title;
-    input.maxLength = 100;
-    input.setAttribute("aria-label", "中枢名称");
-    c.append(
-      input,
-      button("保存名称", async () => {
-        if (input.dataset.loadedTitle !== state.me.title) throw new Error("中枢名称已被其他设备修改，请重新打开设置后确认");
-        await api("/settings", "PATCH", { title: input.value });
-        state.me.title = input.value;
-        shell();
-      }),
-    );
-    container.append(c);
-  }
-
-  const privacy = el("section", "card stack");
-  privacy.append(
-    el("h2", "", "隐私与存储"),
-    el(
-      "p",
-      "",
-      "历史短信不会自动清理。MySQL 与备份是权威数据源。此浏览器不会离线持久保存短信正文。",
-    ),
-    el(
-      "p",
-      "muted",
-      "通知只显示泛化提示。首版是收件/查看平台，不支持发送短信、MMS 或 RCS。",
-    ),
-    button("退出此浏览器", async () => {
-      await api("/logout", "POST", {});
-      disconnect();
-      state.me = null;
-      state.messages = [];
-      state.conversations = [];
-      authView();
-    }),
-  );
-  container.append(privacy);
+  const footer = el("footer", "settings-footer");
+  footer.append(button("退出登录", logout, "logout-button"));
+  container.append(footer);
   main.append(container);
+
+  void browserPushEnabled().then((enabled) => {
+    toggle.setChecked(enabled);
+    status.textContent = enabled ? "通知已开启" : "通知已关闭";
+  }).catch(() => {
+    status.textContent = "通知已关闭";
+  });
 }
 
 // -------------------------------------------------------------
@@ -1039,7 +1253,7 @@ async function enablePush() {
   const json = sub.toJSON();
   await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
   await api("/devices/" + state.me.device.id, "PATCH", { notify: true });
-  toast("已启用隐私通知");
+  setLocalNotificationState(true);
 }
 
 async function reloadMetadata() {
@@ -1051,14 +1265,6 @@ async function reloadMetadata() {
   state.contacts = c.contacts;
 }
 
-function refreshSettingsSnapshot() {
-  const input = $('[aria-label="中枢名称"]');
-  if (input && input.value === input.dataset.loadedTitle) {
-    input.value = state.me.title;
-    input.dataset.loadedTitle = state.me.title;
-  }
-}
-
 function disconnect() {
   state.loggedOut = true;
   state.generation++;
@@ -1068,6 +1274,9 @@ function disconnect() {
   for (const request of sessionRequests) request.abort();
   historyAbortController?.abort();
   inboxAbortController?.abort();
+  historyRequestId++;
+  state.historyHasMore = true;
+  state.historyLoading = false;
   state.me = null;
   state.messages = [];
   state.conversations = [];
@@ -1120,7 +1329,6 @@ async function catchUp() {
     // fetch only displayed history, never replay/download discarded SMS bodies.
     state.cursor = me.cursor;
     state.me = me;
-    refreshSettingsSnapshot();
     await reloadMetadata();
     if (generation !== state.generation || !state.me) return;
     const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
