@@ -1,3 +1,17 @@
+# 2026-10-13 Android 导航、状态栏与预测式返回
+
+基线 `fe11daf`，分支 `agent/frontend-navigation-safe-area`；版本保持 `0.1.0-alpha.15`，本轮未创建 PR、未合并、未发布或安装到手机。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `git diff --check` | 通过 |
+| `cd android && BUILD_SCRATCH_ROOT=/Users/lvziw/.build HONGSHU_BUILD_DIR=/Users/lvziw/.build/hongshu/frontend-navigation-safe-area GRADLE_USER_HOME=/Users/lvziw/.cache/hongshu-gradle-macos ./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir /Users/lvziw/.build/hongshu/frontend-navigation-safe-area/gradle-project-cache :app:testDebugUnitTest :app:lintDebug` | 通过；35 项 JVM 单测（含 3 项导航栈测试）、lint 通过；保留既有 lint warnings，无新增错误 |
+| 同上环境执行 `./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir /Users/lvziw/.build/hongshu/frontend-navigation-safe-area/gradle-project-cache :app:assembleDebug` | 通过；debug APK 构建成功，产物位于工作区外本机盘缓存 |
+| `bash scripts/verify-repository.sh` | 未通过：仓库结构/版本检查通过，但既有 `scripts/test-operations.py` 有 2 项失败、1 项错误（发布草稿恢复 fixture 在当前 Python 3.14/macOS 环境下缺少预期 journal 文件）；本轮未修改发布脚本 |
+| `adb devices -l` | 无连接设备，未执行真机/模拟器返回手势、状态栏截图和 instrumentation 验收 |
+
+本轮新增统一 Android 目的地栈、设置全屏 edge-to-edge 页面、左右边缘方向一致的 `PredictiveBackHandler` 动画，以及导航栈单元测试。Gradle 项目缓存和 Android 产物均未留在 worktree；最终构建 scratch 为 `/Users/lvziw/.build/hongshu/frontend-navigation-safe-area`（约 165M），共享 Gradle 缓存为 `/Users/lvziw/.cache/hongshu-gradle-macos`（约 1.5G），本机盘可用空间约 178 GiB。之前 ASCII 路径构建产生的 `/Users/lvziw/.cache/hongshu-build/frontend-navigation-safe-area`（约 164M）作为共享缓存保留。
+
 # 首版开发验证记录
 
 ## 2026-10-13 后台验证码采集排查与恢复缺口修复
