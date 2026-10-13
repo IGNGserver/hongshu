@@ -97,6 +97,18 @@ class Config(context: Context) {
             prefs.edit().putBoolean("keep_alive", value).commit()
         }
 
+    var hideFromRecents: Boolean
+        get() = prefs.getBoolean("hide_from_recents", false)
+        set(value) {
+            prefs.edit().putBoolean("hide_from_recents", value).commit()
+        }
+
+    var restoreRealtimeOnBoot: Boolean
+        get() = prefs.getBoolean("restore_realtime_on_boot", false)
+        set(value) {
+            prefs.edit().putBoolean("restore_realtime_on_boot", value).commit()
+        }
+
     var syncHealthy: Boolean
         get() = prefs.getBoolean("sync_healthy", false)
         set(value) {

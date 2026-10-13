@@ -63,6 +63,23 @@ fun keepAliveStatus(context: Context, c: Config, health: ConnectionHealth): Stri
     return health.detail + restrictions
 }
 
+fun connectionNotificationStatus(context: Context): String {
+    if (
+        Build.VERSION.SDK_INT >= 33 &&
+            !hasPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+    )
+        return "缺少通知权限，连接通知可能不可见"
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return "系统已禁止应用通知"
+    if (
+        context
+            .getSystemService(NotificationManager::class.java)
+            .getNotificationChannel("connection")
+            ?.importance == NotificationManager.IMPORTANCE_NONE
+    )
+        return "系统已关闭实时连接通知渠道"
+    return "实时连接通知已允许"
+}
+
 fun notificationStatus(context: Context, c: Config, health: ConnectionHealth): String {
     if (!c.notify) return "已关闭"
     if (c.token.isEmpty()) return "未连接中枢或凭据已失效"
