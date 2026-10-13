@@ -173,6 +173,25 @@ class BootReceiver : android.content.BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         schedule(context)
         syncNow(context)
+        val pending = goAsync()
+        syncSchedulingScope.launch {
+            try {
+                val config = Config(context)
+                if (
+                    restoreRealtimeOnBoot(
+                        config.restoreRealtimeOnBoot,
+                        config.keepAlive,
+                        config.token.isNotEmpty(),
+                        config.url.isNotEmpty(),
+                    )
+                )
+                    startRealtimeIfEnabled(context)
+            } catch (_: Exception) {
+                RuntimeHealth.connection.value = ConnectionHealth(detail = "开机恢复实时连接失败；周期同步仍启用")
+            } finally {
+                pending.finish()
+            }
+        }
     }
 }
 
@@ -361,7 +380,7 @@ fun notifyMessage(context: Context): Boolean {
         PendingIntent.getActivity(
             context,
             0,
-            Intent(context, MainActivity::class.java),
+            mainActivityIntent(context),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     context

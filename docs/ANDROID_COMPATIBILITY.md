@@ -24,8 +24,19 @@ SubscriptionInfo.number；运营商未提供号码时明确显示未识别，不
 
 Android 15+ 可能限制非默认短信应用读取敏感验证码；权限授予也不保证所有消息可见。
 Google Play 的 SMS 权限政策与设备 sideload 是不同问题；首版按用户自行安装设计，未声称可直接上架。
-通知权限 Android 13+ 单独申请；锁屏只显示泛化提示。无 FCM、无后台隐身常驻技巧。
-前台服务是用户主动开启的可选链路，dataSync 超时后停止并退回 WorkManager。
+通知权限 Android 13+ 单独申请；锁屏只显示泛化提示。无 FCM、无无声音乐/一像素/无障碍保活。
+前台服务是用户主动开启的可选链路。Android 14+ 的跨设备短信连接采用 remoteMessaging，
+声明 FOREGROUND_SERVICE_REMOTE_MESSAGING；Android 8–13 使用 dataSync 兼容路径。
+SQLiteOpenHelper 的 AutoCloseable 接口仅在 API 29+ 存在；Store 显式实现 Closeable，
+保持 Android 8/9 上 Kotlin use 的正常关闭路径，避免运行时类型转换崩溃。
+超时仍及时停止并退回 WorkManager，不循环重启耗尽配额的服务；普通进程回收通过 START_STICKY 尝试恢复。
+开机恢复是独立 opt-in，凭据不可用或系统拒绝启动时保留周期同步，不声称必然恢复。
+隐藏最近任务只设置当前任务的 exclude 标记，不结束/移除任务、不提升进程优先级。
+参考 SmsForwarder 的 MainActivity.kt/SettingsFragment.kt：setExcludeFromRecents 与前台服务独立；
+该参考版本 targetSdk=33，不能将其旧版保活行为直接套用到鸿枢的 targetSdk=35。
+先锁定后隐藏是否仍保留清理保护，必须按实际厂商/系统验证；没有通用公开 API 可读取锁定状态。
+参考 https://developer.android.com/develop/background-work/services/fgs/service-types#remote-messaging
+与 https://developer.android.com/reference/android/app/ActivityManager.AppTask#setExcludeFromRecents(boolean)。
 厂商省电、Doze、强制停止、设备关机导致延迟；应用提供状态和重连，不能承诺绝对即时。
 
 必须在真实双卡设备验证：不同厂商 extras、长短信编码、跨时区、SIM 更换、缺失订阅 ID、

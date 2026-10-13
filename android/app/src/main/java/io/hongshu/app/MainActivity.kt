@@ -40,6 +40,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -52,8 +54,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow
-        // screenshots
+        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
+        // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
             HongshuTheme {
                 Surface(
@@ -68,22 +70,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
         SimMonitor.start(this)
         syncNow(this)
-        if (
-            Config(this).keepAlive &&
-                Config(this).token.isNotEmpty() &&
-                !RuntimeHealth.connection.value.running
-        ) {
-            try {
-                androidx.core.content.ContextCompat.startForegroundService(
-                    this,
-                    android.content.Intent(this, RealtimeService::class.java),
-                )
-            } catch (_: Exception) {
-                RuntimeHealth.connection.value = ConnectionHealth(detail = "系统不允许启动后台服务")
-            }
-        }
+        if (!RuntimeHealth.connection.value.running) startRealtimeIfEnabled(this)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    fun leaveForBackground() {
+        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
+        moveTaskToBack(true)
     }
 }
 
@@ -183,16 +183,22 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(30000)
-            if (repo.config.token.isNotEmpty()) syncNow(activity)
+    LaunchedEffect(activity) {
+        activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                kotlinx.coroutines.delay(30000)
+                if (repo.config.token.isNotEmpty()) syncNow(activity)
+            }
         }
     }
 
     fun closeThread() {
         selectedSender = ""
         threadReceiver = ""
+    }
+
+    BackHandler(selectedSender.isEmpty() && !isSearchActive && !showSettingsDialog) {
+        activity.leaveForBackground()
     }
 
     BackHandler(selectedSender.isNotEmpty() || isSearchActive) {

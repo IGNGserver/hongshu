@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -63,10 +65,12 @@ fun SettingsDialog(
     }
     var tick by remember { mutableLongStateOf(0) }
     val changes by Store.changes.collectAsState()
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
-            tick++
+    LaunchedEffect(activity) {
+        activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(1000)
+                tick++
+            }
         }
     }
     // Preferences can also change from a worker/service while the dialog is open.
@@ -331,7 +335,9 @@ private fun SimSettingsSubPage(
         }
     }
 
-    LaunchedEffect(automatic) {
+    val lifecycleState by activity.lifecycle.currentStateFlow.collectAsState()
+    LaunchedEffect(automatic, lifecycleState) {
+        if (!lifecycleState.isAtLeast(Lifecycle.State.STARTED)) return@LaunchedEffect
         while (true) {
             if (hasPermission(activity, Manifest.permission.READ_PHONE_STATE)) {
                 val next =
@@ -492,6 +498,54 @@ private fun SyncControlSubPage(
             }
         }
     }
+    var confirmHide by remember { mutableStateOf(false) }
+
+    fun setRealtime(enabled: Boolean) {
+        onAction {
+            check(!enabled || c.token.isNotEmpty()) { "请先连接中枢" }
+            withContext(Dispatchers.Main) {
+                c.keepAlive = enabled
+                if (enabled) {
+                    if (!startRealtimeIfEnabled(activity)) {
+                        c.keepAlive = false
+                        error("实时服务启动失败；周期同步仍启用")
+                    }
+                } else activity.stopService(Intent(activity, RealtimeService::class.java))
+            }
+            if (enabled) "后台实时连接已启用，实际状态见上方" else "实时连接已关闭；周期同步仍启用"
+        }
+    }
+
+    fun setHidden(hidden: Boolean) {
+        onAction {
+            withContext(Dispatchers.Main) {
+                check(updateRecentTaskVisibility(activity, hidden)) { "系统不支持修改当前任务显示状态" }
+                c.hideFromRecents = hidden
+            }
+            if (hidden) "最近任务已隐藏，可从桌面图标或通知重新打开" else "当前任务已恢复显示"
+        }
+    }
+
+    if (confirmHide) {
+        AlertDialog(
+            onDismissRequest = { confirmHide = false },
+            title = { Text("隐藏最近任务卡片") },
+            text = {
+                Text("隐藏后仍可从桌面图标或连接通知打开应用。若手机需要任务加锁，请先在最近任务中加锁，再开启隐藏。隐藏不是保活授权，也不能保证厂商保留锁定保护。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmHide = false
+                        setHidden(true)
+                    }
+                ) {
+                    Text("开启隐藏")
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmHide = false }) { Text("取消") } },
+        )
+    }
     LazyColumn(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -596,29 +650,63 @@ private fun SyncControlSubPage(
         item { StatusRow("中枢同步状态", smsSyncStatus(activity, repo)) }
         item { StatusRow("后台保活状态", keepAliveStatus(activity, c, health)) }
         item { StatusRow("通知接收状态", notificationStatus(activity, c, health)) }
+        item { StatusRow("实时连接通知状态", connectionNotificationStatus(activity)) }
         item {
             SettingSwitch("后台保活开关", c.keepAlive, !busy) { enabled ->
-                onAction {
-                    check(!enabled || c.token.isNotEmpty()) { "请先连接中枢" }
-                    withContext(Dispatchers.Main) {
-                        if (enabled) {
-                            c.keepAlive = true
-                            try {
-                                ContextCompat.startForegroundService(
-                                    activity,
-                                    Intent(activity, RealtimeService::class.java),
-                                )
-                            } catch (e: Exception) {
-                                c.keepAlive = false
-                                throw e
-                            }
-                        } else {
-                            c.keepAlive = false
-                            activity.stopService(Intent(activity, RealtimeService::class.java))
-                        }
+                if (enabled && c.token.isNotEmpty() && Build.VERSION.SDK_INT >= 33)
+                    onRequestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) {
+                        setRealtime(true)
                     }
-                    if (enabled) "后台保活已启用，实际状态见上方" else "后台保活已关闭"
+                else setRealtime(enabled)
+            }
+        }
+        item {
+            SettingSwitch("不在最近任务列表显示", c.hideFromRecents, !busy) { hidden ->
+                if (hidden) confirmHide = true else setHidden(false)
+            }
+        }
+        item {
+            SettingSwitch("开机恢复实时连接", c.restoreRealtimeOnBoot, !busy) { enabled ->
+                onAction {
+                    c.restoreRealtimeOnBoot = enabled
+                    if (enabled) "已保存；需同时开启后台实时连接，恢复仍受系统限制" else "开机不再恢复实时连接"
                 }
+            }
+        }
+        item {
+            Text(
+                "首页返回只退出界面，不停止实时连接。隐藏任务与后台保活相互独立。请在系统中允许后台运行和自启动；无法自动检测厂商任务锁。强制停止后需重新打开应用。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        item {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    onAction {
+                        withContext(Dispatchers.Main) {
+                            check(openBackgroundSettings(activity, battery = true)) { "无法打开系统设置" }
+                        }
+                        "请在系统电池优化列表允许鸿枢后台运行，返回后显示实际状态"
+                    }
+                },
+            ) {
+                Text("电池优化设置")
+            }
+        }
+        item {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    onAction {
+                        withContext(Dispatchers.Main) {
+                            check(openBackgroundSettings(activity, battery = false)) { "无法打开系统设置" }
+                        }
+                        "请按手机系统配置后台运行、自启动和通知权限"
+                    }
+                },
+            ) {
+                Text("应用信息与后台权限")
             }
         }
     }

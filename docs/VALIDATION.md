@@ -1,5 +1,47 @@
 # 首版开发验证记录
 
+## 2026-10-13 Android 最近任务隐藏与后台实时连接
+
+基线 `869ec7f`，分支 `agent/android-background-keepalive`；版本保持 `0.1.0-alpha.14`，未发布、未部署。
+本轮日志、工具与构建产物位于 `/Users/lvziw/tmp/opencode/hongshu-background-validation/`，不落 worktree。
+新增 5 项 JVM 测试（空 Intent/主动停止优先级/开机 opt-in 全组合/重连退避/规范化 WS 身份匹配）和 5 项 Android
+instrumentation 测试（当前任务隐藏可逆与重建、类型/Intent/stopWithTask、真实本地 WS 与通知、
+退出/移除 UI 任务不停止连接、断连恢复与持久停止、缺少凭据/401 停止）。
+CI Android 验证扩展为 API 28、33、35，覆盖旧任务 ID 字段、旧 dataSync 路径与 remoteMessaging 路径。
+
+| 实际命令/检查 | 本轮结果 |
+| --- | --- |
+| `PATH=<临时 GNU 工具>:$PATH TMPDIR=<外部目录> bash scripts/verify-repository.sh` | 通过；结构、版本、凭据样式扫描及 7 项运维测试 |
+| `git diff --check`、`actionlint .github/workflows/ci.yml`、Manifest XML 契约检查 | 通过 |
+| `ktfmt --kotlinlang-style --dry-run --set-exit-if-changed`（9 个新增/已格式化 Kotlin 文件） | 通过；MainActivity 原有整体格式未重写 |
+| `go test -race ./...`、`go test -race -count=1 -v ./...` | Go 1.24.4，13 项通过；11 项真实 MySQL/备份测试因缺少隔离 DSN/mysql 工具跳过，不能视为通过 |
+| `go vet ./...`、`go build -trimpath -o <外部目录>/hongshu .`、Go `gofmt` 检查 | 通过；缓存和二进制在工作区外 |
+| `cd web && npm test && npm run check && WEB_BUILD_DIR=<外部目录> npm run build` | 16 项测试、语法检查、生产构建通过 |
+| Android `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | 全部通过；17 项 JVM 单测（新增 5 项）、lint、debug APK 和测试 APK。JDK 17/SDK 35/Gradle 8.11.1；联网补齐缓存后离线完整重跑成功，日志 android-build-reviewed.log |
+| Android instrumentation（CI） | `e609edc` 的 CI [38384812005](https://github.com/IGNGserver/hongshu/actions/runs/38384812005) 全部通过：API 28 为 21/21，API 33、35 均为 22/22，含本轮 5 项后台测试 |
+| 厂商真机验收 | 本机 `adb devices -l` 无设备，未执行；模拟器结果不等于厂商任务锁/隔夜运行通过 |
+
+推送 `c2c10ae` 后 CI [38382374494](https://github.com/IGNGserver/hongshu/actions/runs/38382374494)：
+verify、Web、server（含隔离 MySQL/备份测试与浏览器 smoke）与 API 33/35 设备测试通过。
+API 28 的 21 项设备测试中 13 项失败，均为既有 Store 的 AutoCloseable 类型转换崩溃；
+SQLiteOpenHelper 在 API 29 前未实现该接口，生产 SIM 扫描/历史导入的 use 路径也受影响。
+Store 现显式实现 Closeable，沿用父类 close，不改 schema/数据、不跳过测试；修复后本地再次完整
+运行 Android 单测/lint/debug APK/测试 APK，全部通过（android-build-closeable.log）。
+修复提交 `e609edc` 的 CI 38384812005 已全绿，API 28 的全部 21 项通过，API 33/35 全部 22 项通过；
+verify、Web、server（隔离 MySQL、备份/恢复、浏览器 smoke）亦通过。
+
+首轮失败记录：离线 Android 构建因依赖元数据不完整失败，尚未进入代码编译，改为联网获取。
+联网首轮生产代码编译、JVM 测试与 debug APK 打包通过，但 lint 发现 taskId 字段需要 API 29，
+测试编译发现 PackageInfo.services 可空；已增加旧系统 id 路径并显式处理可空数组，随后完整重跑。
+提交前复查修正了 OkHttp 将 ws/wss 规范化为 http/https 后的身份比较，防止漏处理 401 或清除新身份；
+新增测试覆盖默认端口、非默认端口、更换中枢/凭据与无效地址，最终全套 Android 检查再次通过。
+macOS 自带 Bash 3.2 与 BSD find 不兼容原有 Linux 运维脚本；仅在外部临时目录构建 GNU Bash 5.3/
+findutils 4.10.0 后完整重跑，7 项通过，未修改测试断言或系统默认工具。
+
+边界：没有真实厂商最近任务锁/一键清理、开机恢复、普通进程回收、隔夜 Doze、超过六小时的真机
+运行和耗电验收；没有生产中枢与真实短信测试。隐藏卡片不提升进程优先级，不保证厂商保留任务锁。
+不使用无声音乐、一像素、无障碍、定时器强拉起或持续唤醒锁；UI 轮询在退后台后暂停。
+
 ## 2026-10-13 实时短信独立采集与本机待同步可见性
 
 版本保持 `0.1.0-alpha.14`，基线 `9f976aa`。方案及澎湃实测检查表见 [REALTIME_SMS.md](REALTIME_SMS.md)。
