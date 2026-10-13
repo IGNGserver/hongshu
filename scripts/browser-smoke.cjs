@@ -92,6 +92,8 @@ async function request(path, token, method = "GET", body) {
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.getByRole("heading", { name: "短信收件箱" }).waitFor();
     await page.getByText("实时连接", { exact: true }).waitFor({ timeout: 15000 });
+    await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
+    await page.getByRole("button", { name: "展开侧边栏", exact: true }).click();
     const phone = await request("/login", null, "POST", {
       password,
       name: "Synthetic Phone",
@@ -120,6 +122,7 @@ async function request(path, token, method = "GET", body) {
     await page.locator(".conversation").first().waitFor({timeout:10000});
     await page.locator(".conversation").first().click();
     await page.locator(".bubble").first().waitFor();
+    assert.equal(await page.locator(".conversation .avatar svg").count(), 1);
     assert.ok(
       (await page.locator(".bubble").first().textContent()).includes(body),
     );
@@ -136,13 +139,21 @@ async function request(path, token, method = "GET", body) {
     await page.getByLabel("搜索短信").fill("Synthetic SMS");
     await page.locator(".conversation").first().waitFor();
     await page.setViewportSize({ width: 1280, height: 900 });
+    assert.equal(await page.locator("select").count(), 0);
+    await page.getByRole("button", { name: "所有 SIM", exact: true }).click();
+    assert.ok(await page.getByRole("listbox", { name: "所有 SIM" }).isVisible());
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "设备", exact: true }).click();
     await page.getByText("Synthetic Phone", { exact: true }).waitFor();
-    await page.getByText("连接新设备", { exact: true }).waitFor();
+    assert.equal(await page.getByText("Web browser", { exact: true }).count(), 0);
+    assert.equal(await page.locator(".device-card button").count(), 0);
     await page.getByRole("button", { name: "设置", exact: true }).click();
-    await page.getByLabel("中枢名称").fill("Synthetic Hub");
-    await page.getByRole("button", { name: "保存名称" }).click();
-    await page.getByText("Synthetic Hub", { exact: true }).first().waitFor();
+    await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
+    await page.getByRole("switch", { name: "浏览器通知", exact: true }).waitFor();
+    await page.getByText("通知已关闭", { exact: true }).waitFor();
+    assert.equal(await page.getByText("中枢名称", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("隐私与存储", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "退出登录", exact: true }).waitFor();
     const cachedAPI = await page.evaluate(async () => {
       await navigator.serviceWorker.ready;
       for (const k of await caches.keys()) {
