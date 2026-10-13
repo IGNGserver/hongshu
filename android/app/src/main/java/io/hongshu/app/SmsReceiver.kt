@@ -4,11 +4,66 @@ import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.provider.Telephony
-import android.telephony.SubscriptionManager
-import androidx.core.content.ContextCompat
 import java.util.concurrent.Executors
+
+internal data class IncomingSms(
+    val sender: String,
+    val body: String,
+    val timestamp: Long,
+    val subscription: Int,
+    val slot: Int,
+)
+
+internal fun parseIncomingSms(intent: Intent): IncomingSms? {
+    val parts = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return null
+    if (parts.isEmpty()) return null
+    fun hint(keys: List<String>): Int =
+        keys.firstNotNullOfOrNull { key ->
+            if (intent.hasExtra(key)) intent.getIntExtra(key, -1).takeIf { it >= 0 } else null
+        } ?: -1
+    val first = parts.first()
+    return IncomingSms(
+        first.displayOriginatingAddress ?: first.originatingAddress ?: "未知发件人",
+        combineParts(parts.map { it.messageBody ?: "" }),
+        first.timestampMillis,
+        hint(listOf("subscription", "subscription_id", "sub_id")),
+        hint(listOf("slot", "slot_id", "simSlot")),
+    )
+}
+
+// Shared by the receiver and device tests. Never queries the SMS provider or SIM service.
+internal fun persistIncomingSms(
+    context: Context,
+    message: IncomingSms,
+    generation: Long,
+    receivedAt: Long,
+    databaseName: String = "hongshu.db",
+): Boolean =
+    synchronized(identityLock) {
+        val config = Config(context)
+        if (
+            !config.upload ||
+                config.captureGeneration != generation ||
+                !hasPermission(context, Manifest.permission.RECEIVE_SMS)
+        )
+            return@synchronized false
+        Store(context, databaseName).use { store ->
+            store.queueRealtime(
+                SmsRecord(
+                    store.realtimeReceiver(message.subscription),
+                    message.sender,
+                    message.body,
+                    message.timestamp,
+                    message.subscription,
+                ),
+                message.slot,
+                receivedAt,
+            )
+        }
+        config.captureFailure = CaptureFailure.NONE
+        true
+    }
 
 class SmsReceiver : BroadcastReceiver() {
     companion object {
@@ -16,68 +71,34 @@ class SmsReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION || !Config(context).upload)
-            return
-        val parts = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return
-        if (parts.isEmpty()) return
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+        val app = context.applicationContext
+        val generation =
+            synchronized(identityLock) {
+                val config = Config(app)
+                if (!config.upload || !hasPermission(app, Manifest.permission.RECEIVE_SMS)) return
+                config.captureGeneration
+            }
+        val receivedAt = System.currentTimeMillis()
+        val message =
+            try {
+                parseIncomingSms(intent) ?: error("Empty SMS broadcast")
+            } catch (_: Exception) {
+                synchronized(identityLock) {
+                    if (Config(app).captureGeneration == generation)
+                        Config(app).captureFailure = CaptureFailure.PARSE
+                }
+                return
+            }
         val pending = goAsync()
         executor.execute {
             try {
-                synchronized(identityLock) {
-                    try {
-                        refreshAutomaticSims(context)
-                    } catch (_: Exception) {
-                        Config(context).captureStatus = "自动 SIM 识别失败；短信将保留等待确认"
-                    }
-                    val store = Store(context)
-                    store.use {
-                        val extras = intent.extras
-                        var sub =
-                            listOf("subscription", "subscription_id", "sub_id")
-                                .firstNotNullOfOrNull { key ->
-                                    if (extras?.containsKey(key) == true)
-                                        extras.getInt(key, -1).takeIf { it >= 0 }
-                                    else null
-                                } ?: -1
-                        val slot =
-                            listOf("slot", "slot_id", "simSlot").firstNotNullOfOrNull { key ->
-                                if (extras?.containsKey(key) == true)
-                                    extras.getInt(key, -1).takeIf { it >= 0 }
-                                else null
-                            } ?: -1
-                        if (
-                            sub < 0 &&
-                                slot >= 0 &&
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.READ_PHONE_STATE,
-                                ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            sub =
-                                context
-                                    .getSystemService(SubscriptionManager::class.java)
-                                    .activeSubscriptionInfoList
-                                    ?.find { it.simSlotIndex == slot }
-                                    ?.subscriptionId ?: -1
-                        }
-                        val first = parts.first()
-                        val sender =
-                            first.displayOriginatingAddress ?: first.originatingAddress ?: "未知发件人"
-                        store.queue(
-                            SmsRecord(
-                                store.receiver(sub, slot),
-                                sender,
-                                combineParts(parts.map { it.messageBody ?: "" }),
-                                first.timestampMillis,
-                                sub,
-                            ),
-                            slot,
-                        )
-                        syncNow(context)
-                    }
-                }
+                if (persistIncomingSms(app, message, generation, receivedAt)) syncNow(app)
             } catch (_: Exception) {
-                Config(context).status = "短信采集失败，请检查本地存储/权限"
+                synchronized(identityLock) {
+                    if (Config(app).captureGeneration == generation)
+                        Config(app).captureFailure = CaptureFailure.STORAGE
+                }
             } finally {
                 pending.finish()
             }

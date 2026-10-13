@@ -12,6 +12,67 @@ import javax.crypto.spec.GCMParameterSpec
 
 class Config(context: Context) {
     private val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
+
+    init {
+        synchronized(identityLock) {
+            if (!prefs.contains("history_enabled")) {
+                prefs
+                    .edit()
+                    .putBoolean("history_enabled", prefs.getBoolean("upload", false))
+                    .commit()
+            }
+        }
+    }
+
+    var historyEnabled: Boolean
+        get() = prefs.getBoolean("history_enabled", false)
+        set(value) {
+            synchronized(identityLock) {
+                if (value != historyEnabled)
+                    prefs
+                        .edit()
+                        .putBoolean("history_enabled", value)
+                        .putBoolean("inbox_scan_pending", false)
+                        .putString("history_state", if (value) "NOT_SCANNED" else "DISABLED")
+                        .putLong("history_generation", historyGeneration + 1)
+                        .commit()
+            }
+        }
+
+    val captureGeneration: Long
+        get() = prefs.getLong("capture_generation", 0)
+
+    val historyGeneration: Long
+        get() = prefs.getLong("history_generation", 0)
+
+    fun invalidateCaptureSession() {
+        synchronized(identityLock) {
+            prefs.edit().putLong("capture_generation", captureGeneration + 1).commit()
+        }
+    }
+
+    var historyState: HistoryState
+        get() =
+            runCatching { HistoryState.valueOf(prefs.getString("history_state", "NOT_SCANNED")!!) }
+                .getOrDefault(HistoryState.NOT_SCANNED)
+        set(value) {
+            prefs.edit().putString("history_state", value.name).apply()
+        }
+
+    var captureFailure: CaptureFailure
+        get() =
+            runCatching { CaptureFailure.valueOf(prefs.getString("capture_failure", "NONE")!!) }
+                .getOrDefault(CaptureFailure.NONE)
+        set(value) {
+            prefs.edit().putString("capture_failure", value.name).apply()
+        }
+
+    var lastHistoryScan: Long
+        get() = prefs.getLong("last_history_scan", 0)
+        set(value) {
+            prefs.edit().putLong("last_history_scan", value).apply()
+        }
+
     var deviceName: String
         get() = prefs.getString("device_name", android.os.Build.MODEL)!!
         set(value) {
@@ -87,7 +148,12 @@ class Config(context: Context) {
     var upload: Boolean
         get() = prefs.getBoolean("upload", false)
         set(v) {
-            prefs.edit().putBoolean("upload", v).commit()
+            synchronized(identityLock) {
+                val edit = prefs.edit().putBoolean("upload", v)
+                if (v != upload) edit.putLong("capture_generation", captureGeneration + 1)
+                if (!v) edit.putBoolean("inbox_scan_pending", false)
+                edit.commit()
+            }
         }
 
     var notify: Boolean

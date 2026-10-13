@@ -22,7 +22,7 @@ data class CachedMessage(
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 5) {
+    SQLiteOpenHelper(context, databaseName, null, 6) {
     private val config = Config(context)
 
     companion object {
@@ -50,6 +50,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.execSQL("INSERT INTO meta VALUES ('epoch_seen',0)")
         createReliabilityState(db)
         db.execSQL("INSERT INTO meta VALUES ('history_boundary',0)")
+        createCaptureDiagnostics(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -74,6 +75,107 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             // Revisit the old connection-time filter once, without discarding dedup evidence.
             db.execSQL("UPDATE meta SET value=0 WHERE key='provider_id'")
         }
+        if (oldVersion < 6) createCaptureDiagnostics(db)
+    }
+
+    private fun createCaptureDiagnostics(db: SQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS outbox_timeline ON outbox(timestamp,key)")
+        for (key in
+            listOf(
+                "realtime_broadcasts",
+                "realtime_saved",
+                "realtime_duplicates",
+                "last_broadcast",
+                "last_capture",
+            )) {
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES (?,0)", arrayOf(key))
+        }
+    }
+
+    fun captureDiagnostics() =
+        CaptureDiagnostics(
+            meta("realtime_broadcasts"),
+            meta("realtime_saved"),
+            meta("realtime_duplicates"),
+            meta("last_broadcast"),
+            meta("last_capture"),
+        )
+
+    // No SubscriptionManager calls here. Unknown subscription/slot is not an identity.
+    fun realtimeReceiver(sub: Int): String =
+        if (sub < 0 || (config.automaticSim && !config.simRecognitionHealthy)) ""
+        else sims().find { it.sub == sub }?.phone.orEmpty()
+
+    fun queueRealtime(m: SmsRecord, slot: Int, receivedAt: Long): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val added = capture(m, slot, null, false)
+            db.execSQL("UPDATE meta SET value=value+1 WHERE key='realtime_broadcasts'")
+            db.execSQL("UPDATE meta SET value=? WHERE key='last_broadcast'", arrayOf(receivedAt))
+            db.execSQL(
+                "UPDATE meta SET value=value+1 WHERE key=?",
+                arrayOf(if (added) "realtime_saved" else "realtime_duplicates"),
+            )
+            if (added)
+                db.execSQL("UPDATE meta SET value=? WHERE key='last_capture'", arrayOf(receivedAt))
+            db.setTransactionSuccessful()
+            return added
+        } finally {
+            db.endTransaction()
+            changes.value++
+        }
+    }
+
+    fun localPending(limit: Int = 100, offset: Int = 0): List<LocalPendingMessage> {
+        val resolver = receiverResolver()
+        return readableDatabase
+            .rawQuery(
+                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy') FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
+                arrayOf(limit.coerceIn(1, 200).toString(), offset.coerceAtLeast(0).toString()),
+            )
+            .use { c ->
+                buildList {
+                    while (c.moveToNext()) add(
+                        LocalPendingMessage(
+                            c.getString(0),
+                            c.getString(1).ifEmpty {
+                                if (c.getInt(5) < 0 && c.getString(9) == "broadcast") ""
+                                else resolver(c.getInt(5))
+                            },
+                            c.getString(2),
+                            c.getString(3),
+                            c.getLong(4),
+                            c.getInt(5),
+                            c.getInt(6),
+                            c.getInt(7) != 0,
+                            c.getString(8),
+                        )
+                    )
+                }
+            }
+    }
+
+    fun unresolvedCount(): Int {
+        val resolver = receiverResolver()
+        return readableDatabase
+            .rawQuery(
+                "SELECT o.receiver,o.sub,o.blocked,c.source,COUNT(*) FROM outbox o LEFT JOIN captures c ON c.key=o.key GROUP BY o.receiver,o.sub,o.blocked,c.source",
+                null,
+            )
+            .use { c ->
+                var count = 0
+                while (c.moveToNext()) {
+                    if (
+                        c.getString(2) == "sim_not_confirmed" ||
+                            (c.getString(0).isEmpty() &&
+                                ((c.getInt(1) < 0 && c.getString(3) == "broadcast") ||
+                                    resolver(c.getInt(1)).isEmpty()))
+                    )
+                        count += c.getInt(4)
+                }
+                count
+            }
     }
 
     private fun createReliabilityState(db: SQLiteDatabase) {
@@ -299,15 +401,56 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
     }
 
-    fun pending(): List<Pair<String, SmsRecord>> {
+    // Maintenance may verify the legacy single-SIM fallback. Upload itself never calls SIM
+    // services.
+    fun resolvePendingFallback() {
+        val generation = config.captureGeneration
+        val unresolved =
+            "receiver='' AND sub<0 AND NOT EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='broadcast')"
+        if (
+            !readableDatabase.rawQuery("SELECT 1 FROM outbox WHERE $unresolved LIMIT 1", null).use {
+                it.moveToFirst()
+            }
+        )
+            return
+        val fallback = fallbackSubscription()
+        if (fallback < 0) return
+        synchronized(identityLock) {
+            if (
+                config.captureGeneration != generation ||
+                    config.singleSimSubscription != fallback ||
+                    (config.automaticSim && !config.simRecognitionHealthy)
+            )
+                return@synchronized
+            val phone = sims().find { it.sub == fallback }?.phone.orEmpty()
+            if (!confirmedNumber(phone)) return@synchronized
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                db.execSQL(
+                    "UPDATE captures SET receiver=? WHERE receiver='' AND key IN (SELECT key FROM outbox WHERE $unresolved)",
+                    arrayOf(phone),
+                )
+                db.execSQL("UPDATE outbox SET receiver=? WHERE $unresolved", arrayOf(phone))
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+            changes.value++
+        }
+    }
+
+    fun pending(allowFallback: Boolean = true): List<Pair<String, SmsRecord>> {
         val mappings =
             if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
-        val fallback = fallbackSubscription()
+        val fallback = if (allowFallback) fallbackSubscription() else -1
         val subs = mappings.filter { it.sub >= 0 }.map { it.sub.toString() }
         val eligible =
             "receiver<>''" +
                 (if (subs.isEmpty()) "" else " OR sub IN (${subs.joinToString(",") { "?" }})") +
-                (if (fallback >= 0) " OR sub<0" else "")
+                (if (fallback >= 0)
+                    " OR (sub<0 AND NOT EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='broadcast'))"
+                else "")
         // Filter unknown mappings before limiting, so they cannot starve a known SIM.
         // Each cursor is bounded and ordered by the ready index; no N+1 SIM queries.
         val result = mutableListOf<Pair<String, SmsRecord>>()

@@ -85,10 +85,20 @@ class NetworkTest {
         val saved = prefs.all
         try {
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
+            WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
+            WorkManager.getInstance(context)
+                .cancelUniqueWork("hongshu-capture-periodic")
+                .result
+                .get()
             prefs.edit().clear().commit()
             test(context, Config(context))
         } finally {
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
+            WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
+            WorkManager.getInstance(context)
+                .cancelUniqueWork("hongshu-capture-periodic")
+                .result
+                .get()
             val editor = prefs.edit().clear()
             for ((key, value) in saved) when (value) {
                 is String -> editor.putString(key, value)
@@ -226,6 +236,7 @@ class NetworkTest {
                     config.token = "s".repeat(64)
                     config.deviceId = "synthetic"
                     config.upload = true
+                    config.historyEnabled = true
                     config.notify = false
                     Store(context).use { store ->
                         store.saveSim(SimMapping(19, 0, "+9876543210", "SIM1"))
@@ -291,6 +302,7 @@ class NetworkTest {
                     config.token = "s".repeat(64)
                     config.deviceId = "synthetic"
                     config.upload = true
+                    config.historyEnabled = true
                     val manager = WorkManager.getInstance(context)
                     val existing =
                         manager
@@ -316,6 +328,7 @@ class NetworkTest {
                                 work.state == androidx.work.WorkInfo.State.SUCCEEDED
                         }
                     }
+                    config.captureStatus = catchUpInbox(context)
                     assertTrue(
                         "capture health: ${config.captureStatus}",
                         config.captureStatus.contains("权限"),

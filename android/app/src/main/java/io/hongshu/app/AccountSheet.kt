@@ -96,6 +96,7 @@ fun SettingsDialog(
                             "hub" -> "管理中枢与凭据"
                             "sims" -> "SIM 卡与号码识别"
                             "sync" -> "实时广播与同步"
+                            "pending" -> "本机待同步短信"
                             "about" -> "关于鸿枢"
                             else -> "中枢与设置"
                         },
@@ -114,6 +115,7 @@ fun SettingsDialog(
                                 onRequestPermissions,
                                 settingsAction,
                             )
+                        "pending" -> LocalPendingSubPage(repo, refresh) { page = "sims" }
                         "sync" ->
                             SyncControlSubPage(
                                 activity,
@@ -122,6 +124,7 @@ fun SettingsDialog(
                                 refresh,
                                 onRequestPermissions,
                                 settingsAction,
+                                { page = "pending" },
                             )
                         "about" -> AboutSubPage()
                         else -> SettingsMainOverview(repo, refresh) { page = it }
@@ -189,6 +192,8 @@ private fun SettingsMainOverview(repo: Repository, refresh: Long, onNavigate: (S
                     SheetActionRow(Icons.Default.SimCard, "SIM 卡与号码识别") { onNavigate("sims") }
                     HorizontalDivider()
                     SheetActionRow(Icons.Default.Sensors, "实时广播与同步") { onNavigate("sync") }
+                    HorizontalDivider()
+                    SheetActionRow(Icons.Default.Outbox, "本机待同步短信") { onNavigate("pending") }
                     HorizontalDivider()
                     SheetActionRow(Icons.Default.Info, "关于鸿枢") { onNavigate("about") }
                 }
@@ -465,9 +470,28 @@ private fun SyncControlSubPage(
     refresh: Long,
     onRequestPermissions: PermissionRequest,
     onAction: (suspend () -> String) -> Unit,
+    onPending: () -> Unit,
 ) {
     val c = remember(refresh) { repo.config }
     val health by RuntimeHealth.connection.collectAsState()
+    var diagnostics by remember { mutableStateOf(CaptureDiagnostics()) }
+    var queued by remember { mutableIntStateOf(0) }
+    var unresolved by remember { mutableIntStateOf(0) }
+    var invalid by remember { mutableIntStateOf(0) }
+    LaunchedEffect(refresh) {
+        withContext(Dispatchers.IO) {
+            val stats = repo.store.captureDiagnostics()
+            val count = repo.store.pendingCount()
+            val unknown = repo.store.unresolvedCount()
+            val blocked = repo.store.blockedCount()
+            withContext(Dispatchers.Main) {
+                diagnostics = stats
+                queued = count
+                unresolved = unknown
+                invalid = blocked
+            }
+        }
+    }
     LazyColumn(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -476,30 +500,74 @@ private fun SyncControlSubPage(
         item {
             SettingSwitch("同步本机短信", c.upload, !busy) { enabled ->
                 onAction {
-                    check(c.token.isNotEmpty()) { "请先连接中枢" }
-                    repo.api.request(
-                        "/devices/${c.deviceId}",
-                        "PATCH",
-                        JSONObject().put("upload", enabled),
-                    )
+                    check(!enabled || c.token.isNotEmpty()) { "请先连接中枢" }
                     c.upload = enabled
-                    c.serverUploadAllowed = enabled
                     if (enabled)
                         withContext(Dispatchers.Main) {
-                            onRequestPermissions(
-                                arrayOf(
-                                    Manifest.permission.READ_SMS,
-                                    Manifest.permission.RECEIVE_SMS,
-                                )
-                            ) {
+                            onRequestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS)) {
+                                syncNow(activity, manual = true)
+                            }
+                        }
+                    try {
+                        repo.api.request(
+                            "/devices/${c.deviceId}",
+                            "PATCH",
+                            JSONObject().put("upload", enabled),
+                        )
+                        c.serverUploadAllowed = enabled
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        c.syncHealthy = false
+                        c.status = "本机采集设置已保存 · 中枢设置未确认，请联网后重试"
+                    }
+                    syncNow(activity, manual = true)
+                    if (enabled) "实时采集已开启；历史读取单独设置" else "采集已关闭，已有待传记录保留"
+                }
+            }
+        }
+        item { Text("实时接收只需接收短信权限。拒绝历史读取不会阻止保存新短信。", style = MaterialTheme.typography.bodyMedium) }
+        if (c.upload && !hasPermission(activity, Manifest.permission.RECEIVE_SMS))
+            item {
+                FilledTonalButton(
+                    onClick = {
+                        onRequestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS)) {
+                            syncNow(activity)
+                        }
+                    },
+                    enabled = !busy,
+                ) {
+                    Text("授予实时短信权限")
+                }
+            }
+        item {
+            SettingSwitch("补齐历史短信", c.historyEnabled, !busy) { enabled ->
+                onAction {
+                    c.historyEnabled = enabled
+                    if (enabled)
+                        withContext(Dispatchers.Main) {
+                            onRequestPermissions(arrayOf(Manifest.permission.READ_SMS)) {
                                 syncNow(activity, manual = true)
                             }
                         }
                     syncNow(activity, manual = true)
-                    if (enabled) "已开启，历史短信将自动同步" else "本机短信同步已关闭"
+                    if (enabled) "历史读取已开启，权限和状态见下方" else "历史读取已关闭，实时采集不受影响"
                 }
             }
         }
+        if (c.upload && c.historyEnabled && !hasPermission(activity, Manifest.permission.READ_SMS))
+            item {
+                FilledTonalButton(
+                    onClick = {
+                        onRequestPermissions(arrayOf(Manifest.permission.READ_SMS)) {
+                            syncNow(activity, manual = true)
+                        }
+                    },
+                    enabled = !busy,
+                ) {
+                    Text("授予历史读取权限")
+                }
+            }
         item {
             SettingSwitch("接收全部通知", c.notify, !busy) { enabled ->
                 onAction {
@@ -521,7 +589,11 @@ private fun SyncControlSubPage(
                 }
             }
         }
-        item { StatusRow("短信同步状态", smsSyncStatus(activity, repo)) }
+        item { StatusRow("实时短信采集", realtimeSmsStatus(activity, diagnostics)) }
+        item { StatusRow("历史短信读取", historySmsStatus(activity)) }
+        item { StatusRow("本地队列", "$queued 条待同步 · $unresolved 条待确认号码 · $invalid 条被阻塞") }
+        item { FilledTonalButton(onClick = onPending) { Text("查看本机待同步短信") } }
+        item { StatusRow("中枢同步状态", smsSyncStatus(activity, repo)) }
         item { StatusRow("后台保活状态", keepAliveStatus(activity, c, health)) }
         item { StatusRow("通知接收状态", notificationStatus(activity, c, health)) }
         item {
