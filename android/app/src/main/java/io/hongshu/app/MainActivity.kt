@@ -7,14 +7,10 @@ package io.hongshu.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -52,8 +48,8 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         updateRecentTaskVisibility(this, Config(this).hideFromRecents)
         // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
@@ -125,10 +121,11 @@ fun HongshuUI(activity: MainActivity) {
     var searchQuery by remember { mutableStateOf("") }
     var simFilter by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var isSearchActive by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
+    var navigationStack by remember { mutableStateOf(listOf<AppDestination>(AppDestination.Home)) }
 
-    var loadedMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
+    var loadedHomeMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
+    var loadedSearchMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
+    var loadedThreadMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
     var messageLimit by remember { mutableIntStateOf(200) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -171,13 +168,37 @@ fun HongshuUI(activity: MainActivity) {
 
     LaunchedEffect(searchQuery, simFilter, selectedSender, threadReceiver) { messageLimit = 200 }
 
-    LaunchedEffect(changes, searchQuery, simFilter, selectedSender, threadReceiver, messageLimit) {
-        loadedMessages =
+    LaunchedEffect(changes, simFilter, messageLimit) {
+        loadedHomeMessages =
+            withContext(Dispatchers.IO) {
+                repo.store.messages(
+                    "",
+                    "",
+                    simFilter,
+                    limit = messageLimit,
+                )
+            }
+    }
+
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit) {
+        loadedSearchMessages =
+            withContext(Dispatchers.IO) {
+                repo.store.messages(
+                    "",
+                    searchQuery,
+                    simFilter,
+                    limit = messageLimit,
+                )
+            }
+    }
+
+    LaunchedEffect(changes, searchQuery, selectedSender, threadReceiver, messageLimit) {
+        loadedThreadMessages =
             withContext(Dispatchers.IO) {
                 repo.store.messages(
                     selectedSender,
                     searchQuery,
-                    if (selectedSender.isNotEmpty()) threadReceiver else simFilter,
+                    threadReceiver,
                     limit = messageLimit,
                 )
             }
@@ -197,19 +218,145 @@ fun HongshuUI(activity: MainActivity) {
         threadReceiver = ""
     }
 
-    BackHandler(selectedSender.isEmpty() && !isSearchActive && !showSettingsDialog) {
-        activity.leaveForBackground()
+    fun push(destination: AppDestination) {
+        navigationStack = pushDestination(navigationStack, destination)
     }
 
-    BackHandler(selectedSender.isNotEmpty() || isSearchActive) {
-        when {
-            selectedSender.isNotEmpty() -> closeThread()
-            isSearchActive -> {
-                isSearchActive = false
+    fun navigateConversation(sender: String, receiver: String) {
+        selectedSender = sender
+        threadReceiver = receiver
+        val destination = AppDestination.Conversation(sender, receiver)
+        navigationStack =
+            if (navigationStack.lastOrNull() is AppDestination.Conversation) {
+                replaceTopDestination(navigationStack, destination)
+            } else pushDestination(navigationStack, destination)
+    }
+
+    fun popNavigation() {
+        if (navigationStack.size == 1) {
+            activity.leaveForBackground()
+            return
+        }
+        val leaving = navigationStack.last()
+        navigationStack = popDestination(navigationStack)
+        when (leaving) {
+            is AppDestination.Conversation -> closeThread()
+            AppDestination.Search -> {
                 searchQuery = ""
             }
+            else -> Unit
         }
     }
+
+    fun openSettings() {
+        push(AppDestination.Settings(SettingsPage.Overview))
+    }
+
+    fun closeSettings() {
+        navigationStack = closeSettingsDestinations(navigationStack)
+    }
+
+    fun updateSearch(active: Boolean) {
+        if (active) {
+            push(AppDestination.Search)
+        } else if (navigationStack.lastOrNull() == AppDestination.Search) {
+            popNavigation()
+        } else {
+            searchQuery = ""
+        }
+    }
+
+    val permissionRequest: PermissionRequest = { permissions, continuation ->
+        val missing = permissions.filterNot { hasPermission(activity, it) }.toTypedArray()
+        if (missing.isEmpty()) continuation()
+        else {
+            permissionContinuation = continuation
+            permissionLauncher.launch(missing)
+        }
+    }
+
+    AppNavigationHost(
+        stack = navigationStack,
+        onPop = ::popNavigation,
+        onRootBack = { activity.leaveForBackground() },
+    ) { destination ->
+        when (destination) {
+            is AppDestination.Settings ->
+                SettingsScreen(
+                    activity = activity,
+                    repo = repo,
+                    busy = busy,
+                    page = destination.page,
+                    onNavigate = { page -> push(AppDestination.Settings(page)) },
+                    onBack = ::popNavigation,
+                    onClose = ::closeSettings,
+                    onRequestPermissions = permissionRequest,
+                    onAction = ::action,
+                )
+            else ->
+                MainSurface(
+                    destination = destination,
+                    activity = activity,
+                    repo = repo,
+                    loadedHomeMessages = loadedHomeMessages,
+                    loadedSearchMessages = loadedSearchMessages,
+                    loadedThreadMessages = loadedThreadMessages,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { searchQuery = it },
+                    onSearchActiveChange = ::updateSearch,
+                    simFilter = simFilter,
+                    onSimFilterChange = { simFilter = it },
+                    selectedSender = selectedSender,
+                    onSelectConversation = ::navigateConversation,
+                    onBack = ::popNavigation,
+                    onLoadMore = { messageLimit += 200 },
+                    messageLimit = messageLimit,
+                    changes = changes,
+                    busy = busy,
+                    onOpenSettings = ::openSettings,
+                    onSync = {
+                        action {
+                            syncNow(activity, manual = true)
+                            "已请求中枢同步"
+                        }
+                    },
+                    isExpanded = isExpanded,
+                    snackbar = snackbar,
+                )
+        }
+    }
+}
+
+@Composable
+private fun MainSurface(
+    destination: AppDestination,
+    activity: MainActivity,
+    repo: Repository,
+    loadedHomeMessages: List<CachedMessage>,
+    loadedSearchMessages: List<CachedMessage>,
+    loadedThreadMessages: List<CachedMessage>,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onSearchActiveChange: (Boolean) -> Unit,
+    simFilter: String,
+    onSimFilterChange: (String) -> Unit,
+    selectedSender: String,
+    onSelectConversation: (String, String) -> Unit,
+    onBack: () -> Unit,
+    onLoadMore: () -> Unit,
+    messageLimit: Int,
+    changes: Long,
+    busy: Boolean,
+    onOpenSettings: () -> Unit,
+    onSync: () -> Unit,
+    isExpanded: Boolean,
+    snackbar: SnackbarHostState,
+) {
+    val showDetail = destination is AppDestination.Conversation
+    val showSearch = destination == AppDestination.Search
+    val detailSender = (destination as? AppDestination.Conversation)?.sender.orEmpty()
+    val listSelectedSender = if (showDetail) selectedSender else ""
+    val listMessages = if (showSearch) loadedSearchMessages else loadedHomeMessages
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -219,7 +366,6 @@ fun HongshuUI(activity: MainActivity) {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             if (isExpanded) {
-                // 大屏平板/折叠屏双栏布局
                 Row(Modifier.fillMaxSize()) {
                     Surface(
                         modifier = Modifier.width(400.dp).fillMaxHeight(),
@@ -228,29 +374,21 @@ fun HongshuUI(activity: MainActivity) {
                         ConversationListView(
                             activity = activity,
                             repo = repo,
-                            loadedMessages = loadedMessages,
+                            loadedMessages = listMessages,
                             searchQuery = searchQuery,
-                            onSearchQueryChange = { searchQuery = it },
-                            isSearchActive = isSearchActive,
-                            onSearchActiveChange = { isSearchActive = it },
+                            onSearchQueryChange = onSearchQueryChange,
+                            isSearchActive = showSearch,
+                            onSearchActiveChange = onSearchActiveChange,
                             simFilter = simFilter,
-                            onSimFilterChange = { simFilter = it },
-                            selectedSender = selectedSender,
-                            onSelectConversation = { s, r ->
-                                selectedSender = s
-                                threadReceiver = r
-                            },
-                            onLoadMore = { messageLimit += 200 },
+                            onSimFilterChange = onSimFilterChange,
+                            selectedSender = listSelectedSender,
+                            onSelectConversation = onSelectConversation,
+                            onLoadMore = onLoadMore,
                             messageLimit = messageLimit,
                             changes = changes,
                             busy = busy,
-                            onOpenSettings = { showSettingsDialog = true },
-                            onSync = {
-                                action {
-                                    syncNow(activity, manual = true)
-                                    "已请求中枢同步"
-                                }
-                            },
+                            onOpenSettings = onOpenSettings,
+                            onSync = onSync,
                         )
                     }
                     VerticalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -258,7 +396,7 @@ fun HongshuUI(activity: MainActivity) {
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
-                        if (selectedSender.isEmpty()) {
+                        if (!showDetail) {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -279,74 +417,49 @@ fun HongshuUI(activity: MainActivity) {
                             }
                         } else {
                             ConversationDetailPane(
-                                sender = selectedSender,
-                                contactName = loadedMessages.firstOrNull()?.contact ?: "",
-                                messages = loadedMessages,
+                                sender = detailSender,
+                                contactName = loadedThreadMessages.firstOrNull()?.contact ?: "",
+                                messages = loadedThreadMessages,
                                 deviceId = repo.config.deviceId,
-                                onBack = { closeThread() },
-                                onLoadMore = { messageLimit += 200 },
+                                onBack = onBack,
+                                onLoadMore = onLoadMore,
                                 messageLimit = messageLimit,
                             )
                         }
                     }
                 }
+            } else if (showDetail) {
+                ConversationDetailPane(
+                    sender = detailSender,
+                    contactName = loadedThreadMessages.firstOrNull()?.contact ?: "",
+                    messages = loadedThreadMessages,
+                    deviceId = repo.config.deviceId,
+                    onBack = onBack,
+                    onLoadMore = onLoadMore,
+                    messageLimit = messageLimit,
+                )
             } else {
-                // 紧凑单栏视图
-                AnimatedContent(
-                    targetState = selectedSender.isNotEmpty(),
-                    transitionSpec = {
-                        slideInHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) {
-                            if (targetState) it else -it
-                        } togetherWith
-                            slideOutHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) {
-                                if (targetState) -it else it
-                            }
-                    },
-                    label = "compact_detail_transition",
-                ) { inDetail ->
-                    if (inDetail) {
-                        ConversationDetailPane(
-                            sender = selectedSender,
-                            contactName = loadedMessages.firstOrNull()?.contact ?: "",
-                            messages = loadedMessages,
-                            deviceId = repo.config.deviceId,
-                            onBack = { closeThread() },
-                            onLoadMore = { messageLimit += 200 },
-                            messageLimit = messageLimit,
-                        )
-                    } else {
-                        ConversationListView(
-                            activity = activity,
-                            repo = repo,
-                            loadedMessages = loadedMessages,
-                            searchQuery = searchQuery,
-                            onSearchQueryChange = { searchQuery = it },
-                            isSearchActive = isSearchActive,
-                            onSearchActiveChange = { isSearchActive = it },
-                            simFilter = simFilter,
-                            onSimFilterChange = { simFilter = it },
-                            selectedSender = selectedSender,
-                            onSelectConversation = { s, r ->
-                                selectedSender = s
-                                threadReceiver = r
-                            },
-                            onLoadMore = { messageLimit += 200 },
-                            messageLimit = messageLimit,
-                            changes = changes,
-                            busy = busy,
-                            onOpenSettings = { showSettingsDialog = true },
-                            onSync = {
-                                action {
-                                    syncNow(activity, manual = true)
-                                    "已请求中枢同步"
-                                }
-                            },
-                        )
-                    }
-                }
+                ConversationListView(
+                    activity = activity,
+                    repo = repo,
+                    loadedMessages = listMessages,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = onSearchQueryChange,
+                    isSearchActive = showSearch,
+                    onSearchActiveChange = onSearchActiveChange,
+                    simFilter = simFilter,
+                    onSimFilterChange = onSimFilterChange,
+                    selectedSender = listSelectedSender,
+                    onSelectConversation = onSelectConversation,
+                    onLoadMore = onLoadMore,
+                    messageLimit = messageLimit,
+                    changes = changes,
+                    busy = busy,
+                    onOpenSettings = onOpenSettings,
+                    onSync = onSync,
+                )
             }
 
-            // Wavy progress bar on top during sync
             if (busy) {
                 LinearWavyProgressIndicator(
                     modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
@@ -355,24 +468,6 @@ fun HongshuUI(activity: MainActivity) {
                 )
             }
         }
-    }
-
-    if (showSettingsDialog) {
-        SettingsDialog(
-            activity = activity,
-            repo = repo,
-            busy = busy,
-            onDismissRequest = { showSettingsDialog = false },
-            onRequestPermissions = { permissions, continuation ->
-                val missing = permissions.filterNot { hasPermission(activity, it) }.toTypedArray()
-                if (missing.isEmpty()) continuation()
-                else {
-                    permissionContinuation = continuation
-                    permissionLauncher.launch(missing)
-                }
-            },
-            onAction = ::action,
-        )
     }
 }
 

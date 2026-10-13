@@ -5,7 +5,6 @@ package io.hongshu.app
 import android.Manifest
 import android.content.Intent
 import android.os.Build
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,8 +20,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -36,15 +33,17 @@ import org.json.JSONObject
 typealias PermissionRequest = (Array<String>, () -> Unit) -> Unit
 
 @Composable
-fun SettingsDialog(
+fun SettingsScreen(
     activity: MainActivity,
     repo: Repository,
     busy: Boolean,
-    onDismissRequest: () -> Unit,
+    page: SettingsPage,
+    onNavigate: (SettingsPage) -> Unit,
+    onBack: () -> Unit,
+    onClose: () -> Unit,
     onRequestPermissions: PermissionRequest,
     onAction: (suspend () -> String) -> Unit,
 ) {
-    var page by remember { mutableStateOf<String?>(null) }
     val feedback = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val settingsAction: (suspend () -> String) -> Unit = { task ->
@@ -73,75 +72,68 @@ fun SettingsDialog(
             }
         }
     }
-    // Preferences can also change from a worker/service while the dialog is open.
+    // Preferences can also change from a worker/service while the settings page is open.
     val refresh = changes + tick
-    BackHandler { if (page != null) page = null else onDismissRequest() }
-    Dialog(
-        onDismissRequest,
-        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    Surface(
+        Modifier.fillMaxSize().imePadding(),
+        color = MaterialTheme.colorScheme.background,
     ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding(),
-            color = MaterialTheme.colorScheme.background,
-        ) {
-            Column {
-                Row(
-                    Modifier.fillMaxWidth().padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    if (page != null)
-                        IconButton(onClick = { page = null }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
-                        }
-                    else Spacer(Modifier.size(48.dp))
-                    Text(
-                        when (page) {
-                            "hub" -> "管理中枢与凭据"
-                            "sims" -> "SIM 卡与号码识别"
-                            "sync" -> "实时广播与同步"
-                            "pending" -> "本机待同步短信"
-                            "about" -> "关于鸿枢"
-                            else -> "中枢与设置"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    IconButton(onClick = onDismissRequest) { Icon(Icons.Default.Close, "关闭") }
-                }
-                Box(Modifier.weight(1f)) {
-                    when (page) {
-                        "hub" -> HubLoginSubPage(repo, busy, settingsAction) { page = null }
-                        "sims" ->
-                            SimSettingsSubPage(
-                                activity,
-                                repo,
-                                busy,
-                                onRequestPermissions,
-                                settingsAction,
-                            )
-                        "pending" -> LocalPendingSubPage(repo, refresh) { page = "sims" }
-                        "sync" ->
-                            SyncControlSubPage(
-                                activity,
-                                repo,
-                                busy,
-                                refresh,
-                                onRequestPermissions,
-                                settingsAction,
-                                { page = "pending" },
-                            )
-                        "about" -> AboutSubPage()
-                        else -> SettingsMainOverview(repo, refresh) { page = it }
+        Column {
+            Row(
+                Modifier.fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                if (page != SettingsPage.Overview) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                     }
-                    SnackbarHost(feedback, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+                } else Spacer(Modifier.size(48.dp))
+                Text(page.title, style = MaterialTheme.typography.titleMedium)
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "关闭") }
+            }
+            Box(Modifier.weight(1f).navigationBarsPadding()) {
+                when (page) {
+                    SettingsPage.Hub -> HubLoginSubPage(repo, busy, settingsAction, onBack)
+                    SettingsPage.Sims ->
+                        SimSettingsSubPage(
+                            activity,
+                            repo,
+                            busy,
+                            onRequestPermissions,
+                            settingsAction,
+                        )
+                    SettingsPage.Pending -> LocalPendingSubPage(repo, refresh) {
+                        onNavigate(SettingsPage.Sims)
+                    }
+                    SettingsPage.Sync ->
+                        SyncControlSubPage(
+                            activity,
+                            repo,
+                            busy,
+                            refresh,
+                            onRequestPermissions,
+                            settingsAction,
+                        ) {
+                            onNavigate(SettingsPage.Pending)
+                        }
+                    SettingsPage.About -> AboutSubPage()
+                    SettingsPage.Overview -> SettingsMainOverview(repo, refresh, onNavigate)
                 }
+                SnackbarHost(feedback, Modifier.align(Alignment.BottomCenter).padding(16.dp))
             }
         }
     }
 }
 
 @Composable
-private fun SettingsMainOverview(repo: Repository, refresh: Long, onNavigate: (String) -> Unit) {
+private fun SettingsMainOverview(
+    repo: Repository,
+    refresh: Long,
+    onNavigate: (SettingsPage) -> Unit,
+) {
     val c = remember(refresh) { repo.config }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -178,7 +170,7 @@ private fun SettingsMainOverview(repo: Repository, refresh: Long, onNavigate: (S
                         }
                     }
                     FilledTonalButton(
-                        onClick = { onNavigate("hub") },
+                        onClick = { onNavigate(SettingsPage.Hub) },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(if (c.token.isNotEmpty()) "管理中枢服务器与凭据" else "连接您的私有短信中枢")
@@ -193,13 +185,21 @@ private fun SettingsMainOverview(repo: Repository, refresh: Long, onNavigate: (S
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
                 Column {
-                    SheetActionRow(Icons.Default.SimCard, "SIM 卡与号码识别") { onNavigate("sims") }
+                    SheetActionRow(Icons.Default.SimCard, "SIM 卡与号码识别") {
+                        onNavigate(SettingsPage.Sims)
+                    }
                     HorizontalDivider()
-                    SheetActionRow(Icons.Default.Sensors, "实时广播与同步") { onNavigate("sync") }
+                    SheetActionRow(Icons.Default.Sensors, "实时广播与同步") {
+                        onNavigate(SettingsPage.Sync)
+                    }
                     HorizontalDivider()
-                    SheetActionRow(Icons.Default.Outbox, "本机待同步短信") { onNavigate("pending") }
+                    SheetActionRow(Icons.Default.Outbox, "本机待同步短信") {
+                        onNavigate(SettingsPage.Pending)
+                    }
                     HorizontalDivider()
-                    SheetActionRow(Icons.Default.Info, "关于鸿枢") { onNavigate("about") }
+                    SheetActionRow(Icons.Default.Info, "关于鸿枢") {
+                        onNavigate(SettingsPage.About)
+                    }
                 }
             }
         }
