@@ -4,22 +4,19 @@
 )
 
 package io.hongshu.app
-import android.os.Build
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -55,7 +52,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
+        // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow
+        // screenshots
         setContent {
             HongshuTheme {
                 Surface(
@@ -71,17 +69,17 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         SimMonitor.start(this)
-        Thread {
-            try {
-                Config(this).captureStatus = catchUpInbox(this)
-            } catch (_: Exception) {
-                Config(this).captureStatus = "收件箱补扫失败，实时广播不受影响"
-            }
-        }.start()
         syncNow(this)
-        if (Config(this).keepAlive && Config(this).token.isNotEmpty() && !RuntimeHealth.connection.value.running) {
+        if (
+            Config(this).keepAlive &&
+                Config(this).token.isNotEmpty() &&
+                !RuntimeHealth.connection.value.running
+        ) {
             try {
-                androidx.core.content.ContextCompat.startForegroundService(this, android.content.Intent(this, RealtimeService::class.java))
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this,
+                    android.content.Intent(this, RealtimeService::class.java),
+                )
             } catch (_: Exception) {
                 RuntimeHealth.connection.value = ConnectionHealth(detail = "系统不允许启动后台服务")
             }
@@ -101,7 +99,7 @@ fun formatTimestamp(timestamp: Long): String {
 
     return when {
         now.get(Calendar.YEAR) == msg.get(Calendar.YEAR) &&
-                now.get(Calendar.DAY_OF_YEAR) == msg.get(Calendar.DAY_OF_YEAR) -> {
+            now.get(Calendar.DAY_OF_YEAR) == msg.get(Calendar.DAY_OF_YEAR) -> {
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
         }
         now.get(Calendar.YEAR) == msg.get(Calendar.YEAR) -> {
@@ -156,7 +154,8 @@ fun HongshuUI(activity: MainActivity) {
 
     var permissionContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            grants ->
             scope.launch {
                 snackbar.showSnackbar(
                     if (grants.values.all { it }) "权限已授予，可以继续操作" else "部分权限未授予，普通查看不受影响"
@@ -170,19 +169,18 @@ fun HongshuUI(activity: MainActivity) {
             if (grants.values.all { it }) continuation?.invoke()
         }
 
-    LaunchedEffect(searchQuery, simFilter, selectedSender, threadReceiver) {
-        messageLimit = 200
-    }
+    LaunchedEffect(searchQuery, simFilter, selectedSender, threadReceiver) { messageLimit = 200 }
 
     LaunchedEffect(changes, searchQuery, simFilter, selectedSender, threadReceiver, messageLimit) {
-        loadedMessages = withContext(Dispatchers.IO) {
-            repo.store.messages(
-                selectedSender,
-                searchQuery,
-                if (selectedSender.isNotEmpty()) threadReceiver else simFilter,
-                limit = messageLimit,
-            )
-        }
+        loadedMessages =
+            withContext(Dispatchers.IO) {
+                repo.store.messages(
+                    selectedSender,
+                    searchQuery,
+                    if (selectedSender.isNotEmpty()) threadReceiver else simFilter,
+                    limit = messageLimit,
+                )
+            }
     }
 
     LaunchedEffect(Unit) {
@@ -213,18 +211,12 @@ fun HongshuUI(activity: MainActivity) {
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        Box(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
+        Box(Modifier.padding(padding).fillMaxSize()) {
             if (isExpanded) {
                 // 大屏平板/折叠屏双栏布局
                 Row(Modifier.fillMaxSize()) {
                     Surface(
-                        modifier = Modifier
-                            .width(400.dp)
-                            .fillMaxHeight(),
+                        modifier = Modifier.width(400.dp).fillMaxHeight(),
                         color = MaterialTheme.colorScheme.background,
                     ) {
                         ConversationListView(
@@ -247,14 +239,17 @@ fun HongshuUI(activity: MainActivity) {
                             changes = changes,
                             busy = busy,
                             onOpenSettings = { showSettingsDialog = true },
-                            onSync = { action { syncNow(activity, manual = true); "已请求中枢同步" } },
+                            onSync = {
+                                action {
+                                    syncNow(activity, manual = true)
+                                    "已请求中枢同步"
+                                }
+                            },
                         )
                     }
                     VerticalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
                     Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
                         if (selectedSender.isEmpty()) {
@@ -294,8 +289,12 @@ fun HongshuUI(activity: MainActivity) {
                 AnimatedContent(
                     targetState = selectedSender.isNotEmpty(),
                     transitionSpec = {
-                        slideInHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) { if (targetState) it else -it } togetherWith
-                                slideOutHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) { if (targetState) -it else it }
+                        slideInHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) {
+                            if (targetState) it else -it
+                        } togetherWith
+                            slideOutHorizontally(spring(stiffness = Spring.StiffnessMediumLow)) {
+                                if (targetState) -it else it
+                            }
                     },
                     label = "compact_detail_transition",
                 ) { inDetail ->
@@ -330,7 +329,12 @@ fun HongshuUI(activity: MainActivity) {
                             changes = changes,
                             busy = busy,
                             onOpenSettings = { showSettingsDialog = true },
-                            onSync = { action { syncNow(activity, manual = true); "已请求中枢同步" } },
+                            onSync = {
+                                action {
+                                    syncNow(activity, manual = true)
+                                    "已请求中枢同步"
+                                }
+                            },
                         )
                     }
                 }
@@ -339,9 +343,7 @@ fun HongshuUI(activity: MainActivity) {
             // Wavy progress bar on top during sync
             if (busy) {
                 LinearWavyProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter),
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
                     color = MaterialTheme.colorScheme.primary,
                     trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 )
@@ -368,9 +370,7 @@ fun HongshuUI(activity: MainActivity) {
     }
 }
 
-/**
- * 鸿枢首页会话列表视图
- */
+/** 鸿枢首页会话列表视图 */
 @Composable
 private fun ConversationListView(
     activity: MainActivity,
@@ -392,10 +392,13 @@ private fun ConversationListView(
     onSync: () -> Unit,
 ) {
     var sims by remember { mutableStateOf<List<String>>(emptyList()) }
+    var localPending by remember { mutableIntStateOf(0) }
     LaunchedEffect(changes) {
-        sims = withContext(Dispatchers.IO) {
-            (repo.store.sims().map { it.phone } + repo.store.receivers()).distinct()
-        }
+        sims =
+            withContext(Dispatchers.IO) {
+                (repo.store.sims().map { it.phone } + repo.store.receivers()).distinct()
+            }
+        localPending = withContext(Dispatchers.IO) { repo.store.pendingCount() }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -403,31 +406,32 @@ private fun ConversationListView(
             // 顶栏：
             // "信息" 标题 + 搜索放大镜 + 圆形头像 (点击弹出账号弹窗)
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                modifier =
+                    Modifier.fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (isSearchActive) {
-                    IconButton(onClick = {
-                        onSearchActiveChange(false)
-                        onSearchQueryChange("")
-                    }) {
+                    IconButton(
+                        onClick = {
+                            onSearchActiveChange(false)
+                            onSearchQueryChange("")
+                        }
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "退出搜索")
                     }
                     BasicTextField(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
                         singleLine = true,
-                        textStyle = TextStyle(
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 18.sp,
-                        ),
+                        textStyle =
+                            TextStyle(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 18.sp,
+                            ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 8.dp),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                         decorationBox = { innerTextField ->
                             if (searchQuery.isEmpty()) {
                                 Text(
@@ -477,13 +481,20 @@ private fun ConversationListView(
                 }
             }
 
+            if (localPending > 0) {
+                TextButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                ) {
+                    Text("本机有 $localPending 条待同步短信 · 设置中可离线查看")
+                }
+            }
+
             // SIM 过滤器 (以极简药丸 FilterChip 呈现)
             if (sims.isNotEmpty()) {
                 var simMenuExpanded by remember { mutableStateOf(false) }
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 2.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Box {
@@ -493,7 +504,8 @@ private fun ConversationListView(
                             label = { Text(simFilter.ifEmpty { "全部 SIM 卡" }) },
                             leadingIcon = {
                                 Icon(
-                                    if (simFilter.isNotEmpty()) Icons.Default.Done else Icons.Default.SimCard,
+                                    if (simFilter.isNotEmpty()) Icons.Default.Done
+                                    else Icons.Default.SimCard,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
                                 )
@@ -544,10 +556,7 @@ private fun ConversationListView(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (repo.config.token.isEmpty()) {
-                            Button(
-                                onClick = onOpenSettings,
-                                shape = RoundedCornerShape(20.dp),
-                            ) {
+                            Button(onClick = onOpenSettings, shape = RoundedCornerShape(20.dp)) {
                                 Text("立即配置中枢")
                             }
                         }
@@ -569,9 +578,7 @@ private fun ConversationListView(
                         item {
                             TextButton(
                                 onClick = onLoadMore,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                             ) {
                                 Text("加载更早的会话")
                             }
@@ -580,44 +587,33 @@ private fun ConversationListView(
                 }
             }
         }
-
-
     }
 }
 
 /**
- * 单条会话行（1:1 复刻截图 1）
- * 头像：正圆形彩色底（黄/绿/粉/蓝），内部为白人像图标或首字
- * 标题：发件人粗体，右对齐日期（例如 9月5日）
- * 副标题：最新内容，如果是自己发送的带 "您: " 前缀
+ * 单条会话行（1:1 复刻截图 1） 头像：正圆形彩色底（黄/绿/粉/蓝），内部为白人像图标或首字 标题：发件人粗体，右对齐日期（例如 9月5日） 副标题：最新内容，如果是自己发送的带 "您: "
+ * 前缀
  */
 @Composable
-private fun ConversationRow(
-    message: CachedMessage,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-) {
+private fun ConversationRow(message: CachedMessage, isSelected: Boolean, onClick: () -> Unit) {
     val displayName = message.contact.ifEmpty { message.sender }
     val avatarBg = remember(message.sender) { avatarColorFor(message.sender) }
 
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .background(
-                if (isSelected) MaterialTheme.colorScheme.surfaceContainerHigh
-                else Color.Transparent
-            )
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+        modifier =
+            Modifier.fillMaxWidth()
+                .clickable(onClick = onClick)
+                .background(
+                    if (isSelected) MaterialTheme.colorScheme.surfaceContainerHigh
+                    else Color.Transparent
+                )
+                .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         // 圆形大头像 (52dp)
         Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(avatarBg),
+            modifier = Modifier.size(52.dp).clip(CircleShape).background(avatarBg),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -629,10 +625,7 @@ private fun ConversationRow(
         }
 
         // 文本区（发件人、日期、短信内容预览）
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -667,9 +660,7 @@ private fun ConversationRow(
     }
 }
 
-/**
- * 会话详情界面
- */
+/** 会话详情界面 */
 @Composable
 private fun ConversationDetailPane(
     sender: String,
@@ -685,10 +676,11 @@ private fun ConversationDetailPane(
     Column(Modifier.fillMaxSize()) {
         // 顶部导航栏
         TopAppBar(
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.background,
-                titleContentColor = MaterialTheme.colorScheme.onSurface,
-            ),
+            colors =
+                TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -697,10 +689,10 @@ private fun ConversationDetailPane(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(avatarColorFor(sender)),
+                        modifier =
+                            Modifier.size(36.dp)
+                                .clip(CircleShape)
+                                .background(avatarColorFor(sender)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
@@ -731,9 +723,7 @@ private fun ConversationDetailPane(
 
         // 对话气泡流
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             reverseLayout = true,
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -744,10 +734,7 @@ private fun ConversationDetailPane(
             }
             if (messages.size >= messageLimit) {
                 item {
-                    TextButton(
-                        onClick = onLoadMore,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
+                    TextButton(onClick = onLoadMore, modifier = Modifier.fillMaxWidth()) {
                         Text("加载更早历史")
                     }
                 }
@@ -756,31 +743,29 @@ private fun ConversationDetailPane(
     }
 }
 
-/**
- * 现代 Material 3 不对称圆角气泡
- */
+/** 现代 Material 3 不对称圆角气泡 */
 @Composable
-private fun MessageBubble(
-    msg: CachedMessage,
-    isOutgoing: Boolean,
-) {
-    val bubbleShape = if (isOutgoing) {
-        RoundedCornerShape(22.dp, 22.dp, 4.dp, 22.dp)
-    } else {
-        RoundedCornerShape(22.dp, 22.dp, 22.dp, 4.dp)
-    }
+private fun MessageBubble(msg: CachedMessage, isOutgoing: Boolean) {
+    val bubbleShape =
+        if (isOutgoing) {
+            RoundedCornerShape(22.dp, 22.dp, 4.dp, 22.dp)
+        } else {
+            RoundedCornerShape(22.dp, 22.dp, 22.dp, 4.dp)
+        }
 
-    val bubbleColor = if (isOutgoing) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh
-    }
+    val bubbleColor =
+        if (isOutgoing) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        }
 
-    val contentColor = if (isOutgoing) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
+    val contentColor =
+        if (isOutgoing) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -804,7 +789,8 @@ private fun MessageBubble(
         Spacer(Modifier.height(3.dp))
 
         Text(
-            text = "${formatDetailDateTime(msg.timestamp)} · ${if (msg.receiver.isNotEmpty()) msg.receiver else "本机"}",
+            text =
+                "${formatDetailDateTime(msg.timestamp)} · ${if (msg.receiver.isNotEmpty()) msg.receiver else "本机"}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.outline,
             modifier = Modifier.padding(horizontal = 4.dp),

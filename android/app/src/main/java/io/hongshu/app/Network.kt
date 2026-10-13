@@ -166,6 +166,7 @@ class Repository(val context: Context) {
                 check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
                     "连接期间采集了尚未上传的短信，不能更换中枢"
                 }
+                config.invalidateCaptureSession()
                 store.resetForNewIdentity(
                     connectedAt =
                         r.getJSONObject("device").optLong("created_at", System.currentTimeMillis()),

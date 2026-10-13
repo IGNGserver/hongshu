@@ -1,5 +1,40 @@
 # 首版开发验证记录
 
+## 2026-10-13 实时短信独立采集与本机待同步可见性
+
+版本保持 `0.1.0-alpha.14`，基线 `9f976aa`。方案及澎湃实测检查表见 [REALTIME_SMS.md](REALTIME_SMS.md)。
+本次不创建 PR、不合并、不发布、不安装到手机或部署中枢。
+
+| 实际命令/任务 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过：版本/结构/凭据样式检查及 7 项隔离运维测试；PATH 使用工作区外 Bash 5.2.37、GNU find 4.10.0 |
+| `git diff --check`、`gitleaks dir --no-banner --redact .` | 通过；未发现凭据泄漏 |
+| `go test -race ./...`、`go test -race -v ./...`、`go vet ./...`、`go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .` | Go 1.24.4/macOS，通过；13 项测试通过，11 项真实 MySQL/逻辑恢复测试因缺少隔离 MySQL 与客户端而 skip，不能记作已验证 |
+| `npm test`、`npm run check`、`npm run build` | Web 16 项通过，语法与工作区外生产资源构建通过 |
+| `./gradlew --no-daemon --max-workers=2 --project-cache-dir ... -Pkotlin.project.persistent.dir=... :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` | JDK 17/SDK 35/Gradle 8.11.1，通过；27 项 JVM 测试（含 14 项 API 35 Robolectric native SQLite 合同），无失败/skip；lint 0 errors、61 warnings；debug APK 和测试 APK 构建通过 |
+| `ktfmt --kotlinlang-style --dry-run --set-exit-if-changed ...`、`apksigner verify --verbose .../app-debug.apk` | 本任务 Kotlin 文件格式检查通过；debug APK v2 签名有效，仅供测试，未安装 |
+| `adb devices -l` | 无连接设备，未运行设备 instrumentation、澎湃/双卡真机及系统重启验收 |
+
+Go/Web 产物和日志在 `/Users/lvziw/项目/.build-cache/hongshu/realtime-sms-reliability/`；
+Gradle 使用本机共享缓存 `/Users/lvziw/.cache/hongshu-gradle-macos/`，Android 产物/报告在
+`/Users/lvziw/.cache/hongshu-build/realtime-sms-reliability/`。没有把缓存、测试短信或凭据放入工作区。
+
+失败不计为通过：系统 Bash 3.2 的 `${RELEASE_IMAGE,,}` 不兼容导致初始运维测试失败；
+使用独立缓存中的 GNU 工具重跑通过，未修改发布脚本。首次 Android 构建因 NFS 可变缓存写入过慢中止，
+随后改用本机共享缓存。宿主首轮把未加 runner 的合同基类也当作测试执行，且 Robolectric 不按
+`ContentResolver.wrap` 的 transport 路由；合同基类改为 abstract，宿主按 authority 注册同一合成 provider，
+设备仍使用真实 wrap。并发断言、provider 必须实际被调用的断言和 SQLite 原生事务检查均保留。
+
+本轮合同实际覆盖：真实合成多段 UCS2 PDU、只授 RECEIVE_SMS、只授 READ_SMS/全部拒绝、关闭历史不查询
+provider、历史 provider 异常/阻塞仍能实时保存、未知订阅保留、已确认号码快照不随换号变化、ACK 之后的
+广播/provider 去重、关闭/重新开启与身份代次取消、v5→v6 无损保留、分页/异常可见、事务失败完整回滚。
+新增短路径断言：实时落库及上传筛选不得调用 SIM 服务或读取其权限；旧历史队列的单卡兜底移到独立维护任务。
+lint 的同步 SharedPreferences commit 等警告保留，未增加 baseline、禁用检查或降低断言。
+
+未验证边界：READ_SMS 被拒绝/历史 provider 异常的宿主合同不等于用户手机的 ROM 复现。
+SQLite reopen 不是物理手机断电/重启，合成 PDU 不是系统成功投递证明；不能承诺 OEM 屏蔽、强制停止或
+首次解锁前收到 SMS。真实 MySQL、浏览器 Push、生产部署和厂商双卡验收仍需对应环境。
+
 ## 2026-10-12 Android 设置精简与全量历史自动同步
 
 版本保持 `0.1.0-alpha.13`，未发布、未部署。基线 `f3b67d2`；本次日志、构建产物与隔离模拟器在

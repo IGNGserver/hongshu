@@ -52,6 +52,7 @@ fun syncNow(context: Context, manual: Boolean = false): Job {
     return syncSchedulingScope.launch {
         synchronized(schedulingLock) {
             val manager = WorkManager.getInstance(app)
+            enqueueCaptureMaintenance(app)
             val pending =
                 manager.getWorkInfosForUniqueWork("hongshu-sync").get().filter {
                     !it.state.isFinished
@@ -80,7 +81,81 @@ fun syncNow(context: Context, manual: Boolean = false): Job {
     }
 }
 
+private fun enqueueCaptureMaintenance(context: Context) {
+    WorkManager.getInstance(context)
+        .enqueueUniqueWork(
+            "hongshu-capture",
+            ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<CaptureWorker>()
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build(),
+        )
+}
+
+// No network constraint. A blocked provider/SIM service must not serialize uploads.
+class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result =
+        withContext(Dispatchers.IO) {
+            val config = Config(applicationContext)
+            try {
+                refreshAutomaticSims(applicationContext)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                config.simRecognitionHealthy = false
+            }
+            try {
+                Store(applicationContext).use { it.resolvePendingFallback() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return@withContext Result.retry()
+            }
+            try {
+                config.captureStatus = catchUpInbox(applicationContext)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                config.historyState = HistoryState.FAILED
+            }
+            // Wake upload without enqueueing another capture worker in a completion loop.
+            Store(applicationContext).use {
+                if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
+            }
+            if (config.upload && config.historyEnabled && config.inboxScanPending) Result.retry()
+            else Result.success()
+        }
+}
+
+private fun enqueueSyncOnly(context: Context) =
+    synchronized(schedulingLock) {
+        val manager = WorkManager.getInstance(context)
+        val pending =
+            manager.getWorkInfosForUniqueWork("hongshu-sync").get().filter { !it.state.isFinished }
+        // At most one successor to a running sync; offline/backoff work already covers new rows.
+        if (pending.any { it.state != WorkInfo.State.RUNNING }) return@synchronized
+        manager
+            .enqueueUniqueWork(
+                "hongshu-sync",
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                OneTimeWorkRequestBuilder<SyncWorker>()
+                    .setConstraints(
+                        Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+                    )
+                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                    .build(),
+            )
+            .result
+            .get()
+    }
+
 fun schedule(context: Context) {
+    WorkManager.getInstance(context)
+        .enqueueUniquePeriodicWork(
+            "hongshu-capture-periodic",
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<CaptureWorker>(15, TimeUnit.MINUTES).build(),
+        )
     WorkManager.getInstance(context)
         .enqueueUniquePeriodicWork(
             "hongshu-periodic",
@@ -106,13 +181,6 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val config = Config(applicationContext)
         if (config.token.isEmpty()) return Result.success()
         return try {
-            try {
-                config.captureStatus = catchUpInbox(applicationContext)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                config.captureStatus = "收件箱补扫失败；请检查读取权限与本地存储"
-            }
             if (SyncEngine.run(applicationContext)) Result.success() else Result.retry()
         } catch (e: CancellationException) {
             throw e
@@ -145,13 +213,6 @@ object SyncEngine {
                     if (me.has("name")) c.deviceName = me.getString("name")
                     if (store.captureSince() == 0L) {
                         store.initializeCaptureSince(me.getLong("created_at"))
-                        try {
-                            c.captureStatus = catchUpInbox(context)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            c.captureStatus = "收件箱补扫失败；请检查读取权限与本地存储"
-                        }
                     }
                     val epoch = session.optLong("epoch")
                     if (epochReset(store.epochSeen(), store.epoch(), epoch))
@@ -173,7 +234,8 @@ object SyncEngine {
                                 .put("subscription_id", sim.sub),
                         )
                         for (batch in 0 until 20) {
-                            val candidates = store.pending()
+                            if (!c.upload || !c.serverUploadAllowed) break
+                            val candidates = store.pending(allowFallback = false)
                             val pending =
                                 candidates.take(
                                     uploadBatchCount(
@@ -259,15 +321,16 @@ object SyncEngine {
                             c.lastSync = System.currentTimeMillis()
                             c.syncHealthy = true
                             c.status =
-                                if (c.inboxScanPending) "历史短信采集中，自动继续"
+                                if (c.upload && c.historyEnabled && c.inboxScanPending)
+                                    "历史短信采集中，自动继续"
                                 else if (store.pendingCount() > 0)
                                     "已同步 · ${store.pendingCount()} 条等待上传或 SIM 配置"
                                 else "同步完成"
                             // Enqueuing from inside the current worker is coalesced. Retry the
-                            // worker itself so queues over 20 batches and history pages drain.
+                            // worker itself so upload queues over 20 batches drain.
                             return@withContext !(c.upload &&
-                                (c.inboxScanPending ||
-                                    (me.getBoolean("upload") && store.pending().isNotEmpty())))
+                                (me.getBoolean("upload") &&
+                                    store.pending(allowFallback = false).isNotEmpty()))
                         }
                     }
                     false

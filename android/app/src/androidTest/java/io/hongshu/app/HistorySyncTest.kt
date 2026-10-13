@@ -69,6 +69,7 @@ class HistorySyncTest {
         val savedUpload = Config(base).upload
         val savedAuto = Config(base).automaticSim
         val savedPending = Config(base).inboxScanPending
+        val savedHistory = Config(base).historyEnabled
         val inbox = Inbox()
         val resolver = ContentResolver.wrap(inbox)
         val context =
@@ -83,6 +84,7 @@ class HistorySyncTest {
         val name = "history-${java.util.UUID.randomUUID()}.db"
         try {
             Config(base).upload = true
+            Config(base).historyEnabled = true
             Config(base).automaticSim = false
             Store(context, name).use { store ->
                 store.resetForNewIdentity(connectedAt = 1000)
@@ -122,6 +124,7 @@ class HistorySyncTest {
                 .putBoolean("upload", savedUpload)
                 .putBoolean("automatic_sim", savedAuto)
                 .putBoolean("inbox_scan_pending", savedPending)
+                .putBoolean("history_enabled", savedHistory)
                 .commit()
         }
     }

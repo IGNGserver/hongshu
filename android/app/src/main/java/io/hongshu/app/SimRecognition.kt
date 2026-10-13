@@ -52,16 +52,19 @@ private val simLock = Any()
 fun saveSimSelection(context: Context, automatic: Boolean, mappings: List<SimMapping>) =
     synchronized(simLock) {
         val config = Config(context)
-        Store(context).use { store -> store.updateSimMappings(mappings, automatic) }
-        config.automaticSim = automatic
-        config.simRecognitionHealthy = true
-        config.singleSimSubscription =
-            mappings.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
+        synchronized(identityLock) {
+            Store(context).use { store -> store.updateSimMappings(mappings, automatic) }
+            config.automaticSim = automatic
+            config.simRecognitionHealthy = true
+            config.singleSimSubscription =
+                mappings.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
+        }
     }
 
 fun refreshAutomaticSims(context: Context) =
     synchronized(simLock) {
         val config = Config(context)
+        val generation = config.captureGeneration
         if (!config.automaticSim) return@synchronized
         config.simRecognitionHealthy = false
         if (!hasPermission(context, Manifest.permission.READ_PHONE_STATE)) {
@@ -69,14 +72,17 @@ fun refreshAutomaticSims(context: Context) =
             return@synchronized
         }
         val active = scanSims(context)
-        Store(context).use { store ->
-            if (active.any { next -> store.sims().find { it.sub == next.sub } != next }) {
-                store.updateSimMappings(active, automatic = true)
+        synchronized(identityLock) {
+            if (config.captureGeneration != generation) return@synchronized
+            Store(context).use { store ->
+                if (active.any { next -> store.sims().find { it.sub == next.sub } != next }) {
+                    store.updateSimMappings(active, automatic = true)
+                }
             }
+            config.singleSimSubscription =
+                active.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
+            config.simRecognitionHealthy = true
         }
-        config.singleSimSubscription =
-            active.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
-        config.simRecognitionHealthy = true
     }
 
 // Registered again after permissions are granted; periodic scans also cover process death
