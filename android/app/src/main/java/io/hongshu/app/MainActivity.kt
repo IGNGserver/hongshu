@@ -134,21 +134,22 @@ fun HongshuUI(activity: MainActivity) {
     val configuration = LocalConfiguration.current
     val isExpanded = configuration.screenWidthDp >= 840
 
-    fun action(task: suspend () -> String) {
+    fun runAction(announce: Boolean, task: suspend () -> String) {
         if (busy) return
         busy = true
-        scope.launch {
-            try {
-                val text = withContext(Dispatchers.IO) { task() }
-                snackbar.showSnackbar(text)
-            } catch (e: Exception) {
-                snackbar.showSnackbar(e.message ?: "操作失败")
-            } finally {
-                busy = false
-                Store.changes.value++
-            }
-        }
+        scope.launchUiAction(
+            snackbar,
+            announce,
+            setBusy = { busy = it },
+            onFinished = { Store.changes.value++ },
+            task,
+        )
     }
+
+    fun action(task: suspend () -> String) = runAction(announce = true, task)
+
+    // Settings pages report through their own SnackbarHost; the main host is not on screen.
+    fun settingsAction(task: suspend () -> String) = runAction(announce = false, task)
 
     var permissionContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher =
@@ -292,7 +293,7 @@ fun HongshuUI(activity: MainActivity) {
                     onBack = ::popNavigation,
                     onClose = ::closeSettings,
                     onRequestPermissions = permissionRequest,
-                    onAction = ::action,
+                    onAction = ::settingsAction,
                 )
             else ->
                 MainSurface(
