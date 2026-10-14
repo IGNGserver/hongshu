@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Notification post time and SMS provider/PDU time differ by seconds, rarely minutes.
+internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
+
 data class CachedMessage(
     val id: Long,
     val deviceId: String,
@@ -284,6 +287,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 db.setTransactionSuccessful()
                 return false
             }
+            if (linkNotificationCapture(db, m, slot, providerId, broadcastKey)) {
+                db.setTransactionSuccessful()
+                return false
+            }
             db.insertOrThrow(
                 "captures",
                 null,
@@ -311,6 +318,113 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     put("historical", if (m.historical) 1 else 0)
                 }
             db.insertOrThrow("outbox", null, cv)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+        return true
+    }
+
+    // A notification only carries the conversation title (often a contact name) and no
+    // subscription. When the broadcast or provider row for the same text arrives later,
+    // attach it to the notification capture and, if not yet uploaded, upgrade the queued row
+    // to the exact sender/SIM instead of queueing the message twice.
+    private fun linkNotificationCapture(
+        db: SQLiteDatabase,
+        m: SmsRecord,
+        slot: Int,
+        providerId: Long?,
+        broadcastKey: String,
+    ): Boolean {
+        val free = if (providerId == null) "broadcast_key IS NULL" else "provider_id IS NULL"
+        val key =
+            db.rawQuery(
+                    "SELECT key FROM captures WHERE source='notification' AND $free AND body=? AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key LIMIT 1",
+                    arrayOf(
+                        m.body,
+                        (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
+                        (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
+                        m.timestamp.toString(),
+                    ),
+                )
+                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return false
+        db.update(
+            "captures",
+            ContentValues().apply {
+                if (providerId == null) put("broadcast_key", broadcastKey)
+                else put("provider_id", providerId)
+                put("sender", m.sender)
+                put("sub", m.subscriptionId)
+                if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
+            },
+            "key=?",
+            arrayOf(key),
+        )
+        db.update(
+            "outbox",
+            ContentValues().apply {
+                put("sender", m.sender)
+                put("sub", m.subscriptionId)
+                if (slot >= 0) put("slot", slot)
+                if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
+            },
+            "key=?",
+            arrayOf(key),
+        )
+        changes.value++
+        return true
+    }
+
+    // Notification fallback. Any capture of the same text within the window, from any source,
+    // is the same message: re-posted conversation notifications repeat earlier messages.
+    fun queueNotification(m: SmsRecord): Boolean {
+        val key = "notification:" + sha256("${m.sender}\u0000${m.timestamp}\u0000${m.body}")
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val seen =
+                db.rawQuery(
+                        "SELECT 1 FROM captures WHERE key=? OR (body=? AND timestamp BETWEEN ? AND ?) LIMIT 1",
+                        arrayOf(
+                            key,
+                            m.body,
+                            (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
+                            (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
+                        ),
+                    )
+                    .use { it.moveToFirst() }
+            if (seen) {
+                db.setTransactionSuccessful()
+                return false
+            }
+            db.insertOrThrow(
+                "captures",
+                null,
+                ContentValues().apply {
+                    put("key", key)
+                    put("receiver", m.receiver)
+                    put("sender", m.sender)
+                    put("body", m.body)
+                    put("timestamp", m.timestamp)
+                    put("sub", m.subscriptionId)
+                    put("source", "notification")
+                },
+            )
+            db.insertOrThrow(
+                "outbox",
+                null,
+                ContentValues().apply {
+                    put("key", key)
+                    put("receiver", m.receiver)
+                    put("sender", m.sender)
+                    put("body", m.body)
+                    put("timestamp", m.timestamp)
+                    put("sub", m.subscriptionId)
+                    put("slot", -1)
+                    put("historical", 0)
+                },
+            )
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

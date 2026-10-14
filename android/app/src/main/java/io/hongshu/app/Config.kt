@@ -103,6 +103,43 @@ class Config(context: Context) {
         }
     }
 
+    // Opt-in fallback for ROMs that withhold SMS broadcasts and provider rows. The consent
+    // boundary keeps notifications already in the shade from importing older messages.
+    var notificationCapture: Boolean
+        get() = prefs.getBoolean("notification_capture", false)
+        set(value) {
+            synchronized(identityLock) {
+                if (value != notificationCapture)
+                    prefs
+                        .edit()
+                        .putBoolean("notification_capture", value)
+                        .putLong(
+                            "notification_since",
+                            if (value) System.currentTimeMillis() else 0,
+                        )
+                        .commit()
+            }
+        }
+
+    val notificationSince: Long
+        get() = prefs.getLong("notification_since", 0)
+
+    val receivedNotifications: Long
+        get() = prefs.getLong("received_notifications", 0)
+
+    val lastReceivedNotification: Long
+        get() = prefs.getLong("last_received_notification", 0)
+
+    fun noteReceivedNotification(now: Long) {
+        synchronized(identityLock) {
+            prefs
+                .edit()
+                .putLong("received_notifications", receivedNotifications + 1)
+                .putLong("last_received_notification", now)
+                .commit()
+        }
+    }
+
     fun invalidateCaptureSession() {
         synchronized(identityLock) {
             prefs.edit().putLong("capture_generation", captureGeneration + 1).commit()
@@ -230,6 +267,8 @@ class Config(context: Context) {
                         .putLong("recovery_generation", recoveryGeneration + 1)
                         .putString("recovery_state", "NOT_SCANNED")
                 }
+                if (v && !upload && notificationCapture)
+                    edit.putLong("notification_since", System.currentTimeMillis())
                 edit.commit()
             }
         }

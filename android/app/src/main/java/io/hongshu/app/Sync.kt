@@ -30,6 +30,7 @@ class HongshuApp : Application() {
         channels(this)
         schedule(this)
         SimMonitor.start(this)
+        SmsInboxObserver.ensure(this)
     }
 }
 

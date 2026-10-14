@@ -42,7 +42,25 @@ fun smsPermissionStatus(context: Context): String {
             else -> "权限已授予 · 无法确认系统策略"
         }
     }
-    return "接收：${policy(Manifest.permission.RECEIVE_SMS)}；读取：${policy(Manifest.permission.READ_SMS)}。不代表厂商已允许验证码/通知类短信。"
+    val vendor =
+        if (isXiaomiDevice()) "小米/澎湃 OS 另有自启动与通知类短信授权，以下方厂商授权为准。"
+        else "不代表厂商已允许验证码/通知类短信。"
+    return "接收：${policy(Manifest.permission.RECEIVE_SMS)}；读取：${policy(Manifest.permission.READ_SMS)}。$vendor"
+}
+
+fun vendorSmsStatus(context: Context): String? =
+    if (!isXiaomiDevice()) null else xiaomiSmsStatus(xiaomiRomName(), xiaomiSmsAccess(context))
+
+fun notificationCaptureStatus(context: Context): String {
+    val c = Config(context)
+    if (!c.upload || !c.notificationCapture) return "已关闭 · 系统不投递短信广播且补漏读不到时可开启"
+    if (!notificationListenerEnabled(context))
+        return "未授予通知使用权 · 请在系统设置允许鸿枢读取通知（提示受限设置时，先在应用信息右上角允许受限设置）"
+    val arrived =
+        "短信应用通知到达 ${c.receivedNotifications} 次" +
+            if (c.lastReceivedNotification > 0) " · 最近 ${formatTimestamp(c.lastReceivedNotification)}"
+            else ""
+    return "$arrived · 只采集开启后的短信通知；发件人可能显示为联系人名称，号码由后续广播/补漏校正"
 }
 
 fun realtimeSmsStatus(context: Context, diagnostics: CaptureDiagnostics): String {
@@ -60,6 +78,8 @@ fun realtimeSmsStatus(context: Context, diagnostics: CaptureDiagnostics): String
             CaptureFailure.SCHEDULING -> "短信已保存 · 后台任务调度失败，重新进入后重试"
             CaptureFailure.NONE -> ""
         }}"
+    if (diagnostics.broadcasts == 0L && c.receivedBroadcasts == 0L && isXiaomiDevice())
+        return "$arrived · 系统从未投递短信广播：请在下方开启自启动与通知类短信，并开启新短信补漏或短信通知兜底"
     if (diagnostics.broadcasts == 0L) return "$arrived · 接收权限已授予，不代表系统已投递验证码；请用普通短信对照"
     return "$arrived · 最近成功处理 ${formatTimestamp(diagnostics.lastBroadcast)} · 已保存 ${diagnostics.saved} 条 · 重复 ${diagnostics.duplicates} 次"
 }

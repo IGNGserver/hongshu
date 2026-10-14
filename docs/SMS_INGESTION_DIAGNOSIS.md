@@ -37,7 +37,7 @@
 - 厂商可能另设通知类短信、验证码读取、后台/自启动等策略；运行时权限 granted 不等于
   AppOps 放行，也不等于厂商放行敏感短信。更换默认短信应用不会更改鸿枢的这些权限。
 - Android 15 的 [OTP 通知脱敏](https://developer.android.com/about/versions/15/behavior-changes-all#otp-redaction)
-  针对 NotificationListenerService。鸿枢不使用通知监听，不能据此直接认定 SMS 广播被拦。
+  针对 NotificationListenerService，不能据此直接认定 SMS 广播被拦。
 - RCS/MMS、已被删除或仅存在其他应用私有库的消息不属于 Telephony SMS 收件箱补漏范围。
 
 ## 本轮修复
@@ -51,7 +51,9 @@
   同步/维护运行时允许最多一个后继，已有离线/退避/后继任务继续合并，不密集重建任务。
 - 系统广播入口次数/时间独立持久记录；显示 RECEIVE_SMS/READ_SMS 与标准 AppOps 策略。
   增加“立即读取并检查收件箱”。查询新增 0 条不再宣称“读取正常”或“没有短信”。
-- 不申请默认短信角色、通知监听、发送短信权限、特权权限或通过私有 URI 绕过保护。
+- 不申请默认短信角色、发送短信权限、特权权限或通过私有 URI 绕过保护。
+- 后续（2026-10-14）：澎湃 OS 真机广播计数为 0，定位为厂商自启动/通知类短信授权；按用户要求新增默认关闭的
+  短信通知兜底与收件箱即时补漏，见 [HYPEROS_SMS.md](HYPEROS_SMS.md)。
   诊断不输出真实短信、号码、验证码、PDU 或异常原文。
 
 ## 真机最小复现矩阵

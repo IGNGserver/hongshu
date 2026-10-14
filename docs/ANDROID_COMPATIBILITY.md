@@ -25,7 +25,10 @@ SubscriptionInfo.number；运营商未提供号码时明确显示未识别，不
 
 权限授予也不保证所有消息可见。厂商可能另设验证码/通知类短信访问策略；本机未实测，不推断具体策略。
 Android 官方 SMS_RECEIVED 文档说明带 SMS Retriever 哈希的消息可能只向对应应用及指定列表投递。
-Android 15 的 OTP 通知脱敏针对 NotificationListenerService；鸿枢不走通知监听，不能以此直接断言 SMS 广播被拦截。
+Android 15 的 OTP 通知脱敏针对 NotificationListenerService，不能以此直接断言 SMS 广播被拦截；它会影响可选的短信通知兜底。
+小米/澎湃 OS 另有私有 AppOps：自启动（10008）、开机启动（10007）、通知类短信（10018）。未允许时广播不投递、
+服务号短信从收件箱隐藏，而标准权限仍显示已授予。应用最佳努力读取并提供跳转，详见 [HYPEROS_SMS.md](HYPEROS_SMS.md)。
+Android 17 起 OTP 短信对非默认应用扣留三小时（广播与收件箱查询均受影响），届时需重新验证。
 Google Play 的 SMS 权限政策与设备 sideload 是不同问题；首版按用户自行安装设计，未声称可直接上架。
 通知权限 Android 13+ 单独申请；锁屏只显示泛化提示。无 FCM、无无声音乐/一像素/无障碍保活。
 前台服务是用户主动开启的可选链路。Android 14+ 的跨设备短信连接采用 remoteMessaging，
