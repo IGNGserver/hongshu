@@ -17,7 +17,7 @@ if pathlib.Path(sys.argv[0]).name=='docker':
  if args[:3]==['buildx','imagetools','inspect']:
   if s.get('outage'):print('connection refused',file=sys.stderr);sys.exit(1)
   ref=args[3];key=ref.split(':')[-1]
-  value=digest if '@sha256:' in ref else s['tags'].get(key)
+  value=s.get('digests',{}).get(ref.split('@',1)[1],digest) if '@sha256:' in ref else s['tags'].get(key)
   if not value:print('manifest unknown',file=sys.stderr);sys.exit(1)
   print(json.dumps({'digest':value}))
  elif args[:2]==['buildx','build']:
@@ -88,7 +88,7 @@ class Operations(unittest.TestCase):
                         TAG='v0.1.0-alpha.99', VERSION='0.1.0-alpha.99', IS_PRERELEASE='true',
                         RELEASE_IMAGE='ghcr.io/synthetic/hongshu', RELEASE_OWNER='synthetic',
                         RELEASE_SHA='b'*40, GH_TOKEN='synthetic-token', GITHUB_SHA='b'*40,
-                        GITHUB_RUN_ID='1', GITHUB_RUN_ATTEMPT='1')
+                        GITHUB_RUN_ID='1', GITHUB_RUN_ATTEMPT='1', GITHUB_EVENT_NAME='workflow_dispatch')
 
     def tearDown(self):
         self.temp.cleanup()
@@ -134,7 +134,25 @@ class Operations(unittest.TestCase):
         self.assertNotEqual(0,self.run_publish())
         self.update(tags={},outage=True)
         self.assertNotEqual(0,self.run_publish())
-        self.assertEqual(0,json.loads(self.state.read_text())['builds'])
+        self.assertEqual(1,json.loads(self.state.read_text())['builds'])
+
+    def test_existing_matching_tags_can_publish_without_overwrite(self):
+        self.update(tags={'0.1.0-alpha.99':'sha256:'+'a'*64,
+                          'v0.1.0-alpha.99':'sha256:'+'a'*64})
+        self.assertEqual(0,self.run_publish())
+        state=json.loads(self.state.read_text())
+        self.assertEqual(1,state['builds'])
+        self.assertEqual('published',state['release'])
+        self.assertEqual([],state['promotions'])
+
+    def test_manual_republish_reuses_existing_digest(self):
+        old='sha256:'+'c'*64
+        self.update(tags={'0.1.0-alpha.99':old,'v0.1.0-alpha.99':old}, digests={old:old})
+        self.assertEqual(0,self.run_publish())
+        state=json.loads(self.state.read_text())
+        self.assertEqual(1,state['builds'])
+        self.assertEqual('published',state['release'])
+        self.assertEqual([],state['promotions'])
 
     def test_corrupted_partial_draft_is_not_overwritten(self):
         self.update(fail_once=True);self.assertNotEqual(0,self.run_publish())
