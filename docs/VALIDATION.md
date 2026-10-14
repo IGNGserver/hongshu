@@ -1,3 +1,17 @@
+# 2026-10-14 设置页点击后整页变灰卡死修复
+
+基线 `d0af63c`，分支 `agent/fix-settings-busy-freeze`，版本 `0.1.0-alpha.19`（用户 2026-10-14 明确要求合并并发布）。
+原因：全屏设置页不显示主页 SnackbarHost，`HongshuUI.action()` 在 `finally` 解除 busy 之前 await 了主页
+`showSnackbar`，该调用永不返回，busy 永久为 true。修复见 `UiAction.kt`：busy 先于提示解除，设置页不再向主页排队提示。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check` | 通过 |
+| Android `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` 与 API 28/33/35 模拟器测试 | 本机 SDK 未下载完成，未在本地执行；以 PR 上 CI 结果为准（run 链接见 PR） |
+| 真机确认 | 未执行；需在 HyperOS 手机上点击同步控制页各按钮确认不再卡灰 |
+
+新增 JVM 测试 `UiActionTest`：无 SnackbarHost 时仍解除 busy、设置页不向主页排队提示、失败信息仍提示、取消后解除 busy。
+
 # 2026-10-14 澎湃 OS 短信接收：厂商授权诊断、收件箱即时补漏与短信通知兜底
 
 基线 `0af2312`，分支 `agent/hyperos-sms-delivery`，版本 `0.1.0-alpha.18`（用户 2026-10-14 明确要求合并并发布）。
