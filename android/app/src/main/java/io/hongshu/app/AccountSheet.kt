@@ -484,8 +484,11 @@ private fun SyncControlSubPage(
     var queued by remember { mutableIntStateOf(0) }
     var unresolved by remember { mutableIntStateOf(0) }
     var invalid by remember { mutableIntStateOf(0) }
+    var vendorStatus by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(refresh) {
         withContext(Dispatchers.IO) {
+            val vendor = vendorSmsStatus(activity)
+            withContext(Dispatchers.Main) { vendorStatus = vendor }
             val stats = repo.store.captureDiagnostics()
             val count = repo.store.pendingCount()
             val unknown = repo.store.unresolvedCount()
@@ -586,6 +589,79 @@ private fun SyncControlSubPage(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+        vendorStatus?.let { status ->
+            item { StatusRow("厂商短信授权", status) }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            onAction {
+                                withContext(Dispatchers.Main) {
+                                    check(
+                                        startFirstAvailable(
+                                            activity,
+                                            xiaomiAutoStartIntents(activity.packageName),
+                                        )
+                                    ) {
+                                        "无法打开系统设置"
+                                    }
+                                }
+                                "请允许鸿枢自启动，返回后显示实际状态"
+                            }
+                        },
+                    ) {
+                        Text("自启动")
+                    }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            onAction {
+                                withContext(Dispatchers.Main) {
+                                    check(
+                                        startFirstAvailable(
+                                            activity,
+                                            xiaomiPermissionIntents(activity.packageName),
+                                        )
+                                    ) {
+                                        "无法打开系统设置"
+                                    }
+                                }
+                                "请在权限中允许通知类短信与读取短信，返回后显示实际状态"
+                            }
+                        },
+                    ) {
+                        Text("通知类短信")
+                    }
+                }
+            }
+            item {
+                Text(
+                    "澎湃 OS 还需：省电策略设为无限制；关闭短信设置中的免费网络短信与 5G 消息（这类消息不经过系统短信广播）。修改后用另一台手机发普通短信，确认上方广播次数增加。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (c.upload && !c.recoveryEnabled)
+                item {
+                    FilledTonalButton(
+                        enabled = !busy,
+                        onClick = {
+                            onAction {
+                                c.recoveryEnabled = true
+                                withContext(Dispatchers.Main) {
+                                    onRequestPermissions(arrayOf(Manifest.permission.READ_SMS)) {
+                                        SmsInboxObserver.ensure(activity)
+                                        syncNow(activity, manual = true)
+                                    }
+                                }
+                                "新短信补漏已开启 · 只读取开启后的短信"
+                            }
+                        },
+                    ) {
+                        Text("开启新短信补漏（澎湃 OS 推荐）")
+                    }
+                }
+        }
         if (c.upload && !hasPermission(activity, Manifest.permission.RECEIVE_SMS))
             item {
                 FilledTonalButton(
@@ -680,6 +756,45 @@ private fun SyncControlSubPage(
                 }
             }
         item {
+            SettingSwitch("短信通知兜底", c.notificationCapture, !busy) { enabled ->
+                onAction {
+                    check(!enabled || c.upload) { "请先开启同步本机短信" }
+                    c.notificationCapture = enabled
+                    if (enabled && !notificationListenerEnabled(activity))
+                        withContext(Dispatchers.Main) {
+                            check(startFirstAvailable(activity, notificationListenerIntents(activity))) {
+                                "无法打开通知使用权设置"
+                            }
+                        }
+                    if (enabled) "请允许鸿枢读取通知；只处理短信应用的通知" else "短信通知兜底已关闭"
+                }
+            }
+        }
+        item {
+            Text(
+                "系统既不投递短信广播、收件箱也读不到时（如澎湃 OS 的通知类短信、5G 消息），从短信应用的通知中采集开启后的新短信。只处理短信应用通知，不读取其他应用。授予通讯录权限可把联系人名称还原为号码。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (c.notificationCapture && !notificationListenerEnabled(activity))
+            item {
+                FilledTonalButton(
+                    onClick = {
+                        onAction {
+                            withContext(Dispatchers.Main) {
+                                check(startFirstAvailable(activity, notificationListenerIntents(activity))) {
+                                    "无法打开通知使用权设置"
+                                }
+                            }
+                            "请允许鸿枢读取通知，返回后显示实际状态"
+                        }
+                    },
+                    enabled = !busy,
+                ) {
+                    Text("授予通知使用权")
+                }
+            }
+        item {
             SettingSwitch("接收全部通知", c.notify, !busy) { enabled ->
                 onAction {
                     check(c.token.isNotEmpty()) { "请先连接中枢" }
@@ -704,6 +819,7 @@ private fun SyncControlSubPage(
         item { StatusRow("系统短信权限与访问策略", smsPermissionStatus(activity)) }
         item { StatusRow("新短信收件箱补漏", recoverySmsStatus(activity)) }
         item { StatusRow("历史短信读取", historySmsStatus(activity)) }
+        item { StatusRow("短信通知兜底", notificationCaptureStatus(activity)) }
         item { StatusRow("本地队列", "$queued 条待同步 · $unresolved 条待确认号码 · $invalid 条被阻塞") }
         item { FilledTonalButton(onClick = onPending) { Text("查看本机待同步短信") } }
         item { StatusRow("中枢同步状态", smsSyncStatus(activity, repo)) }

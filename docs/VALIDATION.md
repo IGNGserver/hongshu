@@ -1,3 +1,21 @@
+# 2026-10-14 澎湃 OS 短信接收：厂商授权诊断、收件箱即时补漏与短信通知兜底
+
+基线 `0af2312`，分支 `agent/hyperos-sms-delivery`，版本 `0.1.0-alpha.18`（用户 2026-10-14 明确要求合并并发布）。
+原因分析与真机矩阵见 [HYPEROS_SMS.md](HYPEROS_SMS.md)。用户真机现象：系统广播到达 0 次；本机无 adb 设备。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；结构/SemVer/凭据样式检查及 11 项运维测试 |
+| `git diff --check`、`gitleaks dir --no-banner --redact` | 通过；无凭据泄漏 |
+| `go test -race ./...`、`go vet ./...`、`go build -trimpath`（工作区外 `~/.build`） | 通过；真实 MySQL 集成测试无 DSN 时 skip，由 CI 隔离 MySQL 执行 |
+| `cd web && npm test && npm run check && npm run build`（工作区外） | 16 项测试、语法检查、生产资源构建通过 |
+| Android `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` 与 API 28/33/35 模拟器设备测试 | 本机（macOS-dev2）无 Android SDK，下载速率约 100 KB/s，未在本地执行；以 PR 上的 `Hongshu validation` CI 结果为准（run 链接与结论见 PR） |
+| 真机 HyperOS 验收 | 未执行；小米私有 AppOps 读取、安全中心跳转与短信通知字段需按 HYPEROS_SMS.md 矩阵在目标手机确认 |
+
+新增 JVM 测试：`XiaomiAccessTest`（品牌识别、AppOps 模式映射、状态文案、跳转回退）与 `NotificationCaptureTest`
+（短信应用过滤、同意时间边界、MessagingStyle 自身回复、汇总通知、通知→广播/补漏升级、重复通知去重、开关与代次）。
+合成数据只用于测试，没有真实短信、号码或验证码进入日志。
+
 # 2026-10-13 Android 导航、状态栏与预测式返回
 
 基线 `fe11daf`，分支 `agent/frontend-navigation-safe-area`；版本保持 `0.1.0-alpha.15`，本轮未创建 PR、未合并、未发布或安装到手机。
