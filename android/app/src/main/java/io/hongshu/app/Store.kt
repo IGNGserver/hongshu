@@ -133,7 +133,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     }
 
     fun localPending(limit: Int = 100, offset: Int = 0): List<LocalPendingMessage> {
-        val resolver = receiverResolver()
+        val resolver = receiverResolver(allowFallback = false)
         return readableDatabase
             .rawQuery(
                 "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy') FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
@@ -326,10 +326,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return true
     }
 
-    // A notification only carries the conversation title (often a contact name) and no
-    // subscription. When the broadcast or provider row for the same text arrives later,
-    // attach it to the notification capture and, if not yet uploaded, upgrade the queued row
-    // to the exact sender/SIM instead of queueing the message twice.
+    // Require sender evidence, compatible SIM snapshots and one unique candidate.
+    // An unresolved contact title must never be matched by body alone.
     private fun linkNotificationCapture(
         db: SQLiteDatabase,
         m: SmsRecord,
@@ -340,22 +338,29 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val free = if (providerId == null) "broadcast_key IS NULL" else "provider_id IS NULL"
         val key =
             db.rawQuery(
-                    "SELECT key FROM captures WHERE source='notification' AND $free AND body=? AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key LIMIT 1",
+                    "SELECT key FROM captures WHERE source='notification' AND $free AND sender=? AND body=? AND (sub<0 OR CAST(? AS INTEGER)<0 OR sub=?) AND (receiver='' OR ?='' OR receiver=?) AND timestamp BETWEEN ? AND ? LIMIT 2",
                     arrayOf(
+                        m.sender,
                         m.body,
+                        m.subscriptionId.toString(),
+                        m.subscriptionId.toString(),
+                        m.receiver,
+                        m.receiver,
                         (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
                         (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
-                        m.timestamp.toString(),
                     ),
                 )
-                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return false
+                .use {
+                    if (!it.moveToFirst()) null
+                    else it.getString(0).takeUnless { _ -> it.moveToNext() }
+                } ?: return false
         db.update(
             "captures",
             ContentValues().apply {
                 if (providerId == null) put("broadcast_key", broadcastKey)
                 else put("provider_id", providerId)
                 put("sender", m.sender)
-                put("sub", m.subscriptionId)
+                if (m.subscriptionId >= 0) put("sub", m.subscriptionId)
                 if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
             },
             "key=?",
@@ -365,7 +370,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             "outbox",
             ContentValues().apply {
                 put("sender", m.sender)
-                put("sub", m.subscriptionId)
+                if (m.subscriptionId >= 0) put("sub", m.subscriptionId)
                 if (slot >= 0) put("slot", slot)
                 if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
             },
@@ -376,25 +381,46 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return true
     }
 
-    // Notification fallback. Any capture of the same text within the window, from any source,
-    // is the same message: re-posted conversation notifications repeat earlier messages.
+    // Reposts may repeat earlier lines, but identical bodies are not an identity.
     fun queueNotification(m: SmsRecord): Boolean {
-        val key = "notification:" + sha256("${m.sender}\u0000${m.timestamp}\u0000${m.body}")
+        val key =
+            "notification:" +
+                sha256(
+                    "${m.receiver}\u0000${m.subscriptionId}\u0000${m.sender}\u0000${m.timestamp}\u0000${m.body}"
+                )
         val db = writableDatabase
         db.beginTransaction()
         try {
             val seen =
                 db.rawQuery(
-                        "SELECT 1 FROM captures WHERE key=? OR (body=? AND timestamp BETWEEN ? AND ?) LIMIT 1",
+                        "SELECT 1 FROM captures WHERE key=? OR (source='notification' AND sender=? AND body=? AND sub=? AND receiver=? AND timestamp BETWEEN ? AND ?) LIMIT 1",
                         arrayOf(
                             key,
+                            m.sender,
                             m.body,
+                            m.subscriptionId.toString(),
+                            m.receiver,
                             (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
                             (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
                         ),
                     )
                     .use { it.moveToFirst() }
-            if (seen) {
+            val counterpart =
+                db.rawQuery(
+                        "SELECT key FROM captures WHERE source<>'notification' AND sender=? AND body=? AND (sub<0 OR CAST(? AS INTEGER)<0 OR sub=?) AND (receiver='' OR ?='' OR receiver=?) AND timestamp BETWEEN ? AND ? LIMIT 2",
+                        arrayOf(
+                            m.sender,
+                            m.body,
+                            m.subscriptionId.toString(),
+                            m.subscriptionId.toString(),
+                            m.receiver,
+                            m.receiver,
+                            (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
+                            (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
+                        ),
+                    )
+                    .use { it.count == 1 }
+            if (seen || counterpart) {
                 db.setTransactionSuccessful()
                 return false
             }
@@ -484,10 +510,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return receiverResolver()(sub)
     }
 
-    fun receiverResolver(): (Int) -> String {
+    fun receiverResolver(allowFallback: Boolean = true): (Int) -> String {
         val mappings =
             if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
-        val fallback = fallbackSubscription()
+        val fallback = if (allowFallback) fallbackSubscription() else -1
         return { sub ->
             resolvedReceiver(
                 if (sub < 0) mappings.filter { it.sub == fallback } else mappings,
@@ -561,7 +587,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
     }
 
-    fun pending(allowFallback: Boolean = true): List<Pair<String, SmsRecord>> {
+    fun pending(
+        allowFallback: Boolean = true,
+        historical: Boolean? = null,
+        limit: Int = 100,
+    ): List<Pair<String, SmsRecord>> {
         val mappings =
             if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
         val fallback = if (allowFallback) fallbackSubscription() else -1
@@ -577,15 +607,18 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val result = mutableListOf<Pair<String, SmsRecord>>()
         var lastTime = Long.MIN_VALUE
         var lastKey = ""
-        while (result.size < 100) {
+        val lane =
+            if (historical == null) ""
+            else if (historical) " AND historical<>0" else " AND historical=0"
+        while (result.size < limit) {
             var scanned = 0
             readableDatabase
                 .rawQuery(
-                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible) AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
+                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible)$lane AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
                     (subs + listOf(lastTime.toString(), lastKey)).toTypedArray(),
                 )
                 .use { c ->
-                    while (result.size < 100 && c.moveToNext()) {
+                    while (result.size < limit && c.moveToNext()) {
                         scanned++
                         lastTime = c.getLong(4)
                         lastKey = c.getString(0)
@@ -633,6 +666,43 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             if (scanned < 100) break
         }
         return result
+    }
+
+    fun uploadCandidates(batch: Int): List<Pair<String, SmsRecord>> {
+        val historyFirst = batch % 5 == 4
+        val primary = pending(allowFallback = false, historical = historyFirst)
+        val secondary =
+            pending(
+                allowFallback = false,
+                historical = !historyFirst,
+                limit = maxOf(20, 100 - primary.size),
+            )
+        return primary.take(100 - secondary.size) + secondary
+    }
+
+    fun pendingCounts(): PendingCounts {
+        val resolver = receiverResolver(allowFallback = false)
+        return readableDatabase
+            .rawQuery(
+                "SELECT receiver,sub,blocked,COUNT(*) FROM outbox GROUP BY receiver,sub,blocked",
+                null,
+            )
+            .use { rows ->
+                var ready = 0
+                var needsSim = 0
+                var invalid = 0
+                while (rows.moveToNext()) {
+                    val count = rows.getInt(3)
+                    when {
+                        rows.getString(2) == "invalid_message" -> invalid += count
+                        rows.getString(2).isNotEmpty() ||
+                            (rows.getString(0).isEmpty() && resolver(rows.getInt(1)).isEmpty()) ->
+                            needsSim += count
+                        else -> ready += count
+                    }
+                }
+                PendingCounts(ready, needsSim, invalid)
+            }
     }
 
     fun blockedCount(): Int =

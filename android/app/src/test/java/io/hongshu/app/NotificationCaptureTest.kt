@@ -28,7 +28,19 @@ class NotificationCaptureTest {
         lines: List<NotificationLine> = emptyList(),
         summary: Boolean = false,
         whenTime: Long = t,
-    ) = NotificationSnapshot(packageName, summary, false, title, text, null, null, lines, t + 500, whenTime)
+    ) =
+        NotificationSnapshot(
+            packageName,
+            summary,
+            false,
+            title,
+            text,
+            null,
+            null,
+            lines,
+            t + 500,
+            whenTime,
+        )
 
     @Test
     fun onlySmsAppNotificationsAfterConsentAreParsed() {
@@ -36,7 +48,9 @@ class NotificationCaptureTest {
             listOf(SmsNotification("10086", "合成验证码 123456", t)),
             parseSmsNotification(snapshot(), packages, t),
         )
-        assertTrue(parseSmsNotification(snapshot(packageName = "com.tencent.mm"), packages, 0).isEmpty())
+        assertTrue(
+            parseSmsNotification(snapshot(packageName = "com.tencent.mm"), packages, 0).isEmpty()
+        )
         assertTrue(parseSmsNotification(snapshot(), packages, t + 1).isEmpty())
         assertTrue(parseSmsNotification(snapshot(summary = true), packages, 0).isEmpty())
         assertTrue(parseSmsNotification(snapshot(text = "3条新信息"), packages, 0).isEmpty())
@@ -89,7 +103,7 @@ class NotificationCaptureTest {
     @Test
     fun laterBroadcastUpgradesTheQueuedNotificationRow() = store { context, name ->
         Store(context, name).use { s ->
-            assertTrue(s.queueNotification(SmsRecord("", "张三", "合成正文", t, -1)))
+            assertTrue(s.queueNotification(SmsRecord("", "10086", "合成正文", t, -1)))
             assertFalse(s.queue(SmsRecord("+8613800000000", "10086", "合成正文", t + 30_000, 7), 0))
             assertEquals(1, s.pendingCount())
             val row = s.localPending().single()
@@ -97,8 +111,65 @@ class NotificationCaptureTest {
             assertEquals(7, row.subscriptionId)
             assertEquals("+8613800000000", row.receiver)
             // The provider row for the same message attaches too, still without a second upload.
-            assertFalse(s.captureProvider(41, SmsRecord("+8613800000000", "10086", "合成正文", t + 31_000, 7)))
+            assertFalse(
+                s.captureProvider(41, SmsRecord("+8613800000000", "10086", "合成正文", t + 31_000, 7))
+            )
             assertEquals(1, s.pendingCount())
+        }
+    }
+
+    @Test
+    fun identicalBodiesFromDifferentSendersOrKnownSimsAreIndependent() = store { context, name ->
+        Store(context, name).use { s ->
+            val message = SmsRecord("+1234567890", "10086", "synthetic identical", t, 7)
+            assertTrue(s.queueNotification(message))
+            assertTrue(s.queueNotification(message.copy(sender = "95588")))
+            assertTrue(
+                s.queueNotification(message.copy(receiver = "+9876543210", subscriptionId = 8))
+            )
+            assertTrue(s.queue(message.copy(sender = "张三")))
+            assertTrue(s.queue(message.copy(receiver = "+1111111111", subscriptionId = 9)))
+            assertEquals(5, s.pendingCount())
+        }
+    }
+
+    @Test
+    fun contactTitleWithoutSenderEvidenceDoesNotConsumeABroadcast() = store { context, name ->
+        Store(context, name).use { s ->
+            val message = SmsRecord("", "张三", "synthetic identical", t, -1)
+            assertTrue(s.queueNotification(message))
+            assertTrue(
+                s.queue(
+                    message.copy(receiver = "+1234567890", sender = "10086", subscriptionId = 7)
+                )
+            )
+            assertEquals(2, s.pendingCount())
+        }
+    }
+
+    @Test
+    fun ambiguousCrossSourceCandidatesAreNotGuessedInEitherArrivalOrder() = store { context, name ->
+        Store(context, name).use { s ->
+            val message = SmsRecord("+1234567890", "10086", "synthetic ambiguous", t, 7)
+            s.queueNotification(message)
+            s.queueNotification(message.copy(receiver = "+9876543210", subscriptionId = 8))
+            assertTrue(s.queue(message.copy(receiver = "", subscriptionId = -1)))
+            val other = message.copy(body = "synthetic reverse")
+            s.queue(other)
+            s.queue(other.copy(receiver = "+9876543210", subscriptionId = 8))
+            assertTrue(s.queueNotification(other.copy(receiver = "", subscriptionId = -1)))
+            assertEquals(6, s.pendingCount())
+        }
+    }
+
+    @Test
+    fun lateUnknownProviderCannotEraseKnownSimFromNotification() = store { context, name ->
+        Store(context, name).use { s ->
+            val message = SmsRecord("+1234567890", "10086", "synthetic identity", t, 7)
+            s.queueNotification(message)
+            assertFalse(s.captureProvider(42, message.copy(receiver = "", subscriptionId = -1)))
+            assertEquals(7, s.localPending().single().subscriptionId)
+            assertEquals(message.receiver, s.localPending().single().receiver)
         }
     }
 
@@ -125,7 +196,10 @@ class NotificationCaptureTest {
         assertEquals(0, persistNotificationSms(context, message, config.captureGeneration, name))
         config.notificationCapture = true
         assertTrue(config.notificationSince > 0)
-        assertEquals(0, persistNotificationSms(context, message, config.captureGeneration - 1, name))
+        assertEquals(
+            0,
+            persistNotificationSms(context, message, config.captureGeneration - 1, name),
+        )
         assertEquals(1, persistNotificationSms(context, message, config.captureGeneration, name))
         config.notificationCapture = false
         assertEquals(0L, config.notificationSince)

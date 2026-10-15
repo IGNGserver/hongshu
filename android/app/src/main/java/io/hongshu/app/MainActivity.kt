@@ -495,13 +495,13 @@ private fun ConversationListView(
     onSync: () -> Unit,
 ) {
     var sims by remember { mutableStateOf<List<String>>(emptyList()) }
-    var localPending by remember { mutableIntStateOf(0) }
+    var localPending by remember { mutableStateOf(PendingCounts()) }
     LaunchedEffect(changes) {
         sims =
             withContext(Dispatchers.IO) {
                 (repo.store.sims().map { it.phone } + repo.store.receivers()).distinct()
             }
-        localPending = withContext(Dispatchers.IO) { repo.store.pendingCount() }
+        localPending = withContext(Dispatchers.IO) { repo.store.pendingCounts() }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -584,12 +584,12 @@ private fun ConversationListView(
                 }
             }
 
-            if (localPending > 0) {
+            if (localPending.total > 0) {
                 TextButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.padding(horizontal = 18.dp),
                 ) {
-                    Text("本机有 $localPending 条待同步短信 · 设置中可离线查看")
+                    Text("${localPending.label()} · 设置中可离线查看")
                 }
             }
 

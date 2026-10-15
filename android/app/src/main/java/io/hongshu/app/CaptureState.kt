@@ -34,6 +34,12 @@ enum class PendingState {
     WAITING_UPLOAD,
 }
 
+data class PendingCounts(val ready: Int = 0, val needsSim: Int = 0, val invalid: Int = 0) {
+    val total: Int get() = ready + needsSim + invalid
+
+    fun label(): String = "本地保留 $total 条 · $ready 条已映射待传 · $needsSim 条待确认号码 · $invalid 条异常"
+}
+
 data class LocalPendingMessage(
     val key: String,
     val receiver: String,
