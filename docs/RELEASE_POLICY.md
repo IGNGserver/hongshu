@@ -18,8 +18,8 @@
 
 ## 发布资产与交付形式
 
-1. **Release 资产严格为两项**：正式签名的 Android APK（`Hongshu-Android-<version>.apk`）和无源码部署文件包（`hongshu-v<version>-deployment.tar.gz`）。中枢服务通过 GHCR 镜像交付，不再上传独立 Linux 二进制工具包；也不上传 `IMAGE.json`、`SHA256SUMS`、`RELEASE_NOTES.md` 或其他辅助文件。
-2. **发布说明与校验**：Release 正文沿用 `docs/releases/<tag>.md` 的中文说明，至少包含 `本次更新` 和 `快捷下载`，并提供与 `Hongshu-Android-<version>.apk` 一致的 APK 直接下载链接。镜像 digest、源码 SHA 与两项资产哈希写入正文末尾的隐藏恢复日志，不作为公开资产；恢复时下载两项资产并重新校验。
+1. **Release 资产严格为两项**：后续新版本发布正式签名的 Android APK（`Hongshu-Android-<version>.apk`）和无源码部署文件包（`hongshu-v<version>-deployment.tar.gz`）。中枢服务通过 GHCR 镜像交付，不再上传独立 Linux 二进制工具包；也不上传 `IMAGE.json`、`SHA256SUMS`、`RELEASE_NOTES.md` 或其他辅助文件。已发布 Release 的既有资产和正文保持不变。
+2. **发布说明与校验**：后续新版本的 Release 正文沿用 `docs/releases/<tag>.md` 的中文说明，至少包含 `本次更新` 和 `快捷下载`，并提供与 `Hongshu-Android-<version>.apk` 一致的 APK 直接下载链接。镜像 digest、源码 SHA 与两项资产哈希写入正文末尾的隐藏恢复日志，不作为公开资产；恢复时下载两项资产并重新校验。
 3. **中枢服务镜像**：中枢 Docker 容器镜像自动构建并推送到 GitHub Container Registry（`ghcr.io/<owner>/hongshu`），按版本号打标（例如 `ghcr.io/igngserver/hongshu:0.1.0-alpha.5`，正式版额外提供 `latest` 标签）。用户的部署流程不依赖本地源代码构建，而是直接拉取带版本号或 `latest` 标签的镜像。
 
 任何签名密钥、数据库密码、推送密钥或实际短信数据只能通过受控 Secret/环境提供，不能进入发布说明或构建日志。
