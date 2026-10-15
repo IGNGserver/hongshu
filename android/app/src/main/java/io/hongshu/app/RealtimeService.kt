@@ -222,7 +222,7 @@ class RealtimeService : Service() {
                             }
 
                             override fun onMessage(webSocket: WebSocket, text: String) {
-                                callback { syncNow(this@RealtimeService) }
+                                callback { syncNow(this@RealtimeService, manual = true) }
                             }
 
                             override fun onFailure(

@@ -81,7 +81,7 @@ internal suspend fun saveAndScheduleIncomingSms(
     generation: Long,
     receivedAt: Long,
     databaseName: String = "hongshu.db",
-    enqueue: suspend () -> Unit = { syncNow(context).await() },
+    enqueue: suspend () -> Unit = { syncNow(context, manual = true).await() },
 ) {
     fun failure(value: CaptureFailure) =
         synchronized(identityLock) {

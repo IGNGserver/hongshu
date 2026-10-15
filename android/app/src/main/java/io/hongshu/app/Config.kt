@@ -216,6 +216,28 @@ class Config(context: Context) {
             prefs.edit().putBoolean("server_upload_allowed", value).apply()
         }
 
+    // Set while the hub has not confirmed this device's local upload switch (offline toggle,
+    // or a re-login that creates a new hub device). Sync re-sends it until confirmed, so a
+    // missed PATCH is not mistaken for an administrator's decision.
+    var uploadPatchPending: Boolean
+        get() = prefs.getBoolean("upload_patch_pending", false)
+        set(value) {
+            prefs.edit().putBoolean("upload_patch_pending", value).commit()
+        }
+
+    var contactsHealthy: Boolean
+        get() = prefs.getBoolean("contacts_healthy", true)
+        set(value) {
+            prefs.edit().putBoolean("contacts_healthy", value).apply()
+        }
+
+    // SIM registrations the hub already accepted, scoped by device ID.
+    var registeredSims: Set<String>
+        get() = prefs.getStringSet("registered_sims", emptySet())!!.toSet()
+        set(value) {
+            prefs.edit().putStringSet("registered_sims", value.toSet()).apply()
+        }
+
     var inboxScanPending: Boolean
         get() = prefs.getBoolean("inbox_scan_pending", false)
         set(value) {

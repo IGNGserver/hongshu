@@ -166,6 +166,10 @@ class Repository(val context: Context) {
                 check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
                     "连接期间采集了尚未上传的短信，不能更换中枢"
                 }
+                // Re-authorizing the same hub keeps local capture on, so SMS arriving after the
+                // login are not dropped; the new hub device record starts with upload disabled,
+                // so the switch is re-sent on the next sync. A different hub always starts off.
+                val keepUpload = oldUrl == newUrl && config.upload
                 config.invalidateCaptureSession()
                 store.resetForNewIdentity(
                     connectedAt =
@@ -176,7 +180,9 @@ class Repository(val context: Context) {
                 config.token = r.getString("token")
                 config.deviceId = r.getJSONObject("device").getString("id")
                 config.deviceName = r.getJSONObject("device").optString("name", name.trim())
-                config.upload = false
+                config.upload = keepUpload
+                config.uploadPatchPending = keepUpload
+                config.registeredSims = emptySet()
                 config.notify = r.getJSONObject("device").optBoolean("notify", true)
                 config.syncHealthy = false
                 config.status = "已连接"

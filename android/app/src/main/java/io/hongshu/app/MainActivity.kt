@@ -69,7 +69,8 @@ class MainActivity : ComponentActivity() {
         updateRecentTaskVisibility(this, Config(this).hideFromRecents)
         SimMonitor.start(this)
         SmsInboxObserver.ensure(this)
-        syncNow(this)
+        // The user is looking at the app: do not wait behind failure backoff.
+        syncNow(this, manual = true)
         if (!RuntimeHealth.connection.value.running) startRealtimeIfEnabled(this)
     }
 
