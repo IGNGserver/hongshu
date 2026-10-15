@@ -14,7 +14,15 @@ internal data class IncomingSms(
     val timestamp: Long,
     val subscription: Int,
     val slot: Int,
+    val networkTime: Long? = null,
 )
+
+// Replaces an implausible network time with the receive time, keeping the original as the
+// redelivery identity.
+internal fun IncomingSms.withReceiveTime(receivedAt: Long): IncomingSms {
+    val effective = effectiveSmsTime(timestamp, receivedAt)
+    return if (effective == timestamp) this else copy(timestamp = effective, networkTime = timestamp)
+}
 
 internal fun parseIncomingSms(intent: Intent): IncomingSms? {
     val parts = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return null
@@ -42,6 +50,19 @@ internal fun parseIncomingSms(intent: Intent): IncomingSms? {
     )
 }
 
+// A broadcast is not redelivered, so a transient lock must not turn into a lost SMS.
+internal fun <T> retryLockedDatabase(attempts: Int = 3, block: () -> T): T {
+    var attempt = 0
+    while (true) {
+        try {
+            return block()
+        } catch (e: android.database.sqlite.SQLiteDatabaseLockedException) {
+            if (++attempt >= attempts) throw e
+            Thread.sleep(200L * attempt)
+        }
+    }
+}
+
 // Shared by the receiver and device tests. Never queries the SMS provider or SIM service.
 internal fun persistIncomingSms(
     context: Context,
@@ -58,18 +79,21 @@ internal fun persistIncomingSms(
                 !hasPermission(context, Manifest.permission.RECEIVE_SMS)
         )
             return@synchronized false
-        Store(context, databaseName).use { store ->
-            store.queueRealtime(
-                SmsRecord(
-                    store.realtimeReceiver(message.subscription),
-                    message.sender,
-                    message.body,
-                    message.timestamp,
-                    message.subscription,
-                ),
-                message.slot,
-                receivedAt,
-            )
+        retryLockedDatabase {
+            Store(context, databaseName).use { store ->
+                store.queueRealtime(
+                    SmsRecord(
+                        store.realtimeReceiver(message.subscription),
+                        message.sender,
+                        message.body,
+                        message.timestamp,
+                        message.subscription,
+                        networkTime = message.networkTime,
+                    ),
+                    message.slot,
+                    receivedAt,
+                )
+            }
         }
         config.captureFailure = CaptureFailure.NONE
         true
@@ -122,7 +146,7 @@ class SmsReceiver : BroadcastReceiver() {
             }
         val message =
             try {
-                parseIncomingSms(intent) ?: error("Empty SMS broadcast")
+                (parseIncomingSms(intent) ?: error("Empty SMS broadcast")).withReceiveTime(receivedAt)
             } catch (_: Exception) {
                 synchronized(identityLock) {
                     if (Config(app).captureGeneration == generation)
