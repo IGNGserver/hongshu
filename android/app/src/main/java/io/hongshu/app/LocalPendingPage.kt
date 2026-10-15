@@ -22,7 +22,8 @@ private fun networkAvailable(context: Context): Boolean {
 @Composable
 fun LocalPendingSubPage(repo: Repository, refresh: Long, onSims: () -> Unit) {
     var offset by remember { mutableIntStateOf(0) }
-    var total by remember { mutableIntStateOf(0) }
+    var counts by remember { mutableStateOf(PendingCounts()) }
+    val total = counts.total
     var records by remember { mutableStateOf<List<LocalPendingMessage>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     val config = repo.config
@@ -31,11 +32,12 @@ fun LocalPendingSubPage(repo: Repository, refresh: Long, onSims: () -> Unit) {
     LaunchedEffect(refresh, offset) {
         val page =
             withContext(Dispatchers.IO) {
-                val count = repo.store.pendingCount()
+                val summary = repo.store.pendingCounts()
+                val count = summary.total
                 val start = if (count == 0) 0 else offset.coerceAtMost(((count - 1) / 100) * 100)
-                Triple(count, start, repo.store.localPending(100, start))
+                Triple(summary, start, repo.store.localPending(100, start))
             }
-        total = page.first
+        counts = page.first
         offset = page.second
         records = page.third
         loaded = true
@@ -46,7 +48,8 @@ fun LocalPendingSubPage(repo: Repository, refresh: Long, onSims: () -> Unit) {
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item {
-            Text("本机保存 $total 条待同步短信。上传确认前不会删除；这里与中枢收件箱分开。")
+            Text(counts.label())
+            Text("上传确认前不会删除；这里与中枢收件箱分开。已映射不代表当前可上传，还取决于下方连接与同步状态。")
             Text(
                 "未知订阅不会按当前卡槽猜测；配置 SIM 后仅可补传能安全确定归属的记录。",
                 style = MaterialTheme.typography.bodySmall,

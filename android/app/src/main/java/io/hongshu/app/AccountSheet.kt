@@ -481,23 +481,17 @@ private fun SyncControlSubPage(
     val c = remember(refresh) { repo.config }
     val health by RuntimeHealth.connection.collectAsState()
     var diagnostics by remember { mutableStateOf(CaptureDiagnostics()) }
-    var queued by remember { mutableIntStateOf(0) }
-    var unresolved by remember { mutableIntStateOf(0) }
-    var invalid by remember { mutableIntStateOf(0) }
+    var queueCounts by remember { mutableStateOf(PendingCounts()) }
     var vendorStatus by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(refresh) {
         withContext(Dispatchers.IO) {
             val vendor = vendorSmsStatus(activity)
             withContext(Dispatchers.Main) { vendorStatus = vendor }
             val stats = repo.store.captureDiagnostics()
-            val count = repo.store.pendingCount()
-            val unknown = repo.store.unresolvedCount()
-            val blocked = repo.store.blockedCount()
+            val counts = repo.store.pendingCounts()
             withContext(Dispatchers.Main) {
                 diagnostics = stats
-                queued = count
-                unresolved = unknown
-                invalid = blocked
+                queueCounts = counts
             }
         }
     }
@@ -820,7 +814,7 @@ private fun SyncControlSubPage(
         item { StatusRow("新短信收件箱补漏", recoverySmsStatus(activity)) }
         item { StatusRow("历史短信读取", historySmsStatus(activity)) }
         item { StatusRow("短信通知兜底", notificationCaptureStatus(activity)) }
-        item { StatusRow("本地队列", "$queued 条待同步 · $unresolved 条待确认号码 · $invalid 条被阻塞") }
+        item { StatusRow("本地队列", queueCounts.label()) }
         item { FilledTonalButton(onClick = onPending) { Text("查看本机待同步短信") } }
         item { StatusRow("中枢同步状态", smsSyncStatus(activity, repo)) }
         item { StatusRow("后台保活状态", keepAliveStatus(activity, c, health)) }

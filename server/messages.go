@@ -78,12 +78,14 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type ack struct {
-		ID        int64  `json:"id"`
-		Duplicate bool   `json:"duplicate"`
-		Error     string `json:"error,omitempty"`
+		ID          int64  `json:"id"`
+		Duplicate   bool   `json:"duplicate"`
+		Error       string `json:"error,omitempty"`
+		Fingerprint string `json:"fingerprint"`
 	}
 	acks := make([]ack, 0, len(in.Messages))
 	for _, m := range in.Messages {
+		fp := fingerprint(m)
 		var confirmed int
 		e = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sims WHERE device_id=? AND phone=?", d.ID, m.Receiver).Scan(&confirmed)
 		if e != nil {
@@ -93,14 +95,13 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		if confirmed == 0 {
 			// Keep the rest of the batch. An unmapped SIM must not roll back
 			// messages whose receiver is already confirmed.
-			acks = append(acks, ack{Error: "sim_not_confirmed"})
+			acks = append(acks, ack{Error: "sim_not_confirmed", Fingerprint: fp})
 			continue
 		}
-		fp := fingerprint(m)
 		var id int64
 		e = tx.QueryRowContext(r.Context(), "SELECT id FROM messages WHERE device_id=? AND fingerprint=?", d.ID, fp).Scan(&id)
 		if e == nil {
-			acks = append(acks, ack{ID: id, Duplicate: true})
+			acks = append(acks, ack{ID: id, Duplicate: true, Fingerprint: fp})
 			continue
 		}
 		if e != sql.ErrNoRows {
@@ -125,7 +126,7 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		acks = append(acks, ack{ID: seq})
+		acks = append(acks, ack{ID: seq, Fingerprint: fp})
 	}
 	if _, e = tx.ExecContext(r.Context(), "UPDATE conversation_heads_state SET seq=? WHERE id=1", seq); e != nil {
 		fail(w, 503, "database_unavailable")

@@ -115,6 +115,11 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if retry["acks"].([]any)[0].(map[string]any)["duplicate"] != true {
 		t.Fatal("retry was not idempotent")
 	}
+	for _, response := range []map[string]any{first, retry} {
+		if response["acks"].([]any)[0].(map[string]any)["fingerprint"] != fingerprint(message) {
+			t.Fatal("ACK did not correlate the accepted/duplicate message")
+		}
+	}
 	// An unconfirmed receiver must not discard the confirmed item in the same batch.
 	second := message
 	second.Timestamp++
@@ -124,6 +129,9 @@ func TestIntegrationWorkflow(t *testing.T) {
 	acks := partial["acks"].([]any)
 	if acks[0].(map[string]any)["duplicate"] != false || acks[1].(map[string]any)["error"] != "sim_not_confirmed" {
 		t.Fatal("unconfirmed SIM discarded the rest of the batch")
+	}
+	if acks[0].(map[string]any)["fingerprint"] != fingerprint(second) || acks[1].(map[string]any)["fingerprint"] != fingerprint(bad) {
+		t.Fatal("partial ACK did not correlate both accepted and rejected messages")
 	}
 	syncPage := c.call("GET", "/api/sync?after=0&limit=2", token, nil, 200)
 	if syncPage["cursor"] != float64(2) || syncPage["epoch"] != float64(1) || len(syncPage["messages"].([]any)) != 2 {

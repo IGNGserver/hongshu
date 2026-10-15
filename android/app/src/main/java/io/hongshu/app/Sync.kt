@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 
 class HongshuApp : Application() {
@@ -222,14 +222,21 @@ class BootReceiver : android.content.BroadcastReceiver() {
     }
 }
 
+internal class ContactsRefreshException : IOException("联系人刷新失败，保留缓存并将重试")
+
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val config = Config(applicationContext)
         if (config.token.isEmpty()) return Result.success()
         return try {
-            if (SyncEngine.run(applicationContext)) Result.success() else Result.retry()
+            if (!SyncEngine.run(applicationContext)) enqueueSyncOnly(applicationContext)
+            Result.success()
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ContactsRefreshException) {
+            config.syncHealthy = false
+            config.status = e.message ?: "联系人刷新失败，保留缓存并将重试"
+            Result.retry()
         } catch (e: ApiException) {
             config.syncHealthy = false
             config.status = e.message ?: "同步失败"
@@ -266,22 +273,25 @@ object SyncEngine {
                     else store.rememberEpoch(epoch)
                     store.initializeSyncHead(session.getLong("cursor"))
                     c.notify = me.getBoolean("notify")
-                    store.applyContacts(repo.api.request("/contacts").getJSONObject("contacts"))
                     // Local capture remains independent; server can deny upload without
                     // deleting
                     // its queue.
                     if (c.upload && me.getBoolean("upload")) {
-                        for (sim in store.sims()) repo.api.request(
-                            "/sims",
-                            "PUT",
-                            JSONObject()
-                                .put("phone", sim.phone)
-                                .put("label", sim.label)
-                                .put("subscription_id", sim.sub),
-                        )
+                        val registered = mutableSetOf<Pair<String, Int>>()
+                        for (sim in store.sims()) {
+                            repo.api.request(
+                                "/sims",
+                                "PUT",
+                                JSONObject()
+                                    .put("phone", sim.phone)
+                                    .put("label", sim.label)
+                                    .put("subscription_id", sim.sub),
+                            )
+                            registered.add(sim.phone to sim.sub)
+                        }
                         for (batch in 0 until 20) {
                             if (!c.upload || !c.serverUploadAllowed) break
-                            val candidates = store.pending(allowFallback = false)
+                            val candidates = store.uploadCandidates(batch)
                             val pending =
                                 candidates.take(
                                     uploadBatchCount(
@@ -299,6 +309,8 @@ object SyncEngine {
                                 pending
                                     .map { it.second }
                                     .distinctBy { it.receiver to it.subscriptionId }) {
+                                if ((message.receiver to message.subscriptionId) in registered)
+                                    continue
                                 repo.api.request(
                                     "/sims",
                                     "PUT",
@@ -307,35 +319,30 @@ object SyncEngine {
                                         .put("label", "SIM")
                                         .put("subscription_id", message.subscriptionId),
                                 )
+                                registered.add(message.receiver to message.subscriptionId)
                             }
-                            val result =
-                                repo.api.request(
-                                    "/messages",
-                                    "POST",
-                                    JSONObject()
-                                        .put(
-                                            "messages",
-                                            JSONArray().apply {
-                                                pending.forEach { put(it.second.json()) }
-                                            },
-                                        ),
-                                )
-                            val acks = result.getJSONArray("acks")
-                            check(acks.length() == pending.size) { "上传确认数量不一致" }
-                            val accepted = mutableListOf<String>()
-                            for (i in 0 until acks.length()) {
-                                val ack = acks.getJSONObject(i)
-                                when (ack.optString("error")) {
-                                    "" -> accepted.add(pending[i].first)
-                                    "sim_not_confirmed" ->
-                                        store.block(pending[i].first, "sim_not_confirmed")
-                                    else -> store.block(pending[i].first, "invalid_message")
-                                }
-                            }
-                            store.ack(accepted)
-                            if (accepted.isEmpty()) break
+                            uploadPending(
+                                repo.api,
+                                store,
+                                pending,
+                                enabled = { c.upload && c.serverUploadAllowed },
+                            )
                         }
                     }
+                    val contactsHealthy =
+                        try {
+                            store.applyContacts(
+                                repo.api.request("/contacts").getJSONObject("contacts")
+                            )
+                            true
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: ApiException) {
+                            if (e.status == 401) throw e
+                            false
+                        } catch (_: Exception) {
+                            false
+                        }
                     val pairedAt = me.optLong("created_at")
                     for (page in 0 until 100) {
                         val data =
@@ -365,22 +372,23 @@ object SyncEngine {
                             store.acknowledgeNotification(pendingNotice)
                         if (!data.getBoolean("more")) {
                             c.lastSync = System.currentTimeMillis()
-                            c.syncHealthy = true
+                            c.syncHealthy = contactsHealthy
                             if (c.captureFailure == CaptureFailure.SCHEDULING)
                                 c.captureFailure = CaptureFailure.NONE
                             c.status =
                                 if (c.upload && c.historyEnabled && c.inboxScanPending)
                                     "历史短信采集中，自动继续"
                                 else if (store.pendingCount() > 0)
-                                    "已同步 · ${store.pendingCount()} 条等待上传或 SIM 配置"
+                                    "已同步 · ${store.pendingCounts().label()}"
                                 else "同步完成"
-                            // Enqueuing from inside the current worker is coalesced. Retry the
-                            // worker itself so upload queues over 20 batches drain.
+                            if (!contactsHealthy) throw ContactsRefreshException()
+                            // Successful bounded work gets a successor, not failure backoff.
                             return@withContext !(c.upload &&
                                 (me.getBoolean("upload") &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
                     }
+                    if (!contactsHealthy) throw ContactsRefreshException()
                     false
                 } finally {
                     store.close()

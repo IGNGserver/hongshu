@@ -191,6 +191,7 @@ class NetworkTest {
         withConfig { context, config ->
             val uploaded = java.util.concurrent.atomic.AtomicInteger()
             val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            val registrations = java.util.concurrent.atomic.AtomicInteger()
             val oldPhone = "+1234567890"
             val me =
                 JSONObject()
@@ -206,6 +207,7 @@ class NetworkTest {
                             path == "/api/me" -> me
                             path == "/api/contacts" -> JSONObject().put("contacts", JSONObject())
                             path == "/api/sims" -> {
+                                registrations.incrementAndGet()
                                 registered.add(body.getString("phone"))
                                 JSONObject().put("ok", true)
                             }
@@ -219,7 +221,11 @@ class NetworkTest {
                                         messages.getJSONObject(i).getString("receiver"),
                                     )
                                     assertTrue(registered.contains(oldPhone))
-                                    acks.put(JSONObject().put("id", uploaded.incrementAndGet()))
+                                    acks.put(
+                                        JSONObject()
+                                            .put("id", uploaded.incrementAndGet())
+                                            .put("duplicate", false)
+                                    )
                                 }
                                 JSONObject().put("acks", acks)
                             }
@@ -258,12 +264,97 @@ class NetworkTest {
                             store.captureProviders(records, false)
                             assertFalse(runBlocking { SyncEngine.run(context) })
                             assertEquals(5, store.pendingCount())
+                            assertEquals(2, registrations.get())
                             assertTrue(runBlocking { SyncEngine.run(context) })
                             assertEquals(0, store.pendingCount())
                             assertEquals(2005, uploaded.get())
+                            assertEquals(4, registrations.get())
                             assertTrue(registered.contains("+9876543210"))
                         } finally {
                             store.ack(keys)
+                        }
+                    }
+                }
+        }
+
+    @Test
+    fun contactOutageCannotBlockUploadOrDownloadAndAuthenticationFailureStillPropagates() =
+        withConfig { context, config ->
+            val requests = mutableListOf<String>()
+            val contactStatus = java.util.concurrent.atomic.AtomicInteger(503)
+            Hub { path, _ ->
+                    requests.add(path)
+                    when (path) {
+                        "/api/me" ->
+                            200 to
+                                JSONObject()
+                                    .put("cursor", 0)
+                                    .put("epoch", 1)
+                                    .put(
+                                        "device",
+                                        JSONObject()
+                                            .put("upload", true)
+                                            .put("notify", false)
+                                            .put("created_at", 1),
+                                    )
+                        "/api/contacts" ->
+                            contactStatus.get() to JSONObject().put("error", "synthetic_failure")
+                        "/api/sims" -> 200 to JSONObject().put("ok", true)
+                        "/api/messages" ->
+                            200 to
+                                JSONObject()
+                                    .put(
+                                        "acks",
+                                        JSONArray()
+                                            .put(JSONObject().put("id", 1).put("duplicate", false)),
+                                    )
+                        else ->
+                            200 to
+                                JSONObject()
+                                    .put("messages", JSONArray())
+                                    .put("cursor", 0)
+                                    .put("epoch", 1)
+                                    .put("more", false)
+                    }
+                }
+                .use { hub ->
+                    config.url = hub.url
+                    config.token = "s".repeat(64)
+                    config.upload = true
+                    Store(context).use { store ->
+                        val message =
+                            SmsRecord("+1234567890", "10086", "synthetic contacts outage", 100, 7)
+                        store.queue(message)
+                        store.applyContacts(JSONObject().put("10086", "synthetic cached contact"))
+                        try {
+                            assertThrows(ContactsRefreshException::class.java) {
+                                runBlocking { SyncEngine.run(context) }
+                            }
+                            assertEquals(0, store.pendingCount())
+                            assertTrue(
+                                requests.indexOf("/api/messages") <
+                                    requests.indexOf("/api/contacts")
+                            )
+                            assertTrue(requests.any { it.startsWith("/api/sync?") })
+                            assertFalse(config.syncHealthy)
+                            store.readableDatabase
+                                .rawQuery(
+                                    "SELECT name FROM contact_snapshot WHERE phone='10086'",
+                                    null,
+                                )
+                                .use {
+                                    assertTrue(it.moveToFirst())
+                                    assertEquals("synthetic cached contact", it.getString(0))
+                                }
+                            contactStatus.set(401)
+                            val failure =
+                                assertThrows(ApiException::class.java) {
+                                    runBlocking { SyncEngine.run(context) }
+                                }
+                            assertEquals(401, failure.status)
+                            assertEquals("", config.token)
+                        } finally {
+                            store.ack(listOf(message.fingerprint()))
                         }
                     }
                 }
