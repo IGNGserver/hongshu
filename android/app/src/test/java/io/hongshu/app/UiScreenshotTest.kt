@@ -89,4 +89,94 @@ class UiScreenshotTest {
     @Test fun settingsBackground() = shot("settings-background") { Settings(SettingsPage.Background) }
 
     @Test fun settingsPending() = shot("settings-pending") { Settings(SettingsPage.Pending) }
+
+    private val now = System.currentTimeMillis()
+    private val hour = 60 * 60 * 1000L
+    private val sims =
+        listOf(SimMapping(1, 0, "+8613800138000", "SIM1"), SimMapping(2, 1, "+8613900139999", "SIM2"))
+    private val sample =
+        listOf(
+            CachedMessage(5, "d1", "+8613800138000", "95588", "【工商银行】您的验证码为 482913，5 分钟内有效，请勿泄露。", now - hour / 6, ""),
+            CachedMessage(4, "d1", "+8613900139999", "13812345678", "晚上一起吃饭吗？我在老地方等你", now - 2 * hour, "张三"),
+            CachedMessage(3, "d1", "+8613800138000", "10086", "尊敬的客户，您本月套餐剩余流量 12.3GB。", now - 26 * hour, ""),
+            CachedMessage(2, "d2", "+8613900139999", "1069012345678", "【快递】您的包裹已到驿站，取件码 6-2-1031。", now - 50 * hour, ""),
+            CachedMessage(1, "d1", "+8613800138000", "+8613711112222", "收到，谢谢", now - 300 * hour, "Alice"),
+        )
+
+    private fun model(
+        messages: List<CachedMessage>?,
+        facts: SetupFacts,
+        simsConfigured: Boolean,
+    ) =
+        HomeModel(
+            repo = Repository(compose.activity),
+            messages = messages,
+            searchQuery = "",
+            simFilter = "",
+            receivers = sims.map { it.phone },
+            sims = sims,
+            facts = facts,
+            messageLimit = 200,
+            changes = 0,
+            busy = false,
+            refreshing = false,
+            setup = setupProgress(facts, simsConfigured, dismissed = false),
+        )
+
+    private val actions = HomeActions({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {})
+
+    @Test
+    fun homeFirstRun() =
+        shot("home-first-run") {
+            MainSurface(AppDestination.Home, model(emptyList(), SetupFacts(), false), actions, twoPane = false)
+        }
+
+    @Test
+    fun homeConnected() {
+        val facts =
+            SetupFacts(connected = true, upload = true, receiveSms = true, keepAlive = true, realtimeRunning = true,
+                pending = PendingCounts(ready = 2))
+        shot("home-connected") {
+            MainSurface(AppDestination.Home, model(sample, facts, true), actions, twoPane = false)
+        }
+    }
+
+    @Test
+    fun homeConnectedDark() {
+        val facts = SetupFacts(connected = true, upload = true, receiveSms = true)
+        shot("home-connected-dark", dark = true) {
+            MainSurface(AppDestination.Home, model(sample, facts, false), actions, twoPane = false)
+        }
+    }
+
+    @Test
+    fun conversation() {
+        val messages = org.json.JSONArray()
+        listOf(
+                Triple(11L, "【工商银行】您尾号 1234 的储蓄卡消费 56.00 元。", now - 30 * hour),
+                Triple(12L, "【工商银行】您的验证码为 482913，5 分钟内有效，请勿泄露。", now - hour / 6),
+                Triple(13L, "【工商银行】您正在登录手机银行，验证码 730215。", now - hour / 12),
+            )
+            .forEach { (id, body, time) ->
+                messages.put(
+                    org.json.JSONObject()
+                        .put("id", id)
+                        .put("device_id", "d1")
+                        .put("receiver", "+8613800138000")
+                        .put("sender", "95588")
+                        .put("body", body)
+                        .put("timestamp", time)
+                )
+            }
+        Store(compose.activity).use { it.applySync(messages, 13) }
+        val facts = SetupFacts(connected = true)
+        shot("conversation") {
+            MainSurface(
+                AppDestination.Conversation("95588", "+8613800138000"),
+                model(sample, facts, true),
+                actions,
+                twoPane = false,
+            )
+        }
+    }
 }

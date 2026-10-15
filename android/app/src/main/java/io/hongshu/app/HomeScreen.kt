@@ -1,0 +1,807 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class,
+)
+
+package io.hongshu.app
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Outbox
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SearchOff
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.toShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** What the main screen shows; produced by [HongshuUI]. */
+class HomeModel(
+    val repo: Repository,
+    val messages: List<CachedMessage>?,
+    val searchQuery: String,
+    val simFilter: String,
+    val receivers: List<String>,
+    val sims: List<SimMapping>,
+    val facts: SetupFacts,
+    val messageLimit: Int,
+    val changes: Long,
+    val busy: Boolean,
+    val refreshing: Boolean,
+    val setup: SetupProgress,
+)
+
+/** Callbacks from the main screen back to its owner. */
+class HomeActions(
+    val onSearchQueryChange: (String) -> Unit,
+    val onSearchActiveChange: (Boolean) -> Unit,
+    val onSimFilterChange: (String) -> Unit,
+    val onSelectConversation: (String, String) -> Unit,
+    val onBack: () -> Unit,
+    val onLoadMore: () -> Unit,
+    val onOpenSettings: (SettingsPage) -> Unit,
+    val onRefresh: () -> Unit,
+    val onDismissSetup: () -> Unit,
+    val onMessage: (String) -> Unit,
+)
+
+private fun formatClock(timestamp: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+@Composable
+fun MainSurface(destination: AppDestination, model: HomeModel, actions: HomeActions, twoPane: Boolean) {
+    val conversation = destination as? AppDestination.Conversation
+    val searching = destination == AppDestination.Search
+    Box(Modifier.fillMaxSize()) {
+        if (twoPane) {
+            Row(Modifier.fillMaxSize()) {
+                Box(Modifier.width(400.dp).fillMaxHeight()) {
+                    ConversationListPane(model, actions, searching, conversation)
+                }
+                VerticalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
+                Surface(Modifier.weight(1f).fillMaxHeight(), color = MaterialTheme.colorScheme.surface) {
+                    val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+                    val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+                    AnimatedContent(
+                        targetState = conversation,
+                        transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
+                        contentKey = { it?.let { c -> "${c.sender}:${c.receiver}" } },
+                        label = "detail pane",
+                    ) { selected ->
+                        if (selected == null) DetailPlaceholder()
+                        else ConversationPane(selected, model, actions, showBack = false)
+                    }
+                }
+            }
+        } else if (conversation != null) {
+            ConversationPane(conversation, model, actions, showBack = true)
+        } else {
+            ConversationListPane(model, actions, searching, null)
+        }
+        AnimatedVisibility(
+            visible = model.busy && !model.refreshing,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding(),
+        ) {
+            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun DetailPlaceholder() {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Default.ChatBubbleOutline,
+            contentDescription = null,
+            modifier = Modifier.size(64.dp),
+            tint = MaterialTheme.colorScheme.outline,
+        )
+        Text(
+            "选择一个对话查看短信",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ConversationListPane(
+    model: HomeModel,
+    actions: HomeActions,
+    searching: Boolean,
+    selected: AppDestination.Conversation?,
+) {
+    val f = model.facts
+    val showSims = model.receivers.size > 1
+    Column(Modifier.fillMaxSize()) {
+        SearchHeader(
+            searching = searching,
+            query = model.searchQuery,
+            onQueryChange = actions.onSearchQueryChange,
+            onSearchActiveChange = actions.onSearchActiveChange,
+            attention = f.connected && attentionItems(f).isNotEmpty(),
+            onOpenSettings = { actions.onOpenSettings(SettingsPage.Overview) },
+        )
+        AnimatedVisibility(
+            visible = !searching && model.setup.visible,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            SetupCard(model.setup, actions.onOpenSettings, actions.onDismissSetup)
+        }
+        AnimatedVisibility(
+            visible = !searching && f.connected && !f.syncHealthy,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            NoticeCard(
+                icon = Icons.Default.CloudOff,
+                title = "同步异常",
+                text = f.syncDetail.ifEmpty { "最近一次同步没有成功" },
+                actionLabel = "查看",
+                onAction = { actions.onOpenSettings(SettingsPage.Hub) },
+                attention = true,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = !searching && f.upload && f.pending.total > 0,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            NoticeCard(
+                icon = Icons.Default.Outbox,
+                title = "${f.pending.total} 条短信等待上传",
+                text = "保留在本机，联网或中枢可用后自动上传",
+                actionLabel = "查看",
+                onAction = { actions.onOpenSettings(SettingsPage.Pending) },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+        AnimatedVisibility(showSims) {
+            SimFilterRow(model.receivers, model.sims, model.simFilter, actions.onSimFilterChange)
+        }
+        val pullState = rememberPullToRefreshState()
+        PullToRefreshBox(
+            isRefreshing = model.refreshing,
+            onRefresh = actions.onRefresh,
+            state = pullState,
+            modifier = Modifier.weight(1f),
+            indicator = {
+                PullToRefreshDefaults.LoadingIndicator(
+                    state = pullState,
+                    isRefreshing = model.refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            },
+        ) {
+            ConversationList(model, actions, searching, selected, showSims)
+        }
+    }
+}
+
+@Composable
+private fun SearchHeader(
+    searching: Boolean,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearchActiveChange: (Boolean) -> Unit,
+    attention: Boolean,
+    onOpenSettings: () -> Unit,
+) {
+    Surface(
+        onClick = { if (!searching) onSearchActiveChange(true) },
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier =
+            Modifier.statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .fillMaxWidth()
+                .height(56.dp),
+    ) {
+        val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+        val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+        AnimatedContent(
+            targetState = searching,
+            transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
+            label = "search header",
+        ) { active ->
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (active) {
+                    val focus = remember { FocusRequester() }
+                    LaunchedEffect(Unit) { focus.requestFocus() }
+                    IconButton(onClick = { onSearchActiveChange(false) }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "退出搜索")
+                    }
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) {
+                            Text(
+                                "搜索短信、号码或联系人",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        BasicTextField(
+                            value = query,
+                            onValueChange = onQueryChange,
+                            singleLine = true,
+                            textStyle =
+                                MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                        )
+                    }
+                    AnimatedVisibility(query.isNotEmpty(), enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+                        IconButton(onClick = { onQueryChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "清除")
+                        }
+                    }
+                } else {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "在鸿枢中搜索",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = onOpenSettings) {
+                        BadgedBox(badge = { if (attention) Badge() }) {
+                            Icon(Icons.Default.Settings, contentDescription = if (attention) "设置，有需要处理的问题" else "设置")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SimFilterRow(
+    receivers: List<String>,
+    sims: List<SimMapping>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(vertical = 4.dp),
+    ) {
+        item(key = "") {
+            FilterChip(
+                selected = selected.isEmpty(),
+                onClick = { onSelect("") },
+                label = { Text("全部") },
+            )
+        }
+        items(receivers, key = { it }) { receiver ->
+            FilterChip(
+                selected = selected == receiver,
+                onClick = { onSelect(if (selected == receiver) "" else receiver) },
+                label = { Text(simLabel(receiver, sims)) },
+                leadingIcon = {
+                    Icon(Icons.Default.SimCard, contentDescription = null, Modifier.size(FilterChipDefaults.IconSize))
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationList(
+    model: HomeModel,
+    actions: HomeActions,
+    searching: Boolean,
+    selected: AppDestination.Conversation?,
+    showSims: Boolean,
+) {
+    val messages = model.messages
+    val navigation = WindowInsets.navigationBars.asPaddingValues()
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = 4.dp, bottom = navigation.calculateBottomPadding() + 24.dp),
+    ) {
+        when {
+            messages == null ->
+                item(key = "loading") {
+                    Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                        LoadingIndicator()
+                    }
+                }
+            messages.isEmpty() ->
+                item(key = "empty") {
+                    Box(Modifier.fillParentMaxSize().animateItem(), contentAlignment = Alignment.Center) {
+                        EmptyState(model, actions, searching)
+                    }
+                }
+            else -> {
+                items(messages, key = { it.id }) { msg ->
+                    ConversationRow(
+                        message = msg,
+                        receiverLabel = if (showSims) simLabel(msg.receiver, model.sims) else null,
+                        isSelected =
+                            selected?.sender == msg.sender && selected.receiver == msg.receiver,
+                        onClick = { actions.onSelectConversation(msg.sender, msg.receiver) },
+                        modifier = Modifier.animateItem(),
+                    )
+                }
+                if (messages.size >= model.messageLimit) {
+                    item(key = "more") {
+                        TextButton(
+                            onClick = actions.onLoadMore,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        ) {
+                            Text("加载更早的对话")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(model: HomeModel, actions: HomeActions, searching: Boolean) {
+    val f = model.facts
+    val (icon, title, text) =
+        when {
+            searching && model.searchQuery.isNotEmpty() ->
+                Triple(Icons.Default.SearchOff, "没有找到相关短信", "换个关键词，或搜索号码、联系人名称")
+            searching -> Triple(Icons.Default.Search, "搜索短信", "输入关键词、号码或联系人名称")
+            model.simFilter.isNotEmpty() ->
+                Triple(Icons.Default.SimCard, "这张卡还没有短信", "清除筛选查看全部短信")
+            !f.connected ->
+                Triple(Icons.Default.Sms, "连接中枢后开始同步", "短信会保存在你自己部署的中枢里，并同步到各台设备")
+            else ->
+                Triple(
+                    Icons.Default.ChatBubbleOutline,
+                    "还没有短信",
+                    if (f.upload) "这台手机收到的新短信会出现在这里" else "开启短信采集，或等待其他设备上传短信",
+                )
+        }
+    Column(
+        Modifier.padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(96.dp)
+                .clip(MaterialShapes.Cookie9Sided.toShape())
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+        Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        when {
+            model.simFilter.isNotEmpty() && !searching ->
+                OutlinedButton(onClick = { actions.onSimFilterChange("") }) { Text("清除筛选") }
+            !f.connected && !searching ->
+                Button(onClick = { actions.onOpenSettings(SettingsPage.Hub) }) { Text("连接中枢") }
+            f.connected && !f.upload && !searching ->
+                OutlinedButton(onClick = { actions.onOpenSettings(SettingsPage.Capture) }) { Text("短信采集设置") }
+        }
+    }
+}
+
+/** Contact avatar: initial on a coloured circle, or a cookie shape for service short codes. */
+@Composable
+fun Avatar(contact: String, sender: String, size: Dp) {
+    val initial = remember(contact, sender) { avatarInitial(contact, sender) }
+    val service = contact.isEmpty() && isServiceNumber(sender)
+    val shape = if (service) MaterialShapes.Cookie9Sided.toShape() else CircleShape
+    Box(
+        Modifier.size(size).clip(shape).background(avatarColorFor(sender)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (initial != null) {
+            Text(
+                initial,
+                color = Color.White,
+                style = if (size > 44.dp) MaterialTheme.typography.titleLarge else MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        } else {
+            Icon(
+                if (service) Icons.Default.Sms else Icons.Default.Person,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(size * 0.55f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(
+    message: CachedMessage,
+    receiverLabel: String?,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val displayName = message.contact.ifEmpty { message.sender }
+    val otp = remember(message.body) { extractOtp(message.body) }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(
+                if (isSelected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Avatar(message.contact, message.sender, 48.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    listOfNotNull(receiverLabel, formatTimestamp(message.timestamp)).joinToString(" · "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (otp != null) {
+                    Text(
+                        "验证码",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier =
+                            Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.tertiaryContainer)
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+                Text(
+                    message.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationPane(
+    conversation: AppDestination.Conversation,
+    model: HomeModel,
+    actions: HomeActions,
+    showBack: Boolean,
+) {
+    val repo = model.repo
+    val sender = conversation.sender
+    val context = LocalContext.current
+    // Each conversation screen owns its query, so a leaving screen keeps its own messages for the
+    // whole exit animation instead of reloading as soon as the destination changes.
+    var messageLimit by remember(conversation) { mutableIntStateOf(200) }
+    var messages by remember(conversation) { mutableStateOf<List<CachedMessage>?>(null) }
+    LaunchedEffect(conversation, model.changes, messageLimit) {
+        messages =
+            withContext(Dispatchers.IO) {
+                repo.store.messages(sender, "", conversation.receiver, limit = messageLimit)
+            }
+    }
+    val deviceId = repo.config.deviceId
+    val loaded = messages.orEmpty()
+    val contactName = loaded.firstOrNull()?.contact.orEmpty()
+    val displayName = contactName.ifEmpty { sender }
+    val subtitle =
+        listOfNotNull(
+                sender.takeIf { contactName.isNotEmpty() },
+                "接收：${simLabel(conversation.receiver, model.sims)}",
+            )
+            .joinToString(" · ")
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 2 } }
+
+    fun copyCode(code: String) {
+        context
+            .getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("验证码", code))
+        actions.onMessage("验证码 $code 已复制")
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(
+            colors =
+                TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            navigationIcon = {
+                if (showBack) {
+                    IconButton(onClick = actions.onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(contactName, sender, 40.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            displayName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            },
+        )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (messages == null) {
+                LoadingIndicator(Modifier.align(Alignment.Center))
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                reverseLayout = true,
+                contentPadding =
+                    PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 12.dp,
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp,
+                    ),
+                // Bottom alignment keeps a short conversation anchored above the input edge, as a
+                // reversed list does by default; spacedBy alone would pin it to the top.
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+            ) {
+                // Newest first because the layout is reversed; a day header follows the oldest
+                // message of each day so it renders above that day's bubbles.
+                loaded.forEachIndexed { index, msg ->
+                    item(key = msg.id) {
+                        MessageBubble(
+                            msg = msg,
+                            isOutgoing = msg.deviceId == deviceId && msg.sender != sender,
+                            onCopyCode = ::copyCode,
+                            modifier = Modifier.animateItem(),
+                        )
+                    }
+                    val older = loaded.getOrNull(index + 1)
+                    if (older == null || !sameDay(older.timestamp, msg.timestamp)) {
+                        item(key = "day:${msg.id}") { DayHeader(dayLabel(msg.timestamp), Modifier.animateItem()) }
+                    }
+                }
+                if (loaded.size >= messageLimit) {
+                    item(key = "more") {
+                        TextButton(onClick = { messageLimit += 200 }, modifier = Modifier.fillMaxWidth()) {
+                            Text("加载更早的短信")
+                        }
+                    }
+                }
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showJump,
+                enter = scaleIn() + fadeIn(),
+                exit = scaleOut() + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
+            ) {
+                SmallFloatingActionButton(onClick = { scope.launch { listState.animateScrollToItem(0) } }) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "回到最新")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayHeader(label: String, modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier =
+                Modifier.clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    msg: CachedMessage,
+    isOutgoing: Boolean,
+    onCopyCode: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val otp = remember(msg.body) { extractOtp(msg.body) }
+    val shape =
+        if (isOutgoing) RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp)
+        else RoundedCornerShape(24.dp, 24.dp, 24.dp, 6.dp)
+    Column(
+        modifier.fillMaxWidth(),
+        horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Surface(
+            shape = shape,
+            color =
+                if (isOutgoing) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor =
+                if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.widthIn(max = 320.dp),
+        ) {
+            SelectionContainer {
+                Text(
+                    msg.body,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+        }
+        if (otp != null) {
+            AssistChip(
+                onClick = { onCopyCode(otp) },
+                label = { Text("复制验证码 $otp") },
+                leadingIcon = {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(AssistChipDefaults.IconSize))
+                },
+                shape = CircleShape,
+            )
+        }
+        Text(
+            buildString {
+                append(formatClock(msg.timestamp))
+                if (msg.historical) append(" · 历史补齐")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+    }
+}

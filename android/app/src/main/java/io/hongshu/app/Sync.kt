@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -434,4 +435,18 @@ fun notifyMessage(context: Context): Boolean {
                 .build(),
         )
     return true
+}
+
+/**
+ * Requests a manual sync and waits until the sync work has actually finished, for UI that shows
+ * progress. Returns false when it is still queued after [timeoutMillis] (for example offline).
+ */
+suspend fun syncAndWait(context: Context, timeoutMillis: Long = 15_000): Boolean {
+    syncNow(context, manual = true).await()
+    return kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+        WorkManager.getInstance(context.applicationContext)
+            .getWorkInfosForUniqueWorkFlow("hongshu-sync")
+            .first { infos -> infos.all { it.state.isFinished } }
+        true
+    } ?: false
 }

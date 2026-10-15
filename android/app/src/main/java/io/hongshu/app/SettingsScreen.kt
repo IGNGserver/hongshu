@@ -393,8 +393,8 @@ private fun HubPage(host: SettingsHost) {
                     onEdit = { editing = true },
                     onSync = {
                         host.action {
-                            syncNow(host.activity, manual = true).await()
-                            "同步完成"
+                            if (syncAndWait(host.activity)) "同步完成"
+                            else "同步已排队，联网后会自动完成"
                         }
                     },
                 )
