@@ -101,7 +101,7 @@ fun SettingsScreen(
                     SettingsPage.Pending -> LocalPendingSubPage(repo, refresh) {
                         onNavigate(SettingsPage.Sims)
                     }
-                    SettingsPage.Sync ->
+                    SettingsPage.Capture ->
                         SyncControlSubPage(
                             activity,
                             repo,
@@ -183,7 +183,7 @@ private fun SettingsMainOverview(
                     }
                     HorizontalDivider()
                     SheetActionRow(Icons.Default.Sensors, "实时广播与同步") {
-                        onNavigate(SettingsPage.Sync)
+                        onNavigate(SettingsPage.Capture)
                     }
                     HorizontalDivider()
                     SheetActionRow(Icons.Default.Outbox, "本机待同步短信") {

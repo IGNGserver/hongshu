@@ -119,8 +119,6 @@ fun HongshuUI(activity: MainActivity) {
     DisposableEffect(Unit) { onDispose { repo.store.close() } }
     val changes by Store.changes.collectAsState()
 
-    var selectedSender by remember { mutableStateOf("") }
-    var threadReceiver by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
     var simFilter by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -130,7 +128,6 @@ fun HongshuUI(activity: MainActivity) {
     // the empty state for a frame.
     var loadedHomeMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
     var loadedSearchMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
-    var loadedThreadMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
     var messageLimit by remember { mutableIntStateOf(200) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -172,7 +169,7 @@ fun HongshuUI(activity: MainActivity) {
             if (grants.values.all { it }) continuation?.invoke()
         }
 
-    LaunchedEffect(searchQuery, simFilter, selectedSender, threadReceiver) { messageLimit = 200 }
+    LaunchedEffect(searchQuery, simFilter) { messageLimit = 200 }
 
     LaunchedEffect(changes, simFilter, messageLimit) {
         loadedHomeMessages =
@@ -198,18 +195,6 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
-    LaunchedEffect(changes, searchQuery, selectedSender, threadReceiver, messageLimit) {
-        loadedThreadMessages =
-            withContext(Dispatchers.IO) {
-                repo.store.messages(
-                    selectedSender,
-                    searchQuery,
-                    threadReceiver,
-                    limit = messageLimit,
-                )
-            }
-    }
-
     LaunchedEffect(activity) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
@@ -219,18 +204,11 @@ fun HongshuUI(activity: MainActivity) {
         }
     }
 
-    fun closeThread() {
-        selectedSender = ""
-        threadReceiver = ""
-    }
-
     fun push(destination: AppDestination) {
         navigationStack = pushDestination(navigationStack, destination)
     }
 
     fun navigateConversation(sender: String, receiver: String) {
-        selectedSender = sender
-        threadReceiver = receiver
         val destination = AppDestination.Conversation(sender, receiver)
         navigationStack =
             if (navigationStack.lastOrNull() is AppDestination.Conversation) {
@@ -245,13 +223,7 @@ fun HongshuUI(activity: MainActivity) {
         }
         val leaving = navigationStack.last()
         navigationStack = popDestination(navigationStack)
-        when (leaving) {
-            is AppDestination.Conversation -> closeThread()
-            AppDestination.Search -> {
-                searchQuery = ""
-            }
-            else -> Unit
-        }
+        if (leaving == AppDestination.Search) searchQuery = ""
     }
 
     fun openSettings() {
@@ -283,6 +255,7 @@ fun HongshuUI(activity: MainActivity) {
 
     AppNavigationHost(
         stack = navigationStack,
+        twoPane = isExpanded,
         onPop = ::popNavigation,
         onRootBack = { activity.leaveForBackground() },
     ) { destination ->
@@ -306,13 +279,11 @@ fun HongshuUI(activity: MainActivity) {
                     repo = repo,
                     loadedHomeMessages = loadedHomeMessages,
                     loadedSearchMessages = loadedSearchMessages,
-                    loadedThreadMessages = loadedThreadMessages,
                     searchQuery = searchQuery,
                     onSearchQueryChange = { searchQuery = it },
                     onSearchActiveChange = ::updateSearch,
                     simFilter = simFilter,
                     onSimFilterChange = { simFilter = it },
-                    selectedSender = selectedSender,
                     onSelectConversation = ::navigateConversation,
                     onBack = ::popNavigation,
                     onLoadMore = { messageLimit += 200 },
@@ -340,13 +311,11 @@ private fun MainSurface(
     repo: Repository,
     loadedHomeMessages: List<CachedMessage>?,
     loadedSearchMessages: List<CachedMessage>?,
-    loadedThreadMessages: List<CachedMessage>,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onSearchActiveChange: (Boolean) -> Unit,
     simFilter: String,
     onSimFilterChange: (String) -> Unit,
-    selectedSender: String,
     onSelectConversation: (String, String) -> Unit,
     onBack: () -> Unit,
     onLoadMore: () -> Unit,
@@ -358,10 +327,10 @@ private fun MainSurface(
     isExpanded: Boolean,
     snackbar: SnackbarHostState,
 ) {
-    val showDetail = destination is AppDestination.Conversation
+    val conversation = destination as? AppDestination.Conversation
+    val showDetail = conversation != null
     val showSearch = destination == AppDestination.Search
-    val detailSender = (destination as? AppDestination.Conversation)?.sender.orEmpty()
-    val listSelectedSender = if (showDetail) selectedSender else ""
+    val listSelectedSender = conversation?.sender.orEmpty()
     val listMessages = if (showSearch) loadedSearchMessages else loadedHomeMessages
 
     Scaffold(
@@ -423,26 +392,22 @@ private fun MainSurface(
                             }
                         } else {
                             ConversationDetailPane(
-                                sender = detailSender,
-                                contactName = loadedThreadMessages.firstOrNull()?.contact ?: "",
-                                messages = loadedThreadMessages,
-                                deviceId = repo.config.deviceId,
+                                conversation = conversation!!,
+                                repo = repo,
+                                changes = changes,
+                                showBack = false,
                                 onBack = onBack,
-                                onLoadMore = onLoadMore,
-                                messageLimit = messageLimit,
                             )
                         }
                     }
                 }
             } else if (showDetail) {
                 ConversationDetailPane(
-                    sender = detailSender,
-                    contactName = loadedThreadMessages.firstOrNull()?.contact ?: "",
-                    messages = loadedThreadMessages,
-                    deviceId = repo.config.deviceId,
+                    conversation = conversation!!,
+                    repo = repo,
+                    changes = changes,
+                    showBack = true,
                     onBack = onBack,
-                    onLoadMore = onLoadMore,
-                    messageLimit = messageLimit,
                 )
             } else {
                 ConversationListView(
@@ -588,7 +553,7 @@ private fun ConversationListView(
                 }
             }
 
-            if (localPending.total > 0) {
+            androidx.compose.animation.AnimatedVisibility(localPending.total > 0) {
                 TextButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.padding(horizontal = 18.dp),
@@ -684,6 +649,7 @@ private fun ConversationListView(
                             message = msg,
                             isSelected = selectedSender == msg.sender,
                             onClick = { onSelectConversation(msg.sender, msg.receiver) },
+                            modifier = Modifier.animateItem(),
                         )
                     }
                     if (loadedMessages.size >= messageLimit) {
@@ -707,13 +673,19 @@ private fun ConversationListView(
  * 前缀
  */
 @Composable
-private fun ConversationRow(message: CachedMessage, isSelected: Boolean, onClick: () -> Unit) {
+private fun ConversationRow(
+    message: CachedMessage,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val displayName = message.contact.ifEmpty { message.sender }
     val avatarBg = remember(message.sender) { avatarColorFor(message.sender) }
 
     Row(
         modifier =
-            Modifier.fillMaxWidth()
+            modifier
+                .fillMaxWidth()
                 .clickable(onClick = onClick)
                 .background(
                     if (isSelected) MaterialTheme.colorScheme.surfaceContainerHigh
@@ -775,14 +747,26 @@ private fun ConversationRow(message: CachedMessage, isSelected: Boolean, onClick
 /** 会话详情界面 */
 @Composable
 private fun ConversationDetailPane(
-    sender: String,
-    contactName: String,
-    messages: List<CachedMessage>,
-    deviceId: String,
+    conversation: AppDestination.Conversation,
+    repo: Repository,
+    changes: Long,
+    showBack: Boolean,
     onBack: () -> Unit,
-    onLoadMore: () -> Unit,
-    messageLimit: Int,
 ) {
+    val sender = conversation.sender
+    // Each conversation screen owns its query, so a leaving screen keeps its own messages for the
+    // whole exit animation instead of reloading as soon as the destination changes.
+    var messageLimit by remember(conversation) { mutableIntStateOf(200) }
+    var messages by remember(conversation) { mutableStateOf<List<CachedMessage>>(emptyList()) }
+    LaunchedEffect(conversation, changes, messageLimit) {
+        messages =
+            withContext(Dispatchers.IO) {
+                repo.store.messages(sender, "", conversation.receiver, limit = messageLimit)
+            }
+    }
+    val onLoadMore = { messageLimit += 200 }
+    val deviceId = repo.config.deviceId
+    val contactName = messages.firstOrNull()?.contact.orEmpty()
     val displayName = contactName.ifEmpty { sender }
 
     Column(Modifier.fillMaxSize()) {
@@ -794,8 +778,10 @@ private fun ConversationDetailPane(
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
             navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                if (showBack) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
                 }
             },
             title = {
@@ -842,7 +828,7 @@ private fun ConversationDetailPane(
         ) {
             items(messages, key = { it.id }) { msg ->
                 val isOutgoing = msg.deviceId == deviceId && msg.sender != sender
-                MessageBubble(msg = msg, isOutgoing = isOutgoing)
+                MessageBubble(msg = msg, isOutgoing = isOutgoing, Modifier.animateItem())
             }
             if (messages.size >= messageLimit) {
                 item {
@@ -857,7 +843,7 @@ private fun ConversationDetailPane(
 
 /** 现代 Material 3 不对称圆角气泡 */
 @Composable
-private fun MessageBubble(msg: CachedMessage, isOutgoing: Boolean) {
+private fun MessageBubble(msg: CachedMessage, isOutgoing: Boolean, modifier: Modifier = Modifier) {
     val bubbleShape =
         if (isOutgoing) {
             RoundedCornerShape(22.dp, 22.dp, 4.dp, 22.dp)
@@ -880,7 +866,7 @@ private fun MessageBubble(msg: CachedMessage, isOutgoing: Boolean) {
         }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start,
     ) {
         Surface(
