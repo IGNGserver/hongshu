@@ -147,7 +147,7 @@ class Repository(val context: Context) {
     private fun loginUnlocked(url: String, password: String, name: String) {
         val oldUrl = config.url
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
-            "旧中枢尚有未上传短信，不能更换中枢以免泄露内容"
+            "旧中枢尚有未上传短信，不能更换中枢以免泄露内容；可在“本机待同步短信”中上传或放弃这些记录"
         }
         val newUrl = hubOrigin(url)
         try {

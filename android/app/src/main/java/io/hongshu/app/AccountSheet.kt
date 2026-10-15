@@ -107,9 +107,10 @@ fun SettingsScreen(
                             onRequestPermissions,
                             settingsAction,
                         )
-                    SettingsPage.Pending -> LocalPendingSubPage(repo, refresh) {
-                        onNavigate(SettingsPage.Sims)
-                    }
+                    SettingsPage.Pending ->
+                        LocalPendingSubPage(repo, refresh, busy, settingsAction) {
+                            onNavigate(SettingsPage.Sims)
+                        }
                     SettingsPage.Sync ->
                         SyncControlSubPage(
                             activity,
@@ -429,10 +430,20 @@ private fun SimSettingsSubPage(
                                 when {
                                     scanStatus.isNotEmpty() -> scanStatus
                                     sim == null -> "未插卡"
-                                    sim.phone.isEmpty() -> "未识别到手机号"
+                                    sim.phone.isEmpty() -> "系统未提供手机号，请在下方手动填写"
                                     else -> "已匹配 ${sim.phone}"
                                 }
                         )
+                        // Many ROMs never expose the line number; let the user fill only the
+                        // missing card while recognition keeps tracking card changes.
+                        if (scanStatus.isEmpty() && sim != null && sim.phone.isEmpty())
+                            OutlinedTextField(
+                                if (slot == 0) phone1 else phone2,
+                                { if (slot == 0) phone1 = it else phone2 = it },
+                                label = { Text("SIM${slot + 1} 手机号（留空则不同步该卡）") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
                     }
                 }
             }
@@ -455,7 +466,7 @@ private fun SimSettingsSubPage(
                             val mappings =
                                 if (automatic) {
                                     check(active == candidates) { "SIM 匹配已变化，请核对后重新保存" }
-                                    active
+                                    automaticSimMappings(active, listOf(phone1, phone2))
                                 } else manualSimMappings(active, listOf(phone1, phone2))
                             saveSimSelection(activity, automatic, mappings)
                             SimMonitor.start(activity)
