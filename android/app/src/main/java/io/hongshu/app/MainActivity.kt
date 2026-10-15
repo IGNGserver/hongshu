@@ -147,26 +147,25 @@ fun HongshuUI(activity: MainActivity) {
         )
     }
 
+    // One snackbar host sits above every destination, so settings and the main screen report
+    // results the same way.
     fun action(task: suspend () -> String) = runAction(announce = true, task)
 
-    // Settings pages report through their own SnackbarHost; the main host is not on screen.
-    fun settingsAction(task: suspend () -> String) = runAction(announce = false, task)
+    fun showMessage(text: String) {
+        snackbar.currentSnackbarData?.dismiss()
+        scope.launch { snackbar.showSnackbar(text) }
+    }
 
-    var permissionContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var permissionContinuation by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     val permissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             grants ->
-            scope.launch {
-                snackbar.showSnackbar(
-                    if (grants.values.all { it }) "权限已授予，可以继续操作" else "部分权限未授予，普通查看不受影响"
-                )
-            }
             Store.changes.value++
             SimMonitor.start(activity)
             syncNow(activity)
             val continuation = permissionContinuation
             permissionContinuation = null
-            if (grants.values.all { it }) continuation?.invoke()
+            continuation?.invoke(grants.values.all { it })
         }
 
     LaunchedEffect(searchQuery, simFilter) { messageLimit = 200 }
@@ -230,10 +229,6 @@ fun HongshuUI(activity: MainActivity) {
         push(AppDestination.Settings(SettingsPage.Overview))
     }
 
-    fun closeSettings() {
-        navigationStack = closeSettingsDestinations(navigationStack)
-    }
-
     fun updateSearch(active: Boolean) {
         if (active) {
             push(AppDestination.Search)
@@ -246,13 +241,14 @@ fun HongshuUI(activity: MainActivity) {
 
     val permissionRequest: PermissionRequest = { permissions, continuation ->
         val missing = permissions.filterNot { hasPermission(activity, it) }.toTypedArray()
-        if (missing.isEmpty()) continuation()
+        if (missing.isEmpty()) continuation(true)
         else {
             permissionContinuation = continuation
             permissionLauncher.launch(missing)
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     AppNavigationHost(
         stack = navigationStack,
         twoPane = isExpanded,
@@ -268,9 +264,9 @@ fun HongshuUI(activity: MainActivity) {
                     page = destination.page,
                     onNavigate = { page -> push(AppDestination.Settings(page)) },
                     onBack = ::popNavigation,
-                    onClose = ::closeSettings,
                     onRequestPermissions = permissionRequest,
-                    onAction = ::settingsAction,
+                    onAction = ::action,
+                    onMessage = ::showMessage,
                 )
             else ->
                 MainSurface(
@@ -298,9 +294,13 @@ fun HongshuUI(activity: MainActivity) {
                         }
                     },
                     isExpanded = isExpanded,
-                    snackbar = snackbar,
                 )
         }
+    }
+    SnackbarHost(
+        snackbar,
+        Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding(),
+    )
     }
 }
 
@@ -325,7 +325,6 @@ private fun MainSurface(
     onOpenSettings: () -> Unit,
     onSync: () -> Unit,
     isExpanded: Boolean,
-    snackbar: SnackbarHostState,
 ) {
     val conversation = destination as? AppDestination.Conversation
     val showDetail = conversation != null
@@ -337,7 +336,6 @@ private fun MainSurface(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             if (isExpanded) {

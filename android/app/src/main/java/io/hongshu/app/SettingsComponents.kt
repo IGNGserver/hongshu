@@ -356,11 +356,11 @@ fun ExpandableHelp(text: String, modifier: Modifier = Modifier, title: String = 
 fun NoticeCard(
     icon: ImageVector,
     title: String,
+    modifier: Modifier = Modifier,
     text: String? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
     attention: Boolean = false,
-    modifier: Modifier = Modifier,
 ) {
     val container =
         if (attention) MaterialTheme.colorScheme.errorContainer

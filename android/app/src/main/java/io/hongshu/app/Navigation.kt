@@ -47,11 +47,14 @@ sealed interface AppDestination {
 }
 
 enum class SettingsPage(val title: String) {
-    Overview("中枢与设置"),
-    Hub("管理中枢与凭据"),
-    Sims("SIM 卡与号码识别"),
-    Capture("实时广播与同步"),
-    Pending("本机待同步短信"),
+    Overview("设置"),
+    Hub("中枢连接"),
+    Capture("短信采集"),
+    Sims("SIM 卡与号码"),
+    Notifications("通知"),
+    Background("后台运行"),
+    Pending("待上传短信"),
+    Diagnostics("诊断信息"),
     About("关于鸿枢"),
 }
 
