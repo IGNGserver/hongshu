@@ -76,12 +76,11 @@ class Operations(unittest.TestCase):
         self.state.write_text(json.dumps(dict(tags={}, release=None, builds=0, promotions=[])))
         release = self.root / 'build/release'
         release.mkdir(parents=True)
-        for name in ('hongshu-v0.1.0-alpha.99-android.apk',
-                     'hongshu-v0.1.0-alpha.99-server-tools-linux-amd64.tar.gz',
+        for name in ('Hongshu-Android-0.1.0-alpha.99.apk',
                      'hongshu-v0.1.0-alpha.99-deployment.tar.gz'):
             (release / name).write_text('synthetic fixture')
         self.notes = self.root / 'release-notes.md'
-        self.notes.write_text('''# Synthetic release\n\n## 本次更新\n\n- Synthetic fixture\n\n## 快捷下载\n\n- [APK](https://github.com/synthetic/hongshu/releases/download/v0.1.0-alpha.99/hongshu-v0.1.0-alpha.99-android.apk)\n''')
+        self.notes.write_text('''# Synthetic release\n\n## 本次更新\n\n- Synthetic fixture\n\n## 快捷下载\n\n- [APK](https://github.com/synthetic/hongshu/releases/download/v0.1.0-alpha.99/Hongshu-Android-0.1.0-alpha.99.apk)\n''')
         self.env = dict(os.environ, PATH=str(tools)+':'+os.environ['PATH'], MOCK_STATE=str(self.state),
                         HONGSHU_BUILD_DIR=str(self.root/'build'), RUNNER_TEMP=str(self.root/'runner'),
                         RELEASE_NOTES_FILE=str(self.notes),
@@ -111,6 +110,11 @@ class Operations(unittest.TestCase):
 
     def test_auxiliary_asset_prevents_registry_build(self):
         (self.root/'build/release/IMAGE.json').write_text('must not be uploaded')
+        self.assertNotEqual(0,self.run_publish())
+        self.assertEqual(0,json.loads(self.state.read_text())['builds'])
+
+    def test_retired_server_tools_asset_prevents_registry_build(self):
+        (self.root/'build/release/hongshu-v0.1.0-alpha.99-server-tools-linux-amd64.tar.gz').write_text('retired asset')
         self.assertNotEqual(0,self.run_publish())
         self.assertEqual(0,json.loads(self.state.read_text())['builds'])
 

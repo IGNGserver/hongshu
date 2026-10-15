@@ -8,11 +8,10 @@ package=${image##*/}
 release="$HONGSHU_BUILD_DIR/release"
 state="$RUNNER_TEMP/publish-state"
 mkdir -p "$state"
-apk_asset="hongshu-${TAG}-android.apk"
-server_asset="hongshu-${TAG}-server-tools-linux-amd64.tar.gz"
+apk_asset="Hongshu-Android-${VERSION}.apk"
 deployment_asset="hongshu-${TAG}-deployment.tar.gz"
 release_notes="${RELEASE_NOTES_FILE:-docs/releases/${TAG}.md}"
-assets=("$apk_asset" "$server_asset" "$deployment_asset")
+assets=("$apk_asset" "$deployment_asset")
 
 validate_asset_set() {
   local directory=$1 asset
@@ -22,13 +21,13 @@ validate_asset_set() {
   done
   while IFS= read -r -d '' asset; do
     asset=${asset##*/}
-    case " $apk_asset $server_asset $deployment_asset " in
+    case " $apk_asset $deployment_asset " in
       *" $asset "*) ;;
       *) echo "Unexpected release asset: $asset" >&2; return 1 ;;
     esac
   done < <(find "$directory" -maxdepth 1 -type f -print0)
-  test "$(find "$directory" -maxdepth 1 -type f | wc -l)" -eq 3 || {
-    echo 'Release must contain exactly three assets' >&2
+  test "$(find "$directory" -maxdepth 1 -type f | wc -l)" -eq 2 || {
+    echo 'Release must contain exactly two assets' >&2
     return 1
   }
 }
@@ -71,10 +70,10 @@ metadata_from_body() {
   test -n "$metadata" || { echo 'Release metadata journal is missing' >&2; return 1; }
   printf '%s\n' "$metadata" | jq -e . > "$state/metadata.json"
   jq -e --arg sha "$RELEASE_SHA" --arg image "$image" --arg version "$VERSION" \
-    --arg apk "$apk_asset" --arg server "$server_asset" --arg deployment "$deployment_asset" \
+    --arg apk "$apk_asset" --arg deployment "$deployment_asset" \
     '.sha==$sha and .image==$image and .version==$version and (.digest|test("^sha256:[0-9a-f]{64}$")) and
-     (.assets|type=="object") and (.assets|length==3) and
-     (.assets[$apk]|type=="string") and (.assets[$server]|type=="string") and (.assets[$deployment]|type=="string")' \
+     (.assets|type=="object") and (.assets|length==2) and
+     (.assets[$apk]|type=="string") and (.assets[$deployment]|type=="string")' \
     "$state/metadata.json" >/dev/null
 }
 
@@ -157,7 +156,7 @@ else
     cat "$release_notes"
     printf '\n\n<!-- hongshu-release-metadata %s -->\n' "$(jq -c . "$state/metadata.json")"
   } > "$state/release-notes.md"
-  args=("$TAG" "$release/$server_asset" "$release/$deployment_asset" "$release/$apk_asset" --verify-tag --draft --title "Hongshu $TAG" --notes-file "$state/release-notes.md")
+  args=("$TAG" "$release/$deployment_asset" "$release/$apk_asset" --verify-tag --draft --title "Hongshu $TAG" --notes-file "$state/release-notes.md")
   if [[ "$IS_PRERELEASE" == true ]]; then args+=(--prerelease); fi
   gh release create "${args[@]}"
 fi
