@@ -18,7 +18,16 @@
 | `cd web && npm test && npm run check` | 本机 scratch 通过；16 项测试通过；Web 本轮无代码改动 |
 | Android `./gradlew --no-daemon --offline --console=plain --project-cache-dir "$SCRATCH/gradle-project-cache" -Pkotlin.project.persistent.dir="$SCRATCH/kotlin-cache" :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` | 本机 scratch 通过，耗时 1m39s；83 项 JVM/Robolectric 测试全部通过，0 失败/跳过；设备测试源码编译通过，未执行设备测试 |
 | `adb devices` | 无设备；未执行真机或模拟器 instrumentation 测试 |
-| Go 可执行文件、Web 生产资源、Android lint/APK 与 API 28/33/35 设备矩阵 | 本轮未在本机构建/执行；由推送后的既有 CI 检验，推送前没有本轮 run 结果，不引用基线 CI 作为本轮通过证明 |
+| Go 可执行文件、Web 生产资源、Android lint/APK 与 API 28/33/35 设备矩阵 | 本机未执行；代码提交 `02a39b4` 的 CI 全部通过，详见下方最终结果 |
+
+代码提交 `02a39b4` 的 [Hongshu validation 38751787508](https://github.com/IGNGserver/hongshu/actions/runs/38751787508)
+全部成功，墙钟耗时 8m50s：`server` 1m50s，`web` 5s，`verify` 9s，
+`android (28)` 6m49s、`android (33)` 8m46s、`android (35)` 7m30s。
+`server` 设置隔离 `TEST_MYSQL_DSN` 并执行 `go test -race -count=1 ./... && go vet ./... && go build -trimpath`，
+真实 MySQL 集成验证通过；Chromium 冒烟覆盖登录、收件箱、XSS、手机对话、搜索、设备、设置及 PWA 私密缓存边界。
+Android 三组均执行 JVM 单测、lint、debug/测试 APK 构建与 `:app:connectedDebugAndroidTest`；
+API 28 完成 22 项设备测试，API 33、35 各完成 48 项，全部成功。这是 CI 模拟器验证，不是真机验收。
+作业累计 25m09s，按各作业向上取整估算 28 个 Linux runner 分钟；实际配额扣减以 GitHub 账单为准。
 
 本地验证副本为 `~/.build/短信同步系统/sync-pipeline-hardening/source/`；JDK 17、
 `GRADLE_USER_HOME=~/.build/gradle`、`HONGSHU_BUILD_DIR=$SCRATCH/android-build`，
@@ -29,10 +38,10 @@ Gradle 首次离线依赖不足、在线超时均不记为通过；依赖补齐�
 覆盖新增 ACK 乱序/重复指纹/畸形 ID 与字段/整组防误删、非法批次二分隔离、失败分类、禁用上传、
 实时/历史公平筛选、互斥队列统计、通知 sender/SIM/唯一候选匹配及未知 SIM 快照保留。
 新增网络设备测试包含大历史队列续传、SIM 注册去重、联系人故障保留缓存且继续上传/下拉及 401；
-当前仅编译通过，不声称这些设备场景已执行成功。
+本地仅编译通过；上述 CI API 33/35 模拟器已执行这些设备场景并通过。
 
-仍需验证：真实 MySQL 事务/ACK 集成、WorkManager 后继执行与故障退避、目标 ROM 通知字段、
-真实双卡/PDU/重启/离线恢复、Push 可达性和端到端服务端/Web 展示。Robolectric SQLite 与编译结果
+仍需验证：真实设备上的 WorkManager 后继执行与故障退避、目标 ROM 通知字段、
+真实双卡/PDU/重启/离线恢复、Push 可达性和生产环境端到端展示。CI MySQL/浏览器/模拟器结果
 不能替代以上实测；未知联系人标题或歧义通知优先保留重复，旧中枢无指纹 ACK 仍无法检测合法字段重排，
 系统强制停止/厂商屏蔽/首次解锁前的限制不变，不承诺绝对即时或不漏收。
 
