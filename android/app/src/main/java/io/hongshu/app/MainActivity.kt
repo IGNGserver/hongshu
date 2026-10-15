@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import java.text.SimpleDateFormat
@@ -48,6 +49,7 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         updateRecentTaskVisibility(this, Config(this).hideFromRecents)
@@ -124,8 +126,10 @@ fun HongshuUI(activity: MainActivity) {
     var busy by remember { mutableStateOf(false) }
     var navigationStack by remember { mutableStateOf(listOf<AppDestination>(AppDestination.Home)) }
 
-    var loadedHomeMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
-    var loadedSearchMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
+    // null until the first query returns, so a cold start shows progress instead of flashing
+    // the empty state for a frame.
+    var loadedHomeMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
+    var loadedSearchMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
     var loadedThreadMessages by remember { mutableStateOf<List<CachedMessage>>(emptyList()) }
     var messageLimit by remember { mutableIntStateOf(200) }
     val scope = rememberCoroutineScope()
@@ -334,8 +338,8 @@ private fun MainSurface(
     destination: AppDestination,
     activity: MainActivity,
     repo: Repository,
-    loadedHomeMessages: List<CachedMessage>,
-    loadedSearchMessages: List<CachedMessage>,
+    loadedHomeMessages: List<CachedMessage>?,
+    loadedSearchMessages: List<CachedMessage>?,
     loadedThreadMessages: List<CachedMessage>,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
@@ -464,7 +468,7 @@ private fun MainSurface(
 
             if (busy) {
                 LinearWavyProgressIndicator(
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).statusBarsPadding(),
                     color = MaterialTheme.colorScheme.primary,
                     trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 )
@@ -478,7 +482,7 @@ private fun MainSurface(
 private fun ConversationListView(
     activity: MainActivity,
     repo: Repository,
-    loadedMessages: List<CachedMessage>,
+    loadedMessages: List<CachedMessage>?,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     isSearchActive: Boolean,
@@ -641,7 +645,11 @@ private fun ConversationListView(
             }
 
             // 消息会话列表（通栏设计，1:1 还原截图 1）
-            if (loadedMessages.isEmpty()) {
+            if (loadedMessages == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    LoadingIndicator()
+                }
+            } else if (loadedMessages.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -654,7 +662,8 @@ private fun ConversationListView(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "短信历史将在您连接私有中枢后在此同步展现",
+                            if (repo.config.token.isEmpty()) "短信历史将在您连接私有中枢后在此同步展现"
+                            else "开启本机短信采集，或等待其他设备上传短信",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

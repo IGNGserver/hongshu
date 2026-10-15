@@ -1,8 +1,17 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/hongshu_window_background</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Launch theme: the window already has the app background, so there is no white flash
+         in dark mode before Compose draws its first frame. -->
+    <style name="AppTheme.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/hongshu_window_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_hongshu_splash</item>
+        <item name="postSplashScreenTheme">@style/AppTheme</item>
     </style>
 </resources>

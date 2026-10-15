@@ -24,7 +24,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -64,18 +63,10 @@ fun SettingsScreen(
             }
         }
     }
-    var tick by remember { mutableLongStateOf(0) }
     val changes by Store.changes.collectAsState()
-    LaunchedEffect(activity) {
-        activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                delay(1000)
-                tick++
-            }
-        }
-    }
-    // Preferences can also change from a worker/service while the settings page is open.
-    val refresh = changes + tick
+    // Preferences can also change from a worker/service while the settings page is open; system
+    // permission state changes while the user is away in system settings.
+    val refresh = changes + rememberPreferenceVersion(activity) + rememberResumeCount()
     Surface(
         Modifier.fillMaxSize().imePadding(),
         color = MaterialTheme.colorScheme.background,
