@@ -1,3 +1,17 @@
+# 2026-10-16 Android 中枢密码使用密码键盘
+
+版本 `0.1.0-alpha.21`，基线 `5958f84`，分支 `agent/password-keyboard`。Android 设置页的中枢密码输入框增加 `KeyboardType.Password`，不改变密码提交内容或已有凭据行为；本轮无服务端接口和数据库迁移。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；仓库结构、SemVer、凭据样式检查及 11 项运维测试全部通过 |
+| `git diff --check` | 通过 |
+| `cd /Users/lvziw/.build/短信同步系统/password-keyboard/source/android && ./gradlew --no-daemon --max-workers=2 --console=plain --offline --project-cache-dir /Users/lvziw/.build/短信同步系统/password-keyboard/gradle-project-cache -Pkotlin.project.persistent.dir=/Users/lvziw/.build/短信同步系统/password-keyboard/kotlin-cache :app:testDebugUnitTest` | 通过；Android JVM 单测通过，JDK 17；源码副本、Gradle 项目缓存和可变构建目录均在本机盘 scratch |
+| 同一 scratch 环境 `:app:lintDebug` | 通过；保留既有 Kotlin 警告，无新增 lint 错误 |
+| Android 完整构建、签名 APK、API 28/33/35 模拟器、Go/MySQL、Web/PWA 与浏览器冒烟 | 本机未重复执行；由 PR CI 和随后 tag Release workflow 承担 |
+
+首次使用独立 Gradle 用户目录运行时因缺少 Kotlin 插件缓存而无法解析依赖；改用本机共享缓存 `/Users/lvziw/.build/gradle` 后，单测和 lint 分别完整重跑通过。未在 worktree 生成依赖或构建产物。本轮未连接真实 Android 设备，未验证不同输入法的具体键盘布局。
+
 # 2026-10-15 短信同步链路加固
 
 基线 `2c0ca5f`，分支 `agent/sync-pipeline-hardening`，版本保持 `0.1.0-alpha.19`。
