@@ -1,3 +1,22 @@
+# 2026-10-16 Android 未上传短信展示（PR-3）
+
+基于 `agent/android-upload-timeliness`（`082ddf3`），分支 `agent/android-pending-ux`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
+
+修复：“本机待同步短信”含义不明、“已映射待传”等术语；逐条状态只是按开关推测，看不到真实失败原因；
+状态栏直接显示 `中枢返回 503 (database_unavailable)`；本机短信上传前在会话列表中不可见；
+通知兜底以联系人名称作发件人立即上传导致会话分裂；同步状态混入队列计数。
+新增：页面改名“未上传到中枢的短信”并按原因分组（立即上传/指定接收号码/全部重试），显示上次尝试时间与原因；
+中枢错误码中文说明；会话视图合并未上传本机记录并标注“未上传”；名称标题的通知记录暂缓 150 秒等待号码；
+首页横幅直达该页面。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-pending-ux`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，2m30s；104 项 JVM/Robolectric 测试 0 失败（新增 `PendingDisplayTest` 4 项），lint 0 错误（新增 2 条既有风格的 UseKtx 警告） |
+| 界面实际渲染、真机 | 未执行；本机无设备/模拟器，界面仅经编译与 lint 检查，需在设备上目测 |
+
 # 2026-10-16 Android 上传时效（PR-2）
 
 基于 `agent/android-queue-unstick`（`f358f98`），分支 `agent/android-upload-timeliness`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。

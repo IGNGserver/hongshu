@@ -93,54 +93,81 @@ fun LocalPendingSubPage(
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item {
-            Text(counts.label())
-            Text("上传确认前不会删除；这里与中枢收件箱分开。已映射不代表当前可上传，还取决于下方连接与同步状态。")
             Text(
-                "未知订阅不会按当前卡槽猜测；配置 SIM 后仅可补传能安全确定归属的记录。",
-                style = MaterialTheme.typography.bodySmall,
+                "这里是本机已收到、但中枢还没确认收到的短信。上传成功后会自动从这里消失，并出现在会话列表中。手机短信应用里的原短信不受影响。",
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
-        item { FilledTonalButton(onClick = onSims) { Text("检查 SIM 与接收号码") } }
-        if (counts.needsSim > 0)
+        if (loaded && counts.ready > 0)
             item {
-                if (sims.isEmpty())
-                    Text(
-                        "有 ${counts.needsSim} 条短信不知道是哪张卡收到的。请先在“检查 SIM 与接收号码”中填写手机号。",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                else
+                PendingGroup("等待上传 ${counts.ready} 条", uploadAttemptStatus(config, connected)) {
                     FilledTonalButton(
                         enabled = !busy,
                         onClick = {
                             onAction {
-                                val keys = repo.store.unresolvedKeys()
-                                withContext(Dispatchers.Main) {
-                                    assigning = keys.takeIf { it.isNotEmpty() }
-                                }
-                                if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
+                                syncNow(repo.context, manual = true)
+                                "已开始上传"
                             }
                         },
                     ) {
-                        Text("为 ${counts.needsSim} 条待确认号码的短信指定接收号码")
+                        Text("立即上传")
                     }
+                }
+            }
+        if (counts.needsSim > 0)
+            item {
+                PendingGroup(
+                    "需确认接收号码 ${counts.needsSim} 条",
+                    if (sims.isEmpty())
+                        "系统没有告诉鸿枢这些短信是哪张卡收到的，且尚未配置任何手机号。请先填写 SIM 卡号码。"
+                    else "系统没有告诉鸿枢这些短信是哪张卡收到的。确认后为它们选择接收号码即可上传。",
+                ) {
+                    if (sims.isEmpty())
+                        FilledTonalButton(onClick = onSims) { Text("填写 SIM 卡号码") }
+                    else
+                        FilledTonalButton(
+                            enabled = !busy,
+                            onClick = {
+                                onAction {
+                                    val keys = repo.store.unresolvedKeys()
+                                    withContext(Dispatchers.Main) {
+                                        assigning = keys.takeIf { it.isNotEmpty() }
+                                    }
+                                    if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
+                                }
+                            },
+                        ) {
+                            Text("指定接收号码")
+                        }
+                }
             }
         if (counts.invalid > 0)
             item {
-                OutlinedButton(
-                    enabled = !busy,
-                    onClick = {
-                        onAction {
-                            repo.store.retryInvalid()
-                            syncNow(repo.context, manual = true)
-                            "已重新排队 ${counts.invalid} 条异常记录"
-                        }
-                    },
+                PendingGroup(
+                    "无法上传 ${counts.invalid} 条",
+                    "内容或格式被本机校验或中枢拒绝。可以重试；确认不需要时，在下方逐条放弃上传。",
                 ) {
-                    Text("重试 ${counts.invalid} 条异常记录")
+                    OutlinedButton(
+                        enabled = !busy,
+                        onClick = {
+                            onAction {
+                                repo.store.retryInvalid()
+                                syncNow(repo.context, manual = true)
+                                "已重新排队 ${counts.invalid} 条记录"
+                            }
+                        },
+                    ) {
+                        Text("全部重试")
+                    }
                 }
             }
-        item { Text(smsSyncStatus(repo.context, repo), style = MaterialTheme.typography.bodySmall) }
-        if (!loaded) item { Text("正在读取本地队列…") } else if (records.isEmpty()) item { Text("暂无待同步短信") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onSims) { Text("SIM 卡与号码") }
+            }
+            Text("中枢同步：${smsSyncStatus(repo.context, repo)}", style = MaterialTheme.typography.bodySmall)
+        }
+        if (!loaded) item { Text("正在读取…") } else if (records.isEmpty()) item { Text("没有未上传的短信") }
         items(records, key = { it.key }) { record ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -235,4 +262,15 @@ private fun AssignReceiverDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+@Composable
+private fun PendingGroup(title: String, detail: String, action: @Composable () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(detail, style = MaterialTheme.typography.bodySmall)
+            action()
+        }
+    }
 }

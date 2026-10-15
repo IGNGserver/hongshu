@@ -174,7 +174,7 @@ fun HongshuUI(activity: MainActivity) {
     LaunchedEffect(changes, simFilter, messageLimit) {
         loadedHomeMessages =
             withContext(Dispatchers.IO) {
-                repo.store.messages(
+                repo.store.messagesWithLocal(
                     "",
                     "",
                     simFilter,
@@ -186,7 +186,7 @@ fun HongshuUI(activity: MainActivity) {
     LaunchedEffect(changes, searchQuery, simFilter, messageLimit) {
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
-                repo.store.messages(
+                repo.store.messagesWithLocal(
                     "",
                     searchQuery,
                     simFilter,
@@ -198,7 +198,7 @@ fun HongshuUI(activity: MainActivity) {
     LaunchedEffect(changes, searchQuery, selectedSender, threadReceiver, messageLimit) {
         loadedThreadMessages =
             withContext(Dispatchers.IO) {
-                repo.store.messages(
+                repo.store.messagesWithLocal(
                     selectedSender,
                     searchQuery,
                     threadReceiver,
@@ -317,6 +317,7 @@ fun HongshuUI(activity: MainActivity) {
                     changes = changes,
                     busy = busy,
                     onOpenSettings = ::openSettings,
+                    onOpenPending = { push(AppDestination.Settings(SettingsPage.Pending)) },
                     onSync = {
                         action {
                             syncNow(activity, manual = true)
@@ -351,6 +352,7 @@ private fun MainSurface(
     changes: Long,
     busy: Boolean,
     onOpenSettings: () -> Unit,
+    onOpenPending: () -> Unit = onOpenSettings,
     onSync: () -> Unit,
     isExpanded: Boolean,
     snackbar: SnackbarHostState,
@@ -391,6 +393,7 @@ private fun MainSurface(
                             changes = changes,
                             busy = busy,
                             onOpenSettings = onOpenSettings,
+                            onOpenPending = onOpenPending,
                             onSync = onSync,
                         )
                     }
@@ -459,6 +462,7 @@ private fun MainSurface(
                     changes = changes,
                     busy = busy,
                     onOpenSettings = onOpenSettings,
+                    onOpenPending = onOpenPending,
                     onSync = onSync,
                 )
             }
@@ -493,6 +497,7 @@ private fun ConversationListView(
     changes: Long,
     busy: Boolean,
     onOpenSettings: () -> Unit,
+    onOpenPending: () -> Unit = onOpenSettings,
     onSync: () -> Unit,
 ) {
     var sims by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -587,10 +592,10 @@ private fun ConversationListView(
 
             if (localPending.total > 0) {
                 TextButton(
-                    onClick = onOpenSettings,
+                    onClick = onOpenPending,
                     modifier = Modifier.padding(horizontal = 18.dp),
                 ) {
-                    Text("${localPending.label()} · 设置中可离线查看")
+                    Text("${localPending.banner()} · 查看")
                 }
             }
 
@@ -754,7 +759,7 @@ private fun ConversationRow(message: CachedMessage, isSelected: Boolean, onClick
             }
 
             Text(
-                text = message.body,
+                text = if (message.local) "未上传 · ${message.body}" else message.body,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -894,7 +899,8 @@ private fun MessageBubble(msg: CachedMessage, isOutgoing: Boolean) {
 
         Text(
             text =
-                "${formatDetailDateTime(msg.timestamp)} · ${if (msg.receiver.isNotEmpty()) msg.receiver else "本机"}",
+                "${formatDetailDateTime(msg.timestamp)} · ${if (msg.receiver.isNotEmpty()) msg.receiver else "本机"}" +
+                    if (msg.local) " · 未上传到中枢" else "",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.outline,
             modifier = Modifier.padding(horizontal = 4.dp),

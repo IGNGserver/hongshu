@@ -15,7 +15,35 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
-class ApiException(val status: Int, val code: String) : IOException("中枢返回 $status ($code)")
+class ApiException(val status: Int, val code: String) : IOException(describeApiError(status, code))
+
+// User-facing text for hub error codes; the raw code stays available on ApiException.
+internal fun describeApiError(status: Int, code: String): String =
+    when (code) {
+        "database_unavailable" -> "中枢数据库暂时不可用，稍后自动重试"
+        "upload_disabled" -> "中枢已禁止本机上传，可在网页端设备管理中开启"
+        "unauthorized" -> "本机授权已失效，请重新连接中枢"
+        "invalid_password" -> "中枢密码不正确"
+        "rate_limited" -> "尝试过于频繁，请稍后再试"
+        "authentication_busy" -> "中枢正忙于验证密码，请稍后再试"
+        "invalid_message" -> "中枢拒绝了格式不符的短信"
+        "invalid_batch" -> "上传批次无效，将拆分后重试"
+        "invalid_sim" -> "中枢不接受该 SIM 号码格式"
+        "epoch_changed" -> "中枢数据已恢复或重置，正在重新同步"
+        "forbidden",
+        "admin_required" -> "没有权限执行此操作"
+        "origin_denied",
+        "origin_required" -> "中枢拒绝了本机来源，请检查中枢地址"
+        "invalid_name" -> "设备名称无效"
+        else ->
+            when (status) {
+                502,
+                503,
+                504 -> "中枢暂时不可用（$status），稍后自动重试"
+                in 300..399 -> "中枢地址发生跳转（$status），请检查是否填写了正确的地址"
+                else -> "中枢返回错误 $status（$code）"
+            }
+    }
 
 // Serialize identity replacement with capture and sync, so a concurrent worker cannot
 // send a prior hub's queue or bearer to the newly selected hub.
@@ -147,7 +175,7 @@ class Repository(val context: Context) {
     private fun loginUnlocked(url: String, password: String, name: String) {
         val oldUrl = config.url
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
-            "旧中枢尚有未上传短信，不能更换中枢以免泄露内容；可在“本机待同步短信”中上传或放弃这些记录"
+            "旧中枢尚有未上传短信，不能更换中枢以免泄露内容；可在“未上传到中枢的短信”中上传或放弃这些记录"
         }
         val newUrl = hubOrigin(url)
         try {

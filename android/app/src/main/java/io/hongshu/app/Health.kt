@@ -121,6 +121,19 @@ fun smsSyncStatus(context: Context, repo: Repository): String {
     return "最近同步 ${formatTimestamp(c.lastSync)} · ${c.status}"
 }
 
+// What happened to the last upload attempt, for the pending page.
+fun uploadAttemptStatus(c: Config, connected: Boolean): String =
+    when {
+        !c.upload -> "“同步本机短信”已关闭，打开后才会上传"
+        c.token.isEmpty() -> "未连接中枢或授权已失效，请在设置中重新连接"
+        !c.serverUploadAllowed -> "中枢已禁止本机上传，可在网页端设备管理中开启"
+        !connected -> "当前没有网络，联网后自动上传"
+        c.lastSyncError.isNotEmpty() && c.lastSyncAttempt > 0 ->
+            "上次尝试 ${formatTimestamp(c.lastSyncAttempt)} 失败：${c.lastSyncError}"
+        c.lastSync > 0 -> "上次成功同步 ${formatTimestamp(c.lastSync)}，新短信会自动上传"
+        else -> "尚未成功同步，将自动上传"
+    }
+
 fun keepAliveStatus(context: Context, c: Config, health: ConnectionHealth): String {
     if (!c.keepAlive) return "已关闭 · 仍有系统周期同步"
     if (!health.running) return "${health.detail} · 系统周期同步仍启用"

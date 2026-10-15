@@ -263,6 +263,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 .build(),
         )
 
+    private fun fail(config: Config, reason: String) {
+        config.syncHealthy = false
+        config.status = reason
+        config.lastSyncError = reason
+    }
+
     private fun retry(): Result {
         val delay = syncRetryDelay(runAttemptCount)
         if (delay == 0L) return Result.retry()
@@ -275,16 +281,20 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         if (config.token.isEmpty()) return Result.success()
         return try {
             if (!SyncEngine.run(applicationContext)) enqueueSyncOnly(applicationContext)
+            Store(applicationContext).use { it.nextNotificationRelease() }?.let {
+                enqueueSyncOnly(applicationContext, it)
+            }
             Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            config.syncHealthy = false
-            config.status = e.message ?: "同步失败"
+            fail(config, e.message ?: "同步失败")
             if (e.status == 401) Result.failure() else retry()
+        } catch (_: java.io.IOException) {
+            fail(config, "无法连接中枢：请检查网络或中枢地址，将自动重试")
+            retry()
         } catch (_: Exception) {
-            config.syncHealthy = false
-            config.status = "同步失败：网络、协议或本地存储；将重试"
+            fail(config, "同步失败：协议或本地存储异常，将自动重试")
             retry()
         }
     }
@@ -301,6 +311,7 @@ object SyncEngine {
                 val store = repo.store
                 try {
                     if (c.token.isEmpty()) return@withContext true
+                    c.lastSyncAttempt = System.currentTimeMillis()
                     val session = repo.api.request("/me")
                     val me = session.getJSONObject("device")
                     val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
@@ -401,14 +412,15 @@ object SyncEngine {
                             store.acknowledgeNotification(pendingNotice)
                         if (!data.getBoolean("more")) {
                             c.lastSync = System.currentTimeMillis()
+                            c.lastSyncError = ""
                             c.syncHealthy = true
                             if (c.captureFailure == CaptureFailure.SCHEDULING)
                                 c.captureFailure = CaptureFailure.NONE
                             c.status =
+                                // Queue counts are shown by the pending views; the sync status
+                                // only describes the sync itself.
                                 if (c.upload && c.historyEnabled && c.inboxScanPending)
-                                    "历史短信采集中，自动继续"
-                                else if (store.pendingCount() > 0)
-                                    "已同步 · ${store.pendingCounts().label()}"
+                                    "同步完成 · 历史短信采集中，自动继续"
                                 else "同步完成"
                             if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
                             // Successful bounded work gets a successor, not failure backoff.
