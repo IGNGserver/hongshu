@@ -169,6 +169,7 @@ class ProtocolTest {
         assertTrue(compatibleSims(7, "", -1, ""))
         assertTrue(compatibleSims(-1, "", 7, "+1234567890"))
         assertFalse(compatibleSims(7, "", 8, ""))
+        assertTrue(compatibleSims(7, "+1234567890", 7, "+9876543210"))
         assertFalse(compatibleSims(-1, "", -1, ""))
         assertTrue(compatibleSims(-1, "+1234567890", -1, "+1234567890"))
         assertFalse(compatibleSims(7, "+1234567890", -1, "+1999999999"))

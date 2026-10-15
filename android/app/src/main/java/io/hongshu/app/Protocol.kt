@@ -86,6 +86,8 @@ fun sameSender(left: String, right: String): Boolean =
     left == right || normalizeSender(left) == normalizeSender(right)
 
 // One side must know its SIM; two unknown captures are never merged by content alone.
+// Equal known subscriptions pair even when the number snapshot changed in between (the user
+// corrected or the carrier updated the number); a known/unknown pair needs compatible numbers.
 internal fun compatibleSims(
     leftSub: Int,
     leftReceiver: String,
@@ -94,7 +96,7 @@ internal fun compatibleSims(
 ): Boolean {
     val receivers = leftReceiver.isEmpty() || rightReceiver.isEmpty() || leftReceiver == rightReceiver
     return when {
-        leftSub >= 0 && rightSub >= 0 -> leftSub == rightSub && receivers
+        leftSub >= 0 && rightSub >= 0 -> leftSub == rightSub
         leftSub >= 0 || rightSub >= 0 -> receivers
         else -> leftReceiver.isNotEmpty() && leftReceiver == rightReceiver
     }

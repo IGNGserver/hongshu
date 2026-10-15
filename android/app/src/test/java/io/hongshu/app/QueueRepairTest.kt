@@ -53,6 +53,13 @@ class QueueRepairTest {
     }
 
     @Test
+    fun numberChangeOnSameSubscriptionStillPairs() = withStore { store ->
+        store.queue(SmsRecord(phone, "10086", "before change", 100, 7))
+        assertFalse(store.captureProvider(101, SmsRecord("+8613900000000", "10086", "before change", 101, 7)))
+        assertEquals(1, store.pendingCount())
+    }
+
+    @Test
     fun twoSimLessCapturesAreStillNotMergedByContent() = withStore { store ->
         assertTrue(store.queue(unknown()))
         assertTrue(store.captureProvider(100, unknown().copy(timestamp = 1_700_000_001_000)))
