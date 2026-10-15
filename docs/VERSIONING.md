@@ -36,6 +36,6 @@ MAJOR.MINOR.PATCH-rc.N
 Android `versionCode` 从 VERSION 生成：`major*100000000 + minor*1000000 + patch*10000 + stage`。
 alpha 为 N，beta 为 3000+N，rc 为 6000+N，stable 为 9999；预发布 N 限 1–2999，minor/patch 限 0–99，
 总码不超过 2100000000；越界直接阻止构建，不静默回绕。alpha.11 为 1000011，高于旧固定码 3。
-正式发布仍需通过 APK 元数据核对；本次仅修复生成方式，不递增 VERSION、不发布。
+正式发布仍需通过 APK 元数据核对；版本递增、tag 和 Release 创建必须在明确的版本准备任务中完成。
 
 每次版本准备必须检查 `VERSION`、组件 manifest、镜像 tag、Android `versionCode`/`versionName`（如已存在）的一致性。版本验证命令应登记在根目录 `AGENTS.md` 和 CI 中。

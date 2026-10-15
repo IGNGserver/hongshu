@@ -9,7 +9,7 @@ export HONGSHU_BUILD_DIR="$HOME/.cache/hongshu-android"
 ./gradlew --no-daemon --project-cache-dir "$GRADLE_USER_HOME/project-cache" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-APK 在 `$HONGSHU_BUILD_DIR/app/outputs/apk/release/`（或 `$HOME/.cache/hongshu/build/app/outputs/apk/release/`）。Release 发布资产只包含经过正式签名的 Android APK，签名密钥采用安全离线/Secret 存储；仓库不包含签名私钥材料。
+APK 在 `$HONGSHU_BUILD_DIR/app/outputs/apk/release/`（或 `$HOME/.cache/hongshu/build/app/outputs/apk/release/`）。Release 中的 Android 资产命名为 `Hongshu-Android-<version>.apk`，只包含经过正式签名的 APK；签名密钥采用安全离线/Secret 存储，仓库不包含签名私钥材料。
 支持 HTTP 与 HTTPS。HTTP 会明文传输密码、设备凭据和短信正文；公网使用强烈建议配置 HTTPS 或 VPN。HTTPS 证书仍必须受 Android 信任（不禁用证书验证）。
 
 打开先显示会话列表，右上角进入设备/连接设置。新设备默认不采集短信；开启采集、授予新短信权限、
