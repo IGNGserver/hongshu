@@ -1,3 +1,25 @@
+# 2026-10-16 Android 界面：M3 Expressive、动效与设置重组
+
+基线 `3ea8242`（`0.1.0-alpha.21`），分支 `agent/android-m3e-ux`，版本号不变。只改 Android 客户端界面层，
+无服务端接口、数据库迁移或同步协议变更；新增的“测试连接”只请求已有的 `GET /healthz`。
+
+- 状态：设置页不再每秒轮询，改为 SharedPreferences 监听加回到前台时刷新；首页冷启动先显示加载而不是空状态；
+  启动主题与 SplashScreen 跟随应用背景，深色模式不再白屏一帧。
+- 动效：导航改为一个可拖动的过渡，前进/后退为 M3 横向切换，预测性返回手势拖动返回过渡；列表项、横幅、条件设置项都有动画。
+- 设置：总览页列出需要处理的问题并直达对应页面；拆为中枢连接、短信采集、SIM 卡与号码、待上传短信、通知、后台运行、诊断信息、关于；
+  开关即时生效，需要权限的开关在授权后才打开，被拒绝时保持关闭并说明原因；去掉重复按钮，原始状态文字移到诊断页。
+- 首页与对话：搜索栏、下拉刷新（等待同步任务真正完成，超时提示已排队）、同步异常/待上传横幅、按卡槽标注的 SIM 筛选、
+  对话日期分隔、“复制验证码”、回到最新；首次使用显示设置引导卡片。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试通过 |
+| `git diff --check origin/main...HEAD`、`git diff --name-only origin/main...HEAD` | 通过；改动只在 `android/` 与本文档 |
+| `gitleaks git --redact --log-opts=origin/main..HEAD .` | 通过；未发现凭据泄漏 |
+| macOS-dev2 scratch `/Users/lvziw/.build/短信同步系统/android-m3e-ux`（根盘剩余 209G）：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` | 通过，2m33s；116 项 JVM/Robolectric 测试，105 通过、11 项截图测试按设计跳过、0 失败；lint 无错误，新增代码无新警告（保留一处 `stopService(Intent)` 的 ImplicitSamInstance 误报，与原实现相同）；debug APK 生成 |
+| 同一环境 `HONGSHU_SCREENSHOT_DIR=… :app:testDebugUnitTest --tests io.hongshu.app.UiScreenshotTest` | 通过；Robolectric 原生渲染 11 张截图（设置各页、首页、首次使用、对话，含深色），人工检查后修正了短对话被顶到顶部和长号码被截断两处问题 |
+| Go/MySQL、Web/PWA | 本轮无改动，未在本机执行；由 PR CI 承担 |
+| 真机、模拟器、API 28/33/35 设备矩阵、预测性返回手势实际手感、厂商 ROM | 未执行：本机无 adb 设备和模拟器；截图来自 Robolectric，不能代替真机验证 |
 # 2026-10-16 Android 未上传短信展示（PR-3）
 
 基于 `agent/android-upload-timeliness`（`082ddf3`），分支 `agent/android-pending-ux`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。

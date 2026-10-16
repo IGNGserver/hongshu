@@ -439,6 +439,11 @@ class NetworkTest {
                     }
                     val old = retry.first { !it.state.isFinished }.id
                     runBlocking { repeat(100) { syncNow(context).join() } }
+                    // A worker that is still RUNNING keeps its slot and can add one successor, so
+                    // let the running attempt settle before counting the parked successor.
+                    waitFor { infos ->
+                        infos.none { it.state == androidx.work.WorkInfo.State.RUNNING }
+                    }
                     assertEquals(
                         1,
                         manager.getWorkInfosForUniqueWork("hongshu-sync").get().count {

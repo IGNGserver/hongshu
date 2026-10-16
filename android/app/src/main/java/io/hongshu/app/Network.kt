@@ -73,6 +73,26 @@ internal fun realtimeURL(url: String): String {
     return "$scheme://${URI(origin).rawAuthority}/api/ws"
 }
 
+/**
+ * Unauthenticated reachability check against the hub's /healthz, for the "test connection"
+ * button. It only reports whether the address answers; logging in still verifies the password.
+ */
+internal fun probeHub(url: String): String {
+    val origin = hubOrigin(url.trim())
+    val request = Request.Builder().url("$origin/healthz").build()
+    return try {
+        Api.client.newCall(request).execute().use { response ->
+            when {
+                response.isSuccessful -> "中枢可以访问"
+                response.code == 503 -> "中枢在线，但数据库暂不可用"
+                else -> "地址有响应，但不像鸿枢中枢（HTTP ${response.code}）"
+            }
+        }
+    } catch (e: IOException) {
+        "无法连接中枢：${e.message ?: "网络错误"}"
+    }
+}
+
 class Api(private val config: Config, private val originOverride: String? = null) {
     companion object {
         val client =

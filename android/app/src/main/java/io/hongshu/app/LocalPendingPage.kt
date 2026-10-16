@@ -1,14 +1,43 @@
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class,
+)
+
 package io.hongshu.app
 
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,18 +48,37 @@ private fun networkAvailable(context: Context): Boolean {
     return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }
 
+private const val PageSize = 100
+
 @Composable
-fun LocalPendingSubPage(
-    repo: Repository,
-    refresh: Long,
-    busy: Boolean,
-    onAction: (suspend () -> String) -> Unit,
-    onSims: () -> Unit,
-) {
+fun LocalPendingPage(host: SettingsHost) {
+    val repo = host.repo
+    val config = repo.config
+    var offset by remember { mutableIntStateOf(0) }
+    var counts by remember { mutableStateOf(PendingCounts()) }
+    var records by remember { mutableStateOf<List<LocalPendingMessage>?>(null) }
     var sims by remember { mutableStateOf<List<SimMapping>>(emptyList()) }
     var assigning by remember { mutableStateOf<List<String>?>(null) }
     var discarding by remember { mutableStateOf<List<String>?>(null) }
-    LaunchedEffect(refresh) { sims = withContext(Dispatchers.IO) { repo.store.sims() } }
+    val connected = remember(host.refresh) { networkAvailable(repo.context) }
+    val authorized = remember(host.refresh) { config.token.isNotEmpty() }
+
+    LaunchedEffect(host.refresh) { sims = withContext(Dispatchers.IO) { repo.store.sims() } }
+    LaunchedEffect(host.refresh, offset) {
+        val page =
+            withContext(Dispatchers.IO) {
+                val summary = repo.store.pendingCounts()
+                val count = summary.total
+                val start =
+                    if (count == 0) 0 else offset.coerceAtMost(((count - 1) / PageSize) * PageSize)
+                Triple(summary, start, repo.store.localPending(PageSize, start))
+            }
+        counts = page.first
+        offset = page.second
+        records = page.third
+    }
+    val total = counts.total
+
     assigning?.let { keys ->
         AssignReceiverDialog(
             count = keys.size,
@@ -38,7 +86,7 @@ fun LocalPendingSubPage(
             onDismiss = { assigning = null },
             onConfirm = { sim ->
                 assigning = null
-                onAction {
+                host.action {
                     val count = repo.store.assignReceiver(keys, sim)
                     syncNow(repo.context, manual = true)
                     "已为 $count 条短信指定接收号码 ${sim.phone}，正在上传"
@@ -57,7 +105,7 @@ fun LocalPendingSubPage(
                 TextButton(
                     onClick = {
                         discarding = null
-                        onAction { "已放弃 ${repo.store.discard(keys)} 条记录" }
+                        host.action { "已放弃 ${repo.store.discard(keys)} 条记录" }
                     }
                 ) {
                     Text("放弃上传")
@@ -66,45 +114,23 @@ fun LocalPendingSubPage(
             dismissButton = { TextButton(onClick = { discarding = null }) { Text("取消") } },
         )
     }
-    var offset by remember { mutableIntStateOf(0) }
-    var counts by remember { mutableStateOf(PendingCounts()) }
-    val total = counts.total
-    var records by remember { mutableStateOf<List<LocalPendingMessage>>(emptyList()) }
-    var loaded by remember { mutableStateOf(false) }
-    val config = repo.config
-    val connected = remember(refresh) { networkAvailable(repo.context) }
-    val authorized = remember(refresh) { config.token.isNotEmpty() }
-    LaunchedEffect(refresh, offset) {
-        val page =
-            withContext(Dispatchers.IO) {
-                val summary = repo.store.pendingCounts()
-                val count = summary.total
-                val start = if (count == 0) 0 else offset.coerceAtMost(((count - 1) / 100) * 100)
-                Triple(summary, start, repo.store.localPending(100, start))
-            }
-        counts = page.first
-        offset = page.second
-        records = page.third
-        loaded = true
-    }
-    LazyColumn(
-        Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 24.dp),
-    ) {
-        item {
+
+    SettingsScaffold(SettingsPage.Pending.title, host.back, host.busy) {
+        settingsItem("intro") {
             Text(
                 "这里是本机已收到、但中枢还没确认收到的短信。上传成功后会自动从这里消失，并出现在会话列表中。手机短信应用里的原短信不受影响。",
                 style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
             )
         }
-        if (loaded && counts.ready > 0)
-            item {
-                PendingGroup("等待上传 ${counts.ready} 条", uploadAttemptStatus(config, connected)) {
+        if (counts.ready > 0)
+            settingsItem("group-ready") {
+                PendingGroupCard("等待上传 ${counts.ready} 条", uploadAttemptStatus(config, connected)) {
                     FilledTonalButton(
-                        enabled = !busy,
+                        enabled = !host.busy,
                         onClick = {
-                            onAction {
+                            host.action {
                                 syncNow(repo.context, manual = true)
                                 "已开始上传"
                             }
@@ -115,21 +141,23 @@ fun LocalPendingSubPage(
                 }
             }
         if (counts.needsSim > 0)
-            item {
-                PendingGroup(
+            settingsItem("group-sim") {
+                PendingGroupCard(
                     "需确认接收号码 ${counts.needsSim} 条",
                     if (sims.isEmpty())
                         "系统没有告诉鸿枢这些短信是哪张卡收到的，且尚未配置任何手机号。请先填写 SIM 卡号码。"
                     else "系统没有告诉鸿枢这些短信是哪张卡收到的。确认后为它们选择接收号码即可上传。",
                 ) {
                     if (sims.isEmpty())
-                        FilledTonalButton(onClick = onSims) { Text("填写 SIM 卡号码") }
+                        FilledTonalButton(onClick = { host.navigate(SettingsPage.Sims) }) {
+                            Text("填写 SIM 卡号码")
+                        }
                     else
                         FilledTonalButton(
-                            enabled = !busy,
+                            enabled = !host.busy,
                             onClick = {
-                                onAction {
-                                    val keys = repo.store.unresolvedKeys()
+                                host.action {
+                                    val keys = withContext(Dispatchers.IO) { repo.store.unresolvedKeys() }
                                     withContext(Dispatchers.Main) {
                                         assigning = keys.takeIf { it.isNotEmpty() }
                                     }
@@ -142,15 +170,15 @@ fun LocalPendingSubPage(
                 }
             }
         if (counts.invalid > 0)
-            item {
-                PendingGroup(
+            settingsItem("group-invalid") {
+                PendingGroupCard(
                     "无法上传 ${counts.invalid} 条",
                     "内容或格式被本机校验或中枢拒绝。可以重试；确认不需要时，在下方逐条放弃上传。",
                 ) {
                     OutlinedButton(
-                        enabled = !busy,
+                        enabled = !host.busy,
                         onClick = {
-                            onAction {
+                            host.action {
                                 repo.store.retryInvalid()
                                 syncNow(repo.context, manual = true)
                                 "已重新排队 ${counts.invalid} 条记录"
@@ -161,73 +189,174 @@ fun LocalPendingSubPage(
                     }
                 }
             }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onSims) { Text("SIM 卡与号码") }
-            }
-            Text("中枢同步：${smsSyncStatus(repo.context, repo)}", style = MaterialTheme.typography.bodySmall)
+        settingsItem("sync") {
+            Text(
+                "中枢同步：${smsSyncStatus(repo.context, repo)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+            )
         }
-        if (!loaded) item { Text("正在读取…") } else if (records.isEmpty()) item { Text("没有未上传的短信") }
-        items(records, key = { it.key }) { record ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(record.sender, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "接收号码：${record.receiver.ifEmpty { "待确认" }} · ${formatTimestamp(record.timestamp)}"
-                    )
-                    val state =
-                        pendingState(
-                            record.receiver,
-                            record.blocked,
-                            config.upload,
-                            config.serverUploadAllowed,
-                            connected,
-                            authorized,
-                        )
-                    Text(pendingStateLabel(state), color = MaterialTheme.colorScheme.primary)
-                    if (record.historical) Text("历史采集", style = MaterialTheme.typography.labelSmall)
-                    Text(record.body, style = MaterialTheme.typography.bodyMedium)
-                    if (state == PendingState.NEEDS_SIM || state == PendingState.INVALID)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (state == PendingState.NEEDS_SIM && sims.isNotEmpty())
-                                TextButton(enabled = !busy, onClick = { assigning = listOf(record.key) }) {
-                                    Text("指定号码")
-                                }
-                            if (state == PendingState.INVALID)
-                                TextButton(
-                                    enabled = !busy,
-                                    onClick = {
-                                        onAction {
-                                            repo.store.retryInvalid(listOf(record.key))
-                                            syncNow(repo.context, manual = true)
-                                            "已重新排队"
-                                        }
-                                    },
-                                ) {
-                                    Text("重试")
-                                }
-                            TextButton(enabled = !busy, onClick = { discarding = listOf(record.key) }) {
-                                Text("放弃上传")
-                            }
-                        }
+        val list = records
+        when {
+            list == null ->
+                settingsItem("loading") {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        LoadingIndicator()
+                    }
                 }
-            }
+            list.isEmpty() ->
+                settingsItem("empty") {
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.CloudUpload,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Text("没有未上传的短信", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            else ->
+                settingsGroup(
+                    "records",
+                    "未上传的短信",
+                    list.map { record ->
+                        val state =
+                            pendingState(
+                                record.receiver,
+                                record.blocked,
+                                config.upload,
+                                config.serverUploadAllowed,
+                                connected,
+                                authorized,
+                            )
+                        SettingsRow(record.key) {
+                            PendingRecord(
+                                record = record,
+                                state = state,
+                                canAssign = state == PendingState.NEEDS_SIM && sims.isNotEmpty(),
+                                canRetry = state == PendingState.INVALID,
+                                busy = host.busy,
+                                onAssign = { assigning = listOf(record.key) },
+                                onRetry = {
+                                    host.action {
+                                        repo.store.retryInvalid(listOf(record.key))
+                                        syncNow(repo.context, manual = true)
+                                        "已重新排队"
+                                    }
+                                },
+                                onDiscard = { discarding = listOf(record.key) },
+                            )
+                        }
+                    },
+                )
         }
-        if (total > 100)
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        if (total > PageSize)
+            settingsItem("pages") {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     TextButton(
-                        onClick = { offset = (offset - 100).coerceAtLeast(0) },
+                        onClick = { offset = (offset - PageSize).coerceAtLeast(0) },
                         enabled = offset > 0,
                     ) {
                         Text("上一页")
                     }
-                    Text("${offset / 100 + 1} / ${(total + 99) / 100}")
-                    TextButton(onClick = { offset += 100 }, enabled = offset + 100 < total) {
+                    Text("${offset / PageSize + 1} / ${(total + PageSize - 1) / PageSize}")
+                    TextButton(
+                        onClick = { offset += PageSize },
+                        enabled = offset + PageSize < total,
+                    ) {
                         Text("下一页")
                     }
                 }
             }
+        settingsItem("help") {
+            ExpandableHelp(
+                "短信在中枢确认收到之前不会从本机删除；这里和中枢里的收件箱是分开的。号码不确定的短信不会按卡槽猜测归属；“指定接收号码”只在你确认后生效。“放弃上传”会从本机队列删除记录，手机短信应用中的原短信不受影响。"
+            )
+        }
+    }
+}
+
+@Composable
+private fun PendingGroupCard(
+    title: String,
+    detail: String,
+    action: @Composable () -> Unit,
+) {
+    Surface(
+        Modifier.fillMaxWidth().padding(bottom = 4.dp),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            action()
+        }
+    }
+}
+
+@Composable
+private fun PendingRecord(
+    record: LocalPendingMessage,
+    state: PendingState,
+    canAssign: Boolean,
+    canRetry: Boolean,
+    busy: Boolean,
+    onAssign: () -> Unit,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                record.sender,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                formatTimestamp(record.timestamp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            record.body,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            buildString {
+                append(pendingStateLabel(state))
+                append(" · 接收号码 ")
+                append(record.receiver.ifEmpty { "待确认" })
+                if (record.historical) append(" · 历史补齐")
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (canAssign)
+                TextButton(onClick = onAssign, enabled = !busy) { Text("指定号码") }
+            if (canRetry)
+                TextButton(onClick = onRetry, enabled = !busy) { Text("重试") }
+            TextButton(onClick = onDiscard, enabled = !busy) { Text("放弃上传") }
+        }
     }
 }
 
@@ -246,10 +375,7 @@ private fun AssignReceiverDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("系统没有告诉鸿枢这 $count 条短信是哪张卡收到的。仅在你确认后选择，选择后会按该号码上传。")
                 for (sim in sims)
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = selected == sim, onClick = { selected = sim })
                         Text("${sim.label} · ${sim.phone}")
                     }
@@ -262,15 +388,4 @@ private fun AssignReceiverDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
-}
-
-@Composable
-private fun PendingGroup(title: String, detail: String, action: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(detail, style = MaterialTheme.typography.bodySmall)
-            action()
-        }
-    }
 }
