@@ -20,6 +20,23 @@
 | 同一环境 `HONGSHU_SCREENSHOT_DIR=… :app:testDebugUnitTest --tests io.hongshu.app.UiScreenshotTest` | 通过；Robolectric 原生渲染 11 张截图（设置各页、首页、首次使用、对话，含深色），人工检查后修正了短对话被顶到顶部和长号码被截断两处问题 |
 | Go/MySQL、Web/PWA | 本轮无改动，未在本机执行；由 PR CI 承担 |
 | 真机、模拟器、API 28/33/35 设备矩阵、预测性返回手势实际手感、厂商 ROM | 未执行：本机无 adb 设备和模拟器；截图来自 Robolectric，不能代替真机验证 |
+# 2026-10-16 Android 待同步队列解堵（PR-1）
+
+基线 `3ea8242`，分支 `agent/android-queue-unstick`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支，不建 PR、不发版。
+
+修复：未知订阅的广播与已知订阅的 provider 行不配对，留下永远“待确认号码”的副本；发件人 `+86` 等格式差异导致重复上传；
+自动识别取不到号码时删除映射且无法手填；手动模式要求两张卡都填；映射号码无效被误标异常并在读游标中写库；
+异常/待确认记录没有任何出口并阻止更换中枢。新增：广播读取框架 `EXTRA_SUBSCRIPTION_INDEX`/`EXTRA_SLOT_INDEX`；
+维护任务与保存 SIM 时合并遗留副本；待同步页可为待确认记录指定已确认号码、重试异常、二次确认后放弃上传。
+未按卡槽猜测订阅，实时广播与上传路径仍不调用 SIM 服务。无数据库版本变更。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-queue-unstick`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，5m49s；JVM/Robolectric 96 项测试 0 失败（新增 `QueueRepairTest` 9 项、`ProtocolTest` 4 项），lint 无错误 |
+| API 28/33/35 模拟器 instrumentation、真机 | 本机未执行；由推送触发的 CI 承担，未在真实双卡/澎湃 OS 设备验证 |
 
 # 2026-10-16 Android 中枢密码使用密码键盘
 

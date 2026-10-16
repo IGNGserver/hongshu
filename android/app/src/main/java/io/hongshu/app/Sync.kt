@@ -125,7 +125,10 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 config.simRecognitionHealthy = false
             }
             try {
-                Store(applicationContext).use { it.resolvePendingFallback() }
+                Store(applicationContext).use {
+                    it.reconcileUnknownSimCaptures()
+                    it.resolvePendingFallback()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
