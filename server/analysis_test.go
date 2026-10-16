@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/gorilla/websocket"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,6 +51,40 @@ func TestOTP(t *testing.T) {
 				t.Fatalf("expiry %d want %d", expires, want)
 			}
 		})
+	}
+}
+
+func TestAnalysisWebSocketChangesWithoutNewSMS(t *testing.T) {
+	db := testDB(t)
+	a, _ := newApp(db, "http://localhost:8080", "synthetic", "", "")
+	a.wsCheckInterval = 20 * time.Millisecond
+	tx, e := db.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, token, e := insertDevice(context.Background(), tx, "Synthetic", "android", false)
+	if e != nil {
+		tx.Rollback()
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	srv := httptest.NewServer(a.routes("../web"))
+	defer srv.Close()
+	conn, _, e := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/api/ws", http.Header{"Authorization": []string{"Bearer " + token}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer conn.Close()
+	if _, e = db.Exec("UPDATE ai_settings SET revision=revision+1 WHERE id=1"); e != nil {
+		t.Fatal(e)
+	}
+	a.broadcastChange()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var change map[string]any
+	if e = conn.ReadJSON(&change); e != nil || change["type"] != "changed" || change["cursor"] != float64(0) || change["analysis_revision"] != float64(1) {
+		t.Fatal("metadata-only event missing", e, change)
 	}
 }
 

@@ -57,6 +57,16 @@ test('classification updates revalidate older displayed pages without retaining 
   assert.equal(vm.runInContext('state.messages.length',ctx),199);
   assert.equal(vm.runInContext('state.messages.some(m=>m.id===100)',ctx),false);
 });
+test('metadata event during a refresh is coalesced instead of dropping the final classification',async()=>{
+  const ctx=runtime();
+  vm.runInContext(`meCalls=0;state.me.analysis_revision=0;
+    api=async(path)=>{if(path==='/me'){meCalls++;if(meCalls===1)return new Promise(resolve=>resolveHead=resolve);return {cursor:200,epoch:1,analysis_revision:2};}
+      return path==='/devices'?{devices:[]}:path==='/sims'?{sims:[]}:path==='/contacts'?{contacts:{}}:{enabled:true};};
+    refreshInbox=async()=>{};pending=catchUp();catchUp();resolveHead({cursor:200,epoch:1,analysis_revision:1});`,ctx);
+  await vm.runInContext('pending',ctx);
+  assert.equal(vm.runInContext('meCalls',ctx),2);
+  assert.equal(vm.runInContext('state.me.analysis_revision',ctx),2);
+});
 test('a failed refresh stays dirty and is retried on the next otherwise empty poll',async()=>{
   const ctx=runtime();
   vm.runInContext(`api=async(path)=>path==='/me'?{cursor:201,epoch:1}:path==='/devices'?{devices:[]}:path==='/sims'?{sims:[]}:{contacts:{}};refreshes=0;refreshInbox=async()=>{if(++refreshes===1)throw Error('synthetic outage')};`,ctx);

@@ -109,3 +109,15 @@ jobs:
           working-directory: android
           disable-animations: true
           script: ./gradlew --no-daemon --project-cache-dir "$GRADLE_USER_HOME/project-cache" :app:connectedDebugAndroidTest
+      - name: Show isolated instrumented test failure details
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, xml.etree.ElementTree as ET
+          root = pathlib.Path(os.environ['HONGSHU_BUILD_DIR']) / 'app/outputs/androidTest-results'
+          for path in root.rglob('*.xml'):
+              for case in ET.parse(path).iter('testcase'):
+                  for failure in case.findall('failure') + case.findall('error'):
+                      print(case.get('classname'), case.get('name'))
+                      print(failure.text or failure.get('message', ''))
+          PY

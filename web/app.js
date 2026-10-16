@@ -1443,9 +1443,11 @@ function realtime() {
 }
 
 let syncingGeneration = null;
+let resyncGeneration = null;
 async function catchUp() {
   const generation = state.generation;
-  if (syncingGeneration === generation || !state.me) return;
+  if (!state.me) return;
+  if (syncingGeneration === generation) { resyncGeneration = generation; return; }
   syncingGeneration = generation;
   try {
     const me = await api("/me");
@@ -1473,7 +1475,12 @@ async function catchUp() {
       state.inboxDirty = false;
     }
   } finally {
-    if (syncingGeneration === generation) syncingGeneration = null;
+    if (syncingGeneration === generation) {
+      syncingGeneration = null;
+      const again = resyncGeneration === generation;
+      resyncGeneration = null;
+      if (again && generation === state.generation && state.me) await catchUp();
+    }
   }
 }
 

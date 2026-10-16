@@ -54,6 +54,7 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var observed int64 = -1
+	var observedAnalysis int64
 	var lastPing time.Time
 
 	checkChanges := func() bool {
@@ -61,8 +62,8 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		var seq int64
-		var clock int64
-		if a.db.QueryRowContext(r.Context(), "SELECT seq FROM sync_clock WHERE id=1").Scan(&clock) != nil {
+		var clock, analysisRevision int64
+		if a.db.QueryRowContext(r.Context(), "SELECT seq,(SELECT revision FROM ai_settings WHERE id=1) FROM sync_clock WHERE id=1").Scan(&clock, &analysisRevision) != nil {
 			return false
 		}
 		// Include this device's own uploads. Other clients must see them; the source
@@ -71,12 +72,13 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if seq > 0 {
-			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": seq}) != nil {
+		if seq > 0 || analysisRevision != observedAnalysis {
+			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": clock, "analysis_revision": analysisRevision}) != nil {
 				return false
 			}
 		}
 		observed = clock
+		observedAnalysis = analysisRevision
 		return true
 	}
 
