@@ -255,27 +255,38 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 db.setTransactionSuccessful()
                 return false
             }
-            // Only pair two capture interfaces. Never collapse independent provider rows,
-            // unknown SIMs, or synchronized remote messages.
+            // Only pair two capture interfaces. Never collapse independent provider rows or
+            // synchronized remote messages. One side may lack a SIM (ROMs omit the broadcast
+            // subscription extra); it then inherits the other side's SIM instead of staying an
+            // unresolvable duplicate.
             val counterpart =
                 if (providerId == null) "source='provider' AND broadcast_key IS NULL"
                 else "source='broadcast' AND provider_id IS NULL"
             val match =
                 db.rawQuery(
-                        "SELECT key FROM captures WHERE $counterpart AND sender=? AND sub=? AND (sub>=0 OR receiver=?) AND timestamp BETWEEN ? AND ? AND body=? ORDER BY timestamp,key LIMIT 1",
+                        "SELECT key,sender,sub,receiver FROM captures WHERE $counterpart AND body=? AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
                         arrayOf(
-                            m.sender,
-                            m.subscriptionId.toString(),
-                            m.receiver,
+                            m.body,
                             (m.timestamp - 120000).toString(),
                             (m.timestamp + 120000).toString(),
-                            m.body,
+                            m.timestamp.toString(),
                         ),
                     )
                     .use { c ->
-                        if ((m.subscriptionId >= 0 || m.receiver.isNotEmpty()) && c.moveToFirst())
-                            c.getString(0)
-                        else null
+                        var found: CaptureMatch? = null
+                        while (found == null && c.moveToNext()) {
+                            if (
+                                sameSender(c.getString(1), m.sender) &&
+                                    compatibleSims(
+                                        c.getInt(2),
+                                        c.getString(3),
+                                        m.subscriptionId,
+                                        m.receiver,
+                                    )
+                            )
+                                found = CaptureMatch(c.getString(0), c.getInt(2), c.getString(3))
+                        }
+                        found
                     }
             if (match != null) {
                 val values =
@@ -283,7 +294,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         if (providerId == null) put("broadcast_key", broadcastKey)
                         else put("provider_id", providerId)
                     }
-                db.update("captures", values, "key=?", arrayOf(match))
+                db.update("captures", values, "key=?", arrayOf(match.key))
+                if (match.sub < 0 && m.subscriptionId >= 0) inheritSim(db, match.key, m, slot)
                 db.setTransactionSuccessful()
                 return false
             }
@@ -325,6 +337,210 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
         return true
     }
+
+    private data class CaptureMatch(val key: String, val sub: Int, val receiver: String)
+
+    // The SIM-less half of a pair learns the SIM from its counterpart. Rows already
+    // acknowledged by the hub have no outbox entry and are left alone.
+    private fun inheritSim(db: SQLiteDatabase, key: String, m: SmsRecord, slot: Int) {
+        db.update(
+            "captures",
+            ContentValues().apply {
+                put("sub", m.subscriptionId)
+                if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
+            },
+            "key=? AND sub<0",
+            arrayOf(key),
+        )
+        db.update(
+            "outbox",
+            ContentValues().apply {
+                put("sub", m.subscriptionId)
+                if (slot >= 0) put("slot", slot)
+                if (m.receiver.isNotEmpty()) put("receiver", m.receiver)
+            },
+            "key=? AND sub<0",
+            arrayOf(key),
+        )
+        changes.value++
+    }
+
+    // Before pairing accepted a SIM-less side, a broadcast without a subscription extra and
+    // its provider row were kept as two captures: the provider copy uploaded, the broadcast
+    // copy waited forever for a number. Fold such leftovers into their counterpart.
+    fun reconcileUnknownSimCaptures(): Int {
+        val db = writableDatabase
+        val orphans =
+            db.rawQuery(
+                    "SELECT o.key,c.source,c.sender,c.body,c.timestamp FROM outbox o JOIN captures c ON c.key=o.key WHERE o.receiver='' AND o.sub<0 AND ((c.source='broadcast' AND c.provider_id IS NULL) OR (c.source='provider' AND c.broadcast_key IS NULL))",
+                    null,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            add(
+                                listOf(
+                                    c.getString(0),
+                                    c.getString(1),
+                                    c.getString(2),
+                                    c.getString(3),
+                                    c.getLong(4).toString(),
+                                )
+                            )
+                    }
+                }
+        var merged = 0
+        for ((key, source, sender, body, time) in orphans) {
+            val timestamp = time.toLong()
+            val free =
+                if (source == "broadcast") "source='provider' AND broadcast_key IS NULL"
+                else "source='broadcast' AND provider_id IS NULL"
+            db.beginTransaction()
+            try {
+                val target =
+                    db.rawQuery(
+                            "SELECT key,sender FROM captures WHERE $free AND body=? AND (sub>=0 OR receiver<>'') AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
+                            arrayOf(
+                                body,
+                                (timestamp - 120000).toString(),
+                                (timestamp + 120000).toString(),
+                                timestamp.toString(),
+                            ),
+                        )
+                        .use { c ->
+                            var found: String? = null
+                            while (found == null && c.moveToNext())
+                                if (sameSender(c.getString(1), sender)) found = c.getString(0)
+                            found
+                        }
+                if (target != null) {
+                    val identity =
+                        db.rawQuery(
+                                "SELECT broadcast_key,provider_id FROM captures WHERE key=?",
+                                arrayOf(key),
+                            )
+                            .use { c ->
+                                if (!c.moveToFirst()) null
+                                else if (source == "broadcast") c.getString(0)
+                                else c.getLong(1).toString()
+                            }
+                    db.delete("captures", "key=?", arrayOf(key))
+                    db.delete("outbox", "key=?", arrayOf(key))
+                    if (identity != null)
+                        db.update(
+                            "captures",
+                            ContentValues().apply {
+                                if (source == "broadcast") put("broadcast_key", identity)
+                                else put("provider_id", identity.toLong())
+                            },
+                            "key=?",
+                            arrayOf(target),
+                        )
+                    merged++
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+        if (merged > 0) changes.value++
+        return merged
+    }
+
+    // Keys of rows that cannot upload until a receiving number is known.
+    fun unresolvedKeys(): List<String> {
+        val resolver = receiverResolver(allowFallback = false)
+        return readableDatabase
+            .rawQuery("SELECT key,receiver,sub,blocked FROM outbox", null)
+            .use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        val blocked = c.getString(3)
+                        if (
+                            blocked == "sim_not_confirmed" ||
+                                (blocked.isEmpty() &&
+                                    !confirmedNumber(c.getString(1).ifEmpty { resolver(c.getInt(2)) }))
+                        )
+                            add(c.getString(0))
+                    }
+                }
+            }
+    }
+
+    // The user states which card received these messages. Only a confirmed, mapped number
+    // is accepted, so the hub registration that precedes upload covers it.
+    fun assignReceiver(keys: List<String>, sim: SimMapping): Int {
+        require(confirmedNumber(sim.phone)) { "接收号码无效" }
+        val db = writableDatabase
+        var count = 0
+        db.beginTransaction()
+        try {
+            for (key in keys) {
+                val updated =
+                    db.update(
+                        "outbox",
+                        ContentValues().apply {
+                            put("receiver", sim.phone)
+                            put("sub", sim.sub)
+                            put("slot", sim.slot)
+                            put("blocked", "")
+                        },
+                        "key=? AND blocked<>'invalid_message'",
+                        arrayOf(key),
+                    )
+                if (updated > 0) {
+                    db.update(
+                        "captures",
+                        ContentValues().apply {
+                            put("receiver", sim.phone)
+                            put("sub", sim.sub)
+                        },
+                        "key=?",
+                        arrayOf(key),
+                    )
+                    count += updated
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+        return count
+    }
+
+    // Removes rows from the upload queue only. The capture ledger keeps them so a later
+    // inbox scan cannot queue the same SMS again.
+    fun discard(keys: List<String>): Int {
+        val db = writableDatabase
+        var count = 0
+        db.beginTransaction()
+        try {
+            for (key in keys) count += db.delete("outbox", "key=?", arrayOf(key))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+        return count
+    }
+
+    fun retryInvalid(keys: List<String>? = null) {
+        if (keys == null)
+            writableDatabase.execSQL("UPDATE outbox SET blocked='' WHERE blocked='invalid_message'")
+        else
+            for (key in keys)
+                writableDatabase.execSQL(
+                    "UPDATE outbox SET blocked='' WHERE key=? AND blocked='invalid_message'",
+                    arrayOf(key),
+                )
+        changes.value++
+    }
+
+    fun invalidKeys(): List<String> =
+        readableDatabase
+            .rawQuery("SELECT key FROM outbox WHERE blocked='invalid_message'", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
 
     // Require sender evidence, compatible SIM snapshots and one unique candidate.
     // An unresolved contact title must never be matched by body alone.
@@ -485,13 +701,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun updateSimMappings(active: List<SimMapping>, automatic: Boolean) {
         val db = writableDatabase
         db.beginTransaction()
         try {
+            // An unconfirmed number means "not mapped" in both modes: automatic recognition
+            // lost it, or the user left that card blank on purpose.
             for (sim in active) {
                 if (confirmedNumber(sim.phone)) saveSim(sim)
-                else if (automatic) db.delete("sims", "sub=?", arrayOf(sim.sub.toString()))
+                else db.delete("sims", "sub=?", arrayOf(sim.sub.toString()))
             }
             // Retry only SIM failures; malformed messages must not be retried indefinitely.
             db.execSQL("UPDATE outbox SET blocked='' WHERE blocked='sim_not_confirmed'")
@@ -610,6 +829,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val lane =
             if (historical == null) ""
             else if (historical) " AND historical<>0" else " AND historical=0"
+        val invalid = mutableListOf<String>()
         while (result.size < limit) {
             var scanned = 0
             readableDatabase
@@ -632,7 +852,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                                     fallback,
                                 )
                             }
-                        if (phone.isNotEmpty()) {
+                        // A mapping that is not a confirmed number is a SIM problem, not a bad
+                        // message: leave the row waiting for a number instead of blocking it.
+                        if (confirmedNumber(phone)) {
                             val m =
                                 SmsRecord(
                                     phone,
@@ -646,7 +868,6 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                             if (
                                 m.body.isEmpty() ||
                                     m.sender.isEmpty() ||
-                                    !confirmedNumber(phone) ||
                                     m.body.toByteArray().size > 64000 ||
                                     m.sender.toByteArray().size > 100 ||
                                     m.timestamp < 0 ||
@@ -655,16 +876,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                                     m.sender.contains('\u0000') ||
                                     rawJsonSize > 900000
                             )
-                                writableDatabase.execSQL(
-                                    "UPDATE outbox SET blocked='invalid_message' WHERE key=?",
-                                    arrayOf(c.getString(0)),
-                                )
+                                invalid.add(c.getString(0))
                             else result.add(c.getString(0) to m)
                         }
                     }
                 }
             if (scanned < 100) break
         }
+        // Never write while the read cursor is open.
+        for (key in invalid) block(key, "invalid_message")
         return result
     }
 
@@ -696,7 +916,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     when {
                         rows.getString(2) == "invalid_message" -> invalid += count
                         rows.getString(2).isNotEmpty() ||
-                            (rows.getString(0).isEmpty() && resolver(rows.getInt(1)).isEmpty()) ->
+                            !confirmedNumber(rows.getString(0).ifEmpty { resolver(rows.getInt(1)) }) ->
                             needsSim += count
                         else -> ready += count
                     }

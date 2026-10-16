@@ -53,12 +53,18 @@ fun saveSimSelection(context: Context, automatic: Boolean, mappings: List<SimMap
     synchronized(simLock) {
         val config = Config(context)
         synchronized(identityLock) {
-            Store(context).use { store -> store.updateSimMappings(mappings, automatic) }
+            Store(context).use { store ->
+                store.updateSimMappings(mappings, automatic)
+                store.reconcileUnknownSimCaptures()
+            }
             config.automaticSim = automatic
             config.simRecognitionHealthy = true
             config.singleSimSubscription =
                 mappings.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
         }
+        // The user is present and SIM services are allowed here; resolve SIM-less rows now
+        // instead of waiting for the next maintenance run.
+        Store(context).use { it.resolvePendingFallback() }
     }
 
 fun refreshAutomaticSims(context: Context) =
@@ -71,14 +77,18 @@ fun refreshAutomaticSims(context: Context) =
             config.singleSimSubscription = -1
             return@synchronized
         }
-        val active = scanSims(context)
+        val scanned = scanSims(context)
         synchronized(identityLock) {
             if (config.captureGeneration != generation) return@synchronized
-            Store(context).use { store ->
-                if (active.any { next -> store.sims().find { it.sub == next.sub } != next }) {
-                    store.updateSimMappings(active, automatic = true)
+            val active =
+                Store(context).use { store ->
+                    val stored = store.sims()
+                    val merged = mergeAutomaticSims(stored, scanned)
+                    if (merged.any { next -> stored.find { it.sub == next.sub } != next }) {
+                        store.updateSimMappings(merged, automatic = true)
+                    }
+                    merged
                 }
-            }
             config.singleSimSubscription =
                 active.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
             config.simRecognitionHealthy = true

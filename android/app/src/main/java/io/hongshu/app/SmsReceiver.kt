@@ -28,8 +28,17 @@ internal fun parseIncomingSms(intent: Intent): IncomingSms? {
         first.displayOriginatingAddress ?: first.originatingAddress ?: "未知发件人",
         combineParts(parts.map { it.messageBody ?: "" }),
         first.timestampMillis,
-        hint(listOf("subscription", "subscription_id", "sub_id")),
-        hint(listOf("slot", "slot_id", "simSlot")),
+        // Framework extras first (SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX /
+        // EXTRA_SLOT_INDEX), then the legacy and vendor spellings.
+        hint(
+            listOf(
+                "android.telephony.extra.SUBSCRIPTION_INDEX",
+                "subscription",
+                "subscription_id",
+                "sub_id",
+            )
+        ),
+        hint(listOf("android.telephony.extra.SLOT_INDEX", "slot", "slot_id", "simSlot")),
     )
 }
 

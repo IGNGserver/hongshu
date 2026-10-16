@@ -124,4 +124,54 @@ class ProtocolTest {
         assertTrue(epochReset(true, 1, 2))
         assertTrue(epochReset(true, 0, 1))
     }
+
+    @Test
+    fun manualModeAllowsOneBlankCardButNotAllBlank() {
+        val active = listOf(SimMapping(17, 0, "", ""), SimMapping(42, 1, "", ""))
+        val result = manualSimMappings(active, listOf("13800000000", " "))
+        assertEquals("13800000000", result[0].phone)
+        assertEquals("", result[1].phone)
+        for (phones in listOf(listOf("", ""), listOf("abc", ""))) {
+            try {
+                manualSimMappings(active, phones)
+                fail("invalid manual mapping accepted")
+            } catch (_: IllegalStateException) {}
+        }
+    }
+
+    @Test
+    fun automaticModeKeepsTypedNumberOnlyForTheSameSubscription() {
+        val stored = listOf(SimMapping(17, 0, "13800000000", "SIM1"))
+        val active = listOf(SimMapping(17, 1, "", "SIM2"), SimMapping(42, 0, "", "SIM1"))
+        val merged = mergeAutomaticSims(stored, active)
+        assertEquals(SimMapping(17, 1, "13800000000", "SIM2"), merged[0])
+        assertEquals("", merged[1].phone)
+        val recognized = listOf(SimMapping(17, 0, "13900000000", "SIM1"))
+        assertEquals(recognized, mergeAutomaticSims(stored, recognized))
+        val typed = automaticSimMappings(active, listOf("13700000000", "13600000000"))
+        assertEquals("13600000000", typed[0].phone)
+        assertEquals("13700000000", typed[1].phone)
+        assertEquals(recognized, automaticSimMappings(recognized, listOf("13700000000", "")))
+    }
+
+    @Test
+    fun senderNormalizationOnlyRemovesPresentation() {
+        assertTrue(sameSender("+86 138-0000-0000", "13800000000"))
+        assertTrue(sameSender("008610086", "10086"))
+        assertTrue(sameSender("8613800000000", "13800000000"))
+        assertFalse(sameSender("10086", "10010"))
+        assertFalse(sameSender("86100", "100"))
+        assertTrue(sameSender("中国移动", "中国移动"))
+    }
+
+    @Test
+    fun simCompatibilityNeedsOneKnownSide() {
+        assertTrue(compatibleSims(7, "", -1, ""))
+        assertTrue(compatibleSims(-1, "", 7, "+1234567890"))
+        assertFalse(compatibleSims(7, "", 8, ""))
+        assertTrue(compatibleSims(7, "+1234567890", 7, "+9876543210"))
+        assertFalse(compatibleSims(-1, "", -1, ""))
+        assertTrue(compatibleSims(-1, "+1234567890", -1, "+1234567890"))
+        assertFalse(compatibleSims(7, "+1234567890", -1, "+1999999999"))
+    }
 }
