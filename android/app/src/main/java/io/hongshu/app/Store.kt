@@ -12,6 +12,14 @@ import org.json.JSONObject
 // Notification post time and SMS provider/PDU time differ by seconds, rarely minutes.
 internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
 
+// A notification titled with a contact name waits this long for the broadcast or inbox copy to
+// supply the number; otherwise the hub would file it as a separate, name-keyed conversation.
+internal const val NOTIFICATION_NAME_HOLD = 150_000L
+
+// SQL predicate (one `?`: the hold boundary) for notification rows still waiting for a number.
+private const val HELD_NOTIFICATION =
+    "timestamp>CAST(? AS INTEGER) AND sender GLOB '*[^0-9+]*' AND EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='notification')"
+
 data class CachedMessage(
     val id: Long,
     val deviceId: String,
@@ -21,6 +29,8 @@ data class CachedMessage(
     val timestamp: Long,
     val contact: String,
     val historical: Boolean = false,
+    // Captured on this phone and not yet acknowledged by the hub; id is -(outbox rowid).
+    val local: Boolean = false,
 )
 
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
@@ -810,6 +820,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         allowFallback: Boolean = true,
         historical: Boolean? = null,
         limit: Int = 100,
+        now: Long = System.currentTimeMillis(),
     ): List<Pair<String, SmsRecord>> {
         val mappings =
             if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims()
@@ -834,8 +845,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             var scanned = 0
             readableDatabase
                 .rawQuery(
-                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible)$lane AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
-                    (subs + listOf(lastTime.toString(), lastKey)).toTypedArray(),
+                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible)$lane AND NOT ($HELD_NOTIFICATION) AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
+                    (subs + listOf((now - NOTIFICATION_NAME_HOLD).toString(), lastTime.toString(), lastKey))
+                        .toTypedArray(),
                 )
                 .use { c ->
                     while (result.size < limit && c.moveToNext()) {
@@ -887,6 +899,18 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         for (key in invalid) block(key, "invalid_message")
         return result
     }
+
+    // When a held notification row becomes uploadable, or null when none is held.
+    fun nextNotificationRelease(now: Long = System.currentTimeMillis()): Long? =
+        readableDatabase
+            .rawQuery(
+                "SELECT MAX(timestamp) FROM outbox WHERE blocked='' AND $HELD_NOTIFICATION",
+                arrayOf((now - NOTIFICATION_NAME_HOLD).toString()),
+            )
+            .use { c ->
+                if (!c.moveToFirst() || c.isNull(0)) null
+                else (c.getLong(0) + NOTIFICATION_NAME_HOLD - now).coerceAtLeast(1000)
+            }
 
     fun uploadCandidates(batch: Int): List<Pair<String, SmsRecord>> {
         val historyFirst = batch % 5 == 4
@@ -1185,6 +1209,69 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 )
             }
         }
+    }
+
+    // Captured SMS still waiting for the hub, shaped like synced messages so the conversation
+    // views show them immediately. After the ACK the synced copy replaces them.
+    fun localMessages(sender: String = "", q: String = "", sim: String = ""): List<CachedMessage> {
+        val resolver = receiverResolver(allowFallback = false)
+        var where = "1=1"
+        val args = mutableListOf<String>()
+        if (sender.isNotEmpty()) {
+            where += " AND o.sender=?"
+            args.add(sender)
+        }
+        if (q.isNotEmpty()) {
+            where +=
+                " AND (instr(lower(o.body),lower(?))>0 OR instr(lower(o.sender),lower(?))>0 OR instr(lower(COALESCE(n.name,'')),lower(?))>0)"
+            args.addAll(listOf(q, q, q))
+        }
+        return readableDatabase
+            .rawQuery(
+                "SELECT o.rowid,o.receiver,o.sender,o.body,o.timestamp,o.sub,o.historical,COALESCE(n.name,'') FROM outbox o LEFT JOIN contact_snapshot n ON n.phone=o.sender WHERE $where ORDER BY o.timestamp DESC LIMIT 500",
+                args.toTypedArray(),
+            )
+            .use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        val receiver = c.getString(1).ifEmpty { resolver(c.getInt(5)) }
+                        if (sim.isNotEmpty() && receiver != sim) continue
+                        add(
+                            CachedMessage(
+                                -c.getLong(0),
+                                config.deviceId,
+                                receiver,
+                                c.getString(2),
+                                c.getString(3),
+                                c.getLong(4),
+                                c.getString(7),
+                                c.getInt(6) != 0,
+                                local = true,
+                            )
+                        )
+                    }
+                }
+            }
+    }
+
+    fun messagesWithLocal(
+        sender: String = "",
+        q: String = "",
+        sim: String = "",
+        limit: Int = 200,
+    ): List<CachedMessage> {
+        val remote = messages(sender, q, sim, limit = limit)
+        val local = localMessages(sender, q, sim)
+        if (local.isEmpty()) return remote
+        val newest = compareByDescending<CachedMessage> { it.timestamp }.thenByDescending { it.id }
+        if (sender.isNotEmpty()) return (remote + local).sortedWith(newest).take(limit)
+        // Conversation list: one head per sender and receiver, whichever copy is newer.
+        return (remote + local)
+            .groupBy { it.sender to it.receiver }
+            .values
+            .map { it.sortedWith(newest).first() }
+            .sortedWith(newest)
+            .take(limit)
     }
 
     fun resetForNewIdentity(

@@ -196,7 +196,7 @@ private fun SettingsMainOverview(
                         onNavigate(SettingsPage.Sync)
                     }
                     HorizontalDivider()
-                    SheetActionRow(Icons.Default.Outbox, "本机待同步短信") {
+                    SheetActionRow(Icons.Default.Outbox, "未上传到中枢的短信") {
                         onNavigate(SettingsPage.Pending)
                     }
                     HorizontalDivider()
@@ -830,8 +830,8 @@ private fun SyncControlSubPage(
         item { StatusRow("新短信收件箱补漏", recoverySmsStatus(activity)) }
         item { StatusRow("历史短信读取", historySmsStatus(activity)) }
         item { StatusRow("短信通知兜底", notificationCaptureStatus(activity)) }
-        item { StatusRow("本地队列", queueCounts.label()) }
-        item { FilledTonalButton(onClick = onPending) { Text("查看本机待同步短信") } }
+        item { StatusRow("本机未上传", queueCounts.label()) }
+        item { FilledTonalButton(onClick = onPending) { Text("查看未上传的短信") } }
         item { StatusRow("中枢同步状态", smsSyncStatus(activity, repo)) }
         item { StatusRow("后台保活状态", keepAliveStatus(activity, c, health)) }
         item { StatusRow("通知接收状态", notificationStatus(activity, c, health)) }

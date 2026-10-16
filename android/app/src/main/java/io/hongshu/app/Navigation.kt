@@ -39,7 +39,7 @@ enum class SettingsPage(val title: String) {
     Hub("管理中枢与凭据"),
     Sims("SIM 卡与号码识别"),
     Sync("实时广播与同步"),
-    Pending("本机待同步短信"),
+    Pending("未上传到中枢的短信"),
     About("关于鸿枢"),
 }
 

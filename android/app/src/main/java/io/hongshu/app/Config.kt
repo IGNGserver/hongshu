@@ -225,6 +225,19 @@ class Config(context: Context) {
             prefs.edit().putBoolean("upload_patch_pending", value).commit()
         }
 
+    var lastSyncAttempt: Long
+        get() = prefs.getLong("last_sync_attempt", 0)
+        set(value) {
+            prefs.edit().putLong("last_sync_attempt", value).apply()
+        }
+
+    // Empty after a successful sync; otherwise the reason the last attempt failed.
+    var lastSyncError: String
+        get() = prefs.getString("last_sync_error", "")!!
+        set(value) {
+            prefs.edit().putString("last_sync_error", value).apply()
+        }
+
     var contactsHealthy: Boolean
         get() = prefs.getBoolean("contacts_healthy", true)
         set(value) {
