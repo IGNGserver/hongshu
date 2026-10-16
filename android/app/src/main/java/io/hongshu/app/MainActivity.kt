@@ -198,13 +198,19 @@ fun HongshuUI(activity: MainActivity) {
 
     LaunchedEffect(changes, simFilter, messageLimit) {
         loadedHomeMessages =
-            withContext(Dispatchers.IO) { repo.store.messagesWithLocal("", "", simFilter, limit = messageLimit) }
+            withContext(Dispatchers.IO) {
+                repo.store.readUnlessClosed(emptyList()) {
+                    messagesWithLocal("", "", simFilter, limit = messageLimit)
+                }
+            }
     }
 
     LaunchedEffect(changes, searchQuery, simFilter, messageLimit) {
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
-                repo.store.messagesWithLocal("", searchQuery, simFilter, limit = messageLimit)
+                repo.store.readUnlessClosed(emptyList()) {
+                    messagesWithLocal("", searchQuery, simFilter, limit = messageLimit)
+                }
             }
     }
 
@@ -212,12 +218,14 @@ fun HongshuUI(activity: MainActivity) {
         produceState(HomeLists(), changes) {
             value =
                 withContext(Dispatchers.IO) {
-                    val sims = repo.store.sims()
-                    HomeLists(
-                        receivers = (sims.map { it.phone } + repo.store.receivers()).filter { it.isNotEmpty() }.distinct(),
-                        sims = sims,
-                        pending = repo.store.pendingCounts(),
-                    )
+                    repo.store.readUnlessClosed(HomeLists()) {
+                        val sims = sims()
+                        HomeLists(
+                            receivers = (sims.map { it.phone } + receivers()).filter { it.isNotEmpty() }.distinct(),
+                            sims = sims,
+                            pending = pendingCounts(),
+                        )
+                    }
                 }
         }
     val facts =

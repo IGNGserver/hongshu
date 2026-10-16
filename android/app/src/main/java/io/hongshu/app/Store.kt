@@ -44,6 +44,25 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val changes = MutableStateFlow(0L)
     }
 
+    @Volatile private var closed = false
+
+    // The UI closes its store when the composition leaves, while a read started on the IO
+    // thread may still be running. Such a read has no screen left to update, so it is
+    // dropped instead of crashing the process on a closed connection pool.
+    fun <T> readUnlessClosed(fallback: T, block: Store.() -> T): T {
+        if (closed) return fallback
+        return try {
+            block()
+        } catch (e: IllegalStateException) {
+            if (closed) fallback else throw e
+        }
+    }
+
+    override fun close() {
+        closed = true
+        super.close()
+    }
+
     // The broadcast receiver, notification listener, workers and UI each open their own
     // connection to this file. WAL lets readers proceed during a write, and a longer busy
     // timeout on the write (primary) connection makes concurrent writers wait instead of
