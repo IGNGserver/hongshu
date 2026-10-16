@@ -1,3 +1,23 @@
+# 2026-10-16 Android 上传时效（PR-2）
+
+基于 `agent/android-queue-unstick`（`f358f98`），分支 `agent/android-upload-timeliness`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
+
+修复：退避中的同步任务吞掉新短信与打开应用的触发；WorkManager 退避最长翻倍到 5 小时；联系人刷新失败让成功的上传进入退避；
+历史分页用失败重试续跑，拖住同一维护链上的新短信补漏；每批上传前重复登记 SIM；本机上传开关 PATCH 失败或同中枢重新登录后，
+中枢 `upload=false` 被误当成管理员禁用且永不自愈，重新登录还关闭本机采集。
+新增：紧急触发（新短信、补漏观察者、通知兜底、打开应用、中枢推送、用户操作）以加急任务上传并替换排队中的退避任务，
+不取消运行中的同步；第 5 次失败起固定 15 分钟重试；联系人失败仅标记；分页成功后 10 秒追加下一页；
+SIM 登记按设备 ID 缓存，`sim_not_confirmed` 时对缓存号码重登一次；上传开关“待确认”标志与同步时自动重发 PATCH。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-upload-timeliness`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，1m32s；100 项 JVM/Robolectric 测试 0 失败（新增 `SyncReconcileTest` 2 项、调度 2 项），lint 0 错误 |
+| `NetworkTest` 联系人故障与 SIM 登记次数断言 | 已按新语义更新（同步成功、联系人标记不健康；第二轮不重复 PUT），由 CI 模拟器执行 |
+| API 28/33/35 模拟器、真机、Android 12 以下加急前台通知 | 本机未执行；模拟器由推送 CI 承担，真机未验证 |
+
 # 2026-10-16 Android 待同步队列解堵（PR-1）
 
 基线 `3ea8242`，分支 `agent/android-queue-unstick`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支，不建 PR、不发版。

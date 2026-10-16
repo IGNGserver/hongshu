@@ -567,6 +567,7 @@ private fun SyncControlSubPage(
                 onAction {
                     check(!enabled || c.token.isNotEmpty()) { "请先连接中枢" }
                     c.upload = enabled
+                    c.uploadPatchPending = true
                     if (enabled)
                         withContext(Dispatchers.Main) {
                             onRequestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS)) {
@@ -580,11 +581,12 @@ private fun SyncControlSubPage(
                             JSONObject().put("upload", enabled),
                         )
                         c.serverUploadAllowed = enabled
+                        c.uploadPatchPending = false
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
                         c.syncHealthy = false
-                        c.status = "本机采集设置已保存 · 中枢设置未确认，请联网后重试"
+                        c.status = "本机采集设置已保存 · 中枢设置未确认，联网后自动重试"
                     }
                     syncNow(activity, manual = true)
                     if (enabled) "实时采集已开启；历史读取单独设置" else "采集已关闭，已有待传记录保留"

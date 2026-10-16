@@ -11,7 +11,6 @@ import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -49,17 +48,43 @@ fun channels(context: Context) {
 private val syncSchedulingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private val schedulingLock = Any()
 
+// `manual` marks triggers someone is waiting for: a user action, a newly captured SMS or a
+// hub change notice. They replace work parked in failure backoff or a delayed retry instead
+// of waiting behind it; a running worker is never cancelled.
 internal fun syncWorkPolicy(
     pending: List<Pair<WorkInfo.State, Int>>,
     manual: Boolean,
 ): ExistingWorkPolicy? {
     val active = pending.filterNot { it.first.isFinished }
-    if (manual && active.any { it.first == WorkInfo.State.ENQUEUED && it.second > 0 })
+    val running = active.any { it.first == WorkInfo.State.RUNNING }
+    if (manual && !running && active.any { it.first == WorkInfo.State.ENQUEUED })
         return ExistingWorkPolicy.REPLACE
     // One successor covers arrivals after the running worker has read its last batch.
     if (active.any { it.first != WorkInfo.State.RUNNING }) return null
     return ExistingWorkPolicy.APPEND_OR_REPLACE
 }
+
+internal const val SYNC_RETRY_ATTEMPTS = 4
+internal const val SYNC_RETRY_CEILING_MS = 15 * 60 * 1000L
+
+// WorkManager backoff doubles up to five hours. After a few quick retries, keep retrying at a
+// fixed ceiling instead; 0 means "let WorkManager back off".
+internal fun syncRetryDelay(runAttemptCount: Int): Long =
+    if (runAttemptCount < SYNC_RETRY_ATTEMPTS) 0L else SYNC_RETRY_CEILING_MS
+
+private fun syncRequest(urgent: Boolean, delayMillis: Long = 0): OneTimeWorkRequest =
+    OneTimeWorkRequestBuilder<SyncWorker>()
+        .setConstraints(
+            Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        )
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+        .apply {
+            // Expedited work cannot be delayed; quota exhaustion falls back to normal work.
+            if (urgent && delayMillis == 0L)
+                setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            if (delayMillis > 0) setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+        }
+        .build()
 
 fun syncNow(context: Context, manual: Boolean = false): Deferred<Unit> {
     val app = context.applicationContext
@@ -75,18 +100,7 @@ fun syncNow(context: Context, manual: Boolean = false): Deferred<Unit> {
                 syncWorkPolicy(pending.map { it.state to it.runAttemptCount }, manual)
                     ?: return@synchronized
             manager
-                .enqueueUniqueWork(
-                    "hongshu-sync",
-                    policy,
-                    OneTimeWorkRequestBuilder<SyncWorker>()
-                        .setConstraints(
-                            Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.CONNECTED)
-                                .build()
-                        )
-                        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-                        .build(),
-                )
+                .enqueueUniqueWork("hongshu-sync", policy, syncRequest(manual))
                 .result
                 .get()
             Unit
@@ -145,17 +159,19 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             Store(applicationContext).use {
                 if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
             }
+            // Paging through a large inbox is progress, not failure: a retry would back off
+            // exponentially and hold the shared capture chain (and new-SMS recovery) for hours.
             if (
                 config.upload &&
                     ((config.historyEnabled && config.inboxScanPending) ||
                         (config.recoveryEnabled && config.recoveryPending))
             )
-                Result.retry()
-            else Result.success()
+                enqueueCaptureContinuation(applicationContext)
+            Result.success()
         }
 }
 
-private fun enqueueSyncOnly(context: Context) =
+private fun enqueueSyncOnly(context: Context, delayMillis: Long = 0) =
     synchronized(schedulingLock) {
         val manager = WorkManager.getInstance(context)
         val pending =
@@ -165,19 +181,28 @@ private fun enqueueSyncOnly(context: Context) =
             syncWorkPolicy(pending.map { it.state to it.runAttemptCount }, manual = false)
                 ?: return@synchronized
         manager
+            .enqueueUniqueWork("hongshu-sync", policy, syncRequest(false, delayMillis))
+            .result
+            .get()
+    }
+
+// Called from inside a running worker: append a delayed successor to the same chain.
+private fun enqueueCaptureContinuation(context: Context) =
+    synchronized(schedulingLock) {
+        WorkManager.getInstance(context)
             .enqueueUniqueWork(
-                "hongshu-sync",
-                policy,
-                OneTimeWorkRequestBuilder<SyncWorker>()
-                    .setConstraints(
-                        Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-                    )
+                "hongshu-capture",
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                OneTimeWorkRequestBuilder<CaptureWorker>()
+                    .setInitialDelay(CAPTURE_CONTINUATION_DELAY_MS, TimeUnit.MILLISECONDS)
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                     .build(),
             )
             .result
             .get()
     }
+
+internal const val CAPTURE_CONTINUATION_DELAY_MS = 10_000L
 
 fun schedule(context: Context) {
     WorkManager.getInstance(context)
@@ -225,9 +250,26 @@ class BootReceiver : android.content.BroadcastReceiver() {
     }
 }
 
-internal class ContactsRefreshException : IOException("联系人刷新失败，保留缓存并将重试")
-
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    // Expedited work runs as a foreground service before Android 12 and needs a notification.
+    override suspend fun getForegroundInfo(): ForegroundInfo =
+        ForegroundInfo(
+            3,
+            NotificationCompat.Builder(applicationContext, "connection")
+                .setSmallIcon(R.drawable.ic_hongshu)
+                .setContentTitle("鸿枢 · 正在同步短信")
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .build(),
+        )
+
+    private fun retry(): Result {
+        val delay = syncRetryDelay(runAttemptCount)
+        if (delay == 0L) return Result.retry()
+        enqueueSyncOnly(applicationContext, delay)
+        return Result.success()
+    }
+
     override suspend fun doWork(): Result {
         val config = Config(applicationContext)
         if (config.token.isEmpty()) return Result.success()
@@ -236,18 +278,14 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             Result.success()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: ContactsRefreshException) {
-            config.syncHealthy = false
-            config.status = e.message ?: "联系人刷新失败，保留缓存并将重试"
-            Result.retry()
         } catch (e: ApiException) {
             config.syncHealthy = false
             config.status = e.message ?: "同步失败"
-            if (e.status == 401) Result.failure() else Result.retry()
+            if (e.status == 401) Result.failure() else retry()
         } catch (_: Exception) {
             config.syncHealthy = false
             config.status = "同步失败：网络、协议或本地存储；将重试"
-            Result.retry()
+            retry()
         }
     }
 }
@@ -265,7 +303,8 @@ object SyncEngine {
                     if (c.token.isEmpty()) return@withContext true
                     val session = repo.api.request("/me")
                     val me = session.getJSONObject("device")
-                    c.serverUploadAllowed = me.getBoolean("upload")
+                    val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
+                    c.serverUploadAllowed = serverUpload
                     if (me.has("name")) c.deviceName = me.getString("name")
                     if (store.captureSince() == 0L) {
                         store.initializeCaptureSince(me.getLong("created_at"))
@@ -279,19 +318,9 @@ object SyncEngine {
                     // Local capture remains independent; server can deny upload without
                     // deleting
                     // its queue.
-                    if (c.upload && me.getBoolean("upload")) {
-                        val registered = mutableSetOf<Pair<String, Int>>()
-                        for (sim in store.sims()) {
-                            repo.api.request(
-                                "/sims",
-                                "PUT",
-                                JSONObject()
-                                    .put("phone", sim.phone)
-                                    .put("label", sim.label)
-                                    .put("subscription_id", sim.sub),
-                            )
-                            registered.add(sim.phone to sim.sub)
-                        }
+                    if (c.upload && serverUpload) {
+                        val registrations = SimRegistrations(repo.api, c)
+                        for (sim in store.sims()) registrations.ensure(sim.phone, sim.label, sim.sub)
                         for (batch in 0 until 20) {
                             if (!c.upload || !c.serverUploadAllowed) break
                             val candidates = store.uploadCandidates(batch)
@@ -305,24 +334,13 @@ object SyncEngine {
                                 )
                             if (pending.isEmpty()) break
                             // Queued captures retain the number used before an offline SIM
-                            // change.
-                            // Register those snapshots too; never rewrite them to the new
-                            // number.
+                            // change. Register those snapshots too; never rewrite them to the
+                            // new number.
                             for (message in
                                 pending
                                     .map { it.second }
                                     .distinctBy { it.receiver to it.subscriptionId }) {
-                                if ((message.receiver to message.subscriptionId) in registered)
-                                    continue
-                                repo.api.request(
-                                    "/sims",
-                                    "PUT",
-                                    JSONObject()
-                                        .put("phone", message.receiver)
-                                        .put("label", "SIM")
-                                        .put("subscription_id", message.subscriptionId),
-                                )
-                                registered.add(message.receiver to message.subscriptionId)
+                                registrations.ensure(message.receiver, "SIM", message.subscriptionId)
                             }
                             uploadPending(
                                 repo.api,
@@ -330,6 +348,11 @@ object SyncEngine {
                                 pending,
                                 enabled = { c.upload && c.serverUploadAllowed },
                             )
+                            // A cached registration the hub no longer knows (restored database,
+                            // removed SIM) is re-sent once; a fresh rejection stays blocked.
+                            registrations.forgetRejected(store.simRejectedReceivers())
+                                .takeIf { it.isNotEmpty() }
+                                ?.let { store.releaseSimRejections(it) }
                         }
                     }
                     val contactsHealthy =
@@ -346,6 +369,9 @@ object SyncEngine {
                         } catch (_: Exception) {
                             false
                         }
+                    // Contact names are cosmetic: a failure keeps the cached names and never
+                    // turns an otherwise successful upload/download into a failed sync.
+                    c.contactsHealthy = contactsHealthy
                     val pairedAt = me.optLong("created_at")
                     for (page in 0 until 100) {
                         val data =
@@ -375,7 +401,7 @@ object SyncEngine {
                             store.acknowledgeNotification(pendingNotice)
                         if (!data.getBoolean("more")) {
                             c.lastSync = System.currentTimeMillis()
-                            c.syncHealthy = contactsHealthy
+                            c.syncHealthy = true
                             if (c.captureFailure == CaptureFailure.SCHEDULING)
                                 c.captureFailure = CaptureFailure.NONE
                             c.status =
@@ -384,14 +410,13 @@ object SyncEngine {
                                 else if (store.pendingCount() > 0)
                                     "已同步 · ${store.pendingCounts().label()}"
                                 else "同步完成"
-                            if (!contactsHealthy) throw ContactsRefreshException()
+                            if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
                             // Successful bounded work gets a successor, not failure backoff.
                             return@withContext !(c.upload &&
-                                (me.getBoolean("upload") &&
+                                (serverUpload &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
                     }
-                    if (!contactsHealthy) throw ContactsRefreshException()
                     false
                 } finally {
                     store.close()
@@ -399,6 +424,67 @@ object SyncEngine {
                 }
             }
         }
+}
+
+// The hub keeps its own copy of the upload switch. A toggle that never reached it (offline,
+// or a re-login that created a fresh hub device) is re-sent; otherwise the hub's value is an
+// administrator's decision and wins.
+internal fun reconcileUploadSwitch(api: Api, c: Config, server: Boolean): Boolean {
+    if (!c.uploadPatchPending) return server
+    if (server == c.upload) {
+        c.uploadPatchPending = false
+        return server
+    }
+    return try {
+        api.request("/devices/${c.deviceId}", "PATCH", JSONObject().put("upload", c.upload))
+        c.uploadPatchPending = false
+        c.upload
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ApiException) {
+        if (e.status == 401) throw e
+        server
+    } catch (_: Exception) {
+        server
+    }
+}
+
+internal fun simRegistrationKey(deviceId: String, phone: String, label: String, sub: Int) =
+    "$deviceId\u0000$phone\u0000$sub\u0000$label"
+
+// Registers each number once per hub device instead of before every batch, remembering what
+// the hub accepted across runs.
+internal class SimRegistrations(private val api: Api, private val c: Config) {
+    private val cached = c.registeredSims.toMutableSet()
+    private val sent = mutableSetOf<String>()
+    private val reused = mutableMapOf<String, String>()
+
+    fun ensure(phone: String, label: String, sub: Int) {
+        val key = simRegistrationKey(c.deviceId, phone, label, sub)
+        if (key in sent) return
+        if (key in cached) {
+            reused[key] = phone
+            return
+        }
+        api.request(
+            "/sims",
+            "PUT",
+            JSONObject().put("phone", phone).put("label", label).put("subscription_id", sub),
+        )
+        sent += key
+        cached += key
+        c.registeredSims = cached
+    }
+
+    // Returns receivers to release for another attempt within this run.
+    fun forgetRejected(receivers: Set<String>): Set<String> {
+        val stale = reused.filterValues { it in receivers }
+        if (stale.isEmpty()) return emptySet()
+        cached -= stale.keys
+        stale.keys.forEach { reused.remove(it) }
+        c.registeredSims = cached
+        return stale.values.toSet()
+    }
 }
 
 fun notifyMessage(context: Context): Boolean {

@@ -185,7 +185,7 @@ class SmsNotificationListener : NotificationListenerService() {
         executor.execute {
             runCatching {
                 val resolved = messages.map { it.copy(sender = notificationSender(app, it.sender)) }
-                if (persistNotificationSms(app, resolved, generation) > 0) syncNow(app)
+                if (persistNotificationSms(app, resolved, generation) > 0) syncNow(app, manual = true)
             }
         }
     }

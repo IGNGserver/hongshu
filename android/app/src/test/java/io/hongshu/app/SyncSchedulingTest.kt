@@ -33,15 +33,30 @@ class SyncSchedulingTest {
     }
 
     @Test
-    fun onlyExplicitRetryReplacesBackoff() {
+    fun urgentTriggerReplacesParkedWorkButNeverCancelsRunningSync() {
         assertEquals(
             ExistingWorkPolicy.REPLACE,
             syncWorkPolicy(listOf(WorkInfo.State.ENQUEUED to 3), true),
         )
-        assertNull(syncWorkPolicy(listOf(WorkInfo.State.ENQUEUED to 0), true))
+        // Also a delayed ceiling retry or offline wait (attempt 0): the new SMS should not
+        // sit behind it.
+        assertEquals(
+            ExistingWorkPolicy.REPLACE,
+            syncWorkPolicy(listOf(WorkInfo.State.ENQUEUED to 0), true),
+        )
         assertEquals(
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             syncWorkPolicy(listOf(WorkInfo.State.RUNNING to 3), true),
         )
+        assertNull(
+            syncWorkPolicy(listOf(WorkInfo.State.RUNNING to 0, WorkInfo.State.BLOCKED to 0), true)
+        )
+    }
+
+    @Test
+    fun retriesStopDoublingAtTheCeiling() {
+        for (attempt in 0 until SYNC_RETRY_ATTEMPTS) assertEquals(0L, syncRetryDelay(attempt))
+        assertEquals(SYNC_RETRY_CEILING_MS, syncRetryDelay(SYNC_RETRY_ATTEMPTS))
+        assertEquals(SYNC_RETRY_CEILING_MS, syncRetryDelay(50))
     }
 }

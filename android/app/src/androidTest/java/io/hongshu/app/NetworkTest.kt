@@ -268,7 +268,8 @@ class NetworkTest {
                             assertTrue(runBlocking { SyncEngine.run(context) })
                             assertEquals(0, store.pendingCount())
                             assertEquals(2005, uploaded.get())
-                            assertEquals(4, registrations.get())
+                            // Accepted registrations are cached per hub device across runs.
+                            assertEquals(2, registrations.get())
                             assertTrue(registered.contains("+9876543210"))
                         } finally {
                             store.ack(keys)
@@ -327,16 +328,16 @@ class NetworkTest {
                         store.queue(message)
                         store.applyContacts(JSONObject().put("10086", "synthetic cached contact"))
                         try {
-                            assertThrows(ContactsRefreshException::class.java) {
-                                runBlocking { SyncEngine.run(context) }
-                            }
+                            // Contact names are cosmetic: the sync itself succeeds.
+                            runBlocking { SyncEngine.run(context) }
                             assertEquals(0, store.pendingCount())
                             assertTrue(
                                 requests.indexOf("/api/messages") <
                                     requests.indexOf("/api/contacts")
                             )
                             assertTrue(requests.any { it.startsWith("/api/sync?") })
-                            assertFalse(config.syncHealthy)
+                            assertTrue(config.syncHealthy)
+                            assertFalse(config.contactsHealthy)
                             store.readableDatabase
                                 .rawQuery(
                                     "SELECT name FROM contact_snapshot WHERE phone='10086'",
@@ -427,8 +428,14 @@ class NetworkTest {
                     assertEquals("同步完成", config.status)
                     failing.set(true)
                     runBlocking { syncNow(context).join() }
+                    // Wait until the failed attempt is parked in backoff. A worker still RUNNING
+                    // keeps its own slot and may legitimately add one successor, so counting
+                    // pending work from that moment raced with the worker's own timing.
                     val retry = waitFor {
-                        it.any { work -> !work.state.isFinished && work.runAttemptCount > 0 }
+                        it.any { work ->
+                            work.state == androidx.work.WorkInfo.State.ENQUEUED &&
+                                work.runAttemptCount > 0
+                        }
                     }
                     val old = retry.first { !it.state.isFinished }.id
                     runBlocking { repeat(100) { syncNow(context).join() } }

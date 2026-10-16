@@ -944,6 +944,20 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    fun simRejectedReceivers(): Set<String> =
+        readableDatabase
+            .rawQuery("SELECT DISTINCT receiver FROM outbox WHERE blocked='sim_not_confirmed'", null)
+            .use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+
+    fun releaseSimRejections(receivers: Set<String>) {
+        for (receiver in receivers)
+            writableDatabase.execSQL(
+                "UPDATE outbox SET blocked='' WHERE blocked='sim_not_confirmed' AND receiver=?",
+                arrayOf(receiver),
+            )
+        changes.value++
+    }
+
     fun ack(keys: List<String>) {
         val db = writableDatabase
         db.beginTransaction()

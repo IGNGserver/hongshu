@@ -24,7 +24,7 @@ internal object SmsInboxObserver {
         val context = app ?: return@Runnable
         val config = Config(context)
         if (inboxChangeTriggersScan(config.upload, config.recoveryEnabled, config.historyEnabled))
-            syncNow(context)
+            syncNow(context, manual = true)
     }
 
     private val observer by lazy {
