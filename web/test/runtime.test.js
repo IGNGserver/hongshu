@@ -48,6 +48,15 @@ test('restore drops reused IDs and starts observing the restored head',async()=>
   assert.equal(vm.runInContext('state.messages.length',ctx),0);
   assert.equal(vm.runInContext('state.cursor',ctx),10);
 });
+test('classification updates revalidate older displayed pages without retaining moved messages',async()=>{
+  const ctx=runtime();
+  vm.runInContext(`state.me.analysis_revision=1;
+    api=async(path)=>path==='/me'?{cursor:200,epoch:1,analysis_revision:2}:path==='/devices'?{devices:[]}:path==='/sims'?{sims:[]}:path==='/contacts'?{contacts:{}}:path==='/analysis/settings'?{enabled:true}:path.includes('before=')?{messages:Array.from({length:99},(_,i)=>({id:99-i,timestamp:99-i}))}:{messages:Array.from({length:100},(_,i)=>({id:200-i,timestamp:200-i}))};
+    refreshInbox=async options=>loadHistory(false,{preserve:options.preserveHistory,revalidate:options.revalidateHistory});`,ctx);
+  await vm.runInContext('catchUp()',ctx);
+  assert.equal(vm.runInContext('state.messages.length',ctx),199);
+  assert.equal(vm.runInContext('state.messages.some(m=>m.id===100)',ctx),false);
+});
 test('a failed refresh stays dirty and is retried on the next otherwise empty poll',async()=>{
   const ctx=runtime();
   vm.runInContext(`api=async(path)=>path==='/me'?{cursor:201,epoch:1}:path==='/devices'?{devices:[]}:path==='/sims'?{sims:[]}:{contacts:{}};refreshes=0;refreshInbox=async()=>{if(++refreshes===1)throw Error('synthetic outage')};`,ctx);

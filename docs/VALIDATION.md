@@ -481,3 +481,18 @@ CIFS 不支持可靠的 MySQL 文件锁，Gradle 原子缓存写也产生问题�
 没有降低断言或禁用测试。新增网络测试首次命中了旧已完成 worker 的测试等待条件，改为等待本次新 UUID 后重跑通过。
 CI 已增加在线 emulator runner，但推送后的 GitHub CI 结果需另行查询，不能用本地结果代替。
 本次没有 Docker daemon、未实际解析 Compose/构建 OCI 镜像/启动容器；无真实 SIM、生产恢复、公网 Push、发版或部署。
+# 短信分组验证范围
+
+新增 `server/analysis_test.go` 覆盖保守验证码、加密密钥、输出枚举校验、脱敏、私网默认拒绝；
+MySQL 测试覆盖按消息分组、权限、元数据分页、手动纠正竞态、暂停重试和租约恢复。
+Android `MessageAnalysisTest` 在 API 28/35 覆盖 SQLite 迁移、分类筛选、旧消息元数据更新、
+不重复通知、旧同步结果不得覆盖新分类及保留本机待上传消息。
+Web 测试覆盖 AI 开关对应入口及待分析状态，浏览器冒烟验证实际分组交互。
+真实厂商模型效果、计费、短信权限/验证码系统限制和真机通知仍需独立验收，模拟服务不代表实测。
+
+本轮分支 `agent/sms-ai-grouping`（版本不变），本地 scratch 为 `~/.build/短信同步系统/sms-ai-grouping`：
+- `bash scripts/verify-repository.sh`：通过，12 项运维测试；`git diff --check`、`gitleaks dir --no-banner --redact .` 通过。
+- `cd server && go test -race -count=1 ./... && go vet ./...`：通过；本机未设置 TEST_MYSQL_DSN，真库项跳过，不作为真库通过依据。
+- `cd web && npm test && npm run check`：20 项测试通过，语法检查通过。
+- scratch 中 `./gradlew --no-daemon --project-cache-dir "$SCRATCH/gradle-project-cache" :app:testDebugUnitTest --tests io.hongshu.app.MessageAnalysisTest --tests io.hongshu.app.MessageFormatTest`：通过，API 28/35 Robolectric（非模拟器/真机）。
+- 完整 MySQL、浏览器冒烟、Android 全套测试/lint/构建与模拟器验收由 CI 执行，结果须以对应 run 为准。

@@ -24,6 +24,20 @@ export function restoreScrollPosition(scrollTop, previousHeight, nextHeight) {
   return scrollTop + Math.max(0, nextHeight - previousHeight);
 }
 
+export const GROUP_LABELS = { all: "全部短信", otp: "验证码", other: "其他短信", personal: "个人", notification: "通知", promotion: "推广", spam: "垃圾", pending: "待分析" };
+export function visibleGroups(enabled) {
+  return enabled ? ["all", "otp", "personal", "notification", "promotion", "spam", "pending"] : ["all", "otp", "other"];
+}
+export function analysisLabel(a) {
+  if (!a || a.state === "pending") return "等待分析";
+  if (a.state === "processing") return "正在分析";
+  if (a.state === "failed") return a.error === "needs_review" ? "待确认分类" : "分析失败，可重试";
+  return a.manual ? "手动分类" : "已分析";
+}
+export function aiQueueLabel(s) {
+  return `队列：等待 ${s?.queue?.pending || 0} · 处理中 ${s?.queue?.processing || 0} · 失败/待确认 ${s?.queue?.failed || 0} · 已完成 ${s?.queue?.complete || 0} · 规则待回填 ${s?.queue?.backfill || 0}`;
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -53,6 +67,9 @@ const state = {
   railExpanded: true,
   historyHasMore: true,
   historyLoading: false,
+  group: "all",
+  counts: {},
+  ai: null,
 };
 
 const errors = {
@@ -62,6 +79,13 @@ const errors = {
   push_not_configured: "部署者尚未配置 Web Push",
   origin_denied: "PUBLIC_URL 与访问地址不一致",
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
+  ai_secret_required: "请先在中枢部署环境配置 HONGSHU_AI_SECRET，再保存 API 密钥",
+  invalid_ai_endpoint: "AI 地址需为完整 HTTPS 接口；本地服务须由部署者加入允许主机名单",
+  ai_consent_or_config_required: "请填写 AI 配置并同意历史和新增短信分析说明",
+  invalid_ai_settings: "请检查 AI 参数范围",
+  ai_budget_or_rate_limit: "已达到调用限速或今日额度，请稍后再试",
+  ai_disabled: "AI 已关闭，请刷新页面",
+  otp_rule_managed: "验证码由规则管理，不能手动修改 AI 分类",
 };
 
 // SVG Icon Assets (Google Material Symbols / Icons)
@@ -551,6 +575,7 @@ function inboxView() {
     ),
   );
   topbar.append(filterRow);
+  topbar.append(el("div", "group-chips"), el("p", "analysis-status muted"));
 
   inbox.append(topbar, el("div", "list"));
   layout.append(inbox, el("article", "detail"));
@@ -691,7 +716,7 @@ function createFilterChip(label, items, value, change) {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox({ metadata = true, preserveHistory = false } = {}) {
+async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false } = {}) {
   if (!state.me) return;
   if (inboxAbortController) {
     inboxAbortController.abort();
@@ -725,23 +750,48 @@ async function refreshInbox({ metadata = true, preserveHistory = false } = {}) {
       );
     }
     const args = {
+      group: state.group,
       q: state.q,
       sim: state.sim,
       device: state.device,
       offset: state.offset,
       limit: 100,
     };
-    const d = await api("/conversations?" + query(args), "GET", undefined, { signal });
+    const [d, counts] = await Promise.all([
+      api("/conversations?" + query(args), "GET", undefined, { signal }),
+      api("/analysis/counts?" + query({q:state.q,sim:state.sim,device:state.device}), "GET", undefined, { signal }),
+    ]);
     if (signal.aborted || gen !== refreshGeneration) return;
     state.conversations = d.conversations;
+    state.counts = counts.counts;
+    renderGroupBar();
     renderConversations();
-    if (state.sender) await loadHistory(false, { preserve: preserveHistory });
+    if (state.sender) await loadHistory(false, { preserve: preserveHistory, revalidate: revalidateHistory });
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return;
     throw err;
   } finally {
     setBusy(false);
   }
+}
+
+function renderGroupBar() {
+  const bar = $(".group-chips");
+  if (!bar) return;
+  bar.replaceChildren();
+  for (const group of visibleGroups(state.me?.ai_enabled)) {
+    const b = button(`${GROUP_LABELS[group]} ${state.counts[group] || 0}`, async () => {
+      state.group = group; state.offset = 0; state.sender = state.receiver = ""; state.messages = [];
+      $(".layout")?.classList.remove("has-detail"); renderDetail();
+      await refreshInbox();
+    }, "filter-chip" + (state.group === group ? " active" : ""));
+    b.setAttribute("aria-pressed", String(state.group === group));
+    bar.append(b);
+  }
+  const status = $(".analysis-status");
+  if (status) status.textContent = state.me?.ai_enabled
+    ? `AI ${state.ai?.paused ? "已暂停" : "已开启"} · 待分析 ${state.counts.pending || 0} 条${state.ai?.usage_count >= state.ai?.daily_limit ? " · 今日额度已用尽，UTC 零点恢复" : ""}${state.ai?.last_error ? " · 服务异常，请在设置中处理" : ""}`
+    : "验证码由规则提取，其他短信不分类";
 }
 
 function renderConversations() {
@@ -841,7 +891,7 @@ function updateHistoryStatus() {
   }
 }
 
-async function loadHistory(older, { preserve = false } = {}) {
+async function loadHistory(older, { preserve = false, revalidate = false } = {}) {
   const sender = state.sender;
   const receiver = state.receiver;
   if (!sender || (older && (!state.historyHasMore || state.historyLoading))) return;
@@ -860,6 +910,7 @@ async function loadHistory(older, { preserve = false } = {}) {
   const atBottom = previousStream &&
     scrollHeight - scrollTop - previousStream.clientHeight < 40;
   const args = {
+    group: state.group,
     sender,
     sim: receiver || state.sim,
     device: state.device,
@@ -873,6 +924,18 @@ async function loadHistory(older, { preserve = false } = {}) {
   try {
     setBusy(true);
     const d = await api("/messages?" + query(args), "GET", undefined, { signal });
+    let incoming = d.messages || [];
+    let lastPageLength = incoming.length;
+    // Metadata can move old messages out of the selected group. Re-fetch the displayed
+    // page range instead of retaining stale objects or collapsing the user's older pages.
+    if (revalidate && !older) {
+      const pages = Math.max(1, Math.ceil(state.messages.length / MESSAGE_PAGE_SIZE));
+      for (let page = 1; page < pages && lastPageLength === MESSAGE_PAGE_SIZE; page++) {
+        const next = await api("/messages?" + query({...args, before:incoming.at(-1).id}), "GET", undefined, {signal});
+        lastPageLength = next.messages?.length || 0;
+        incoming = incoming.concat(next.messages || []);
+      }
+    }
     if (
       signal?.aborted ||
       requestId !== historyRequestId ||
@@ -883,8 +946,7 @@ async function loadHistory(older, { preserve = false } = {}) {
       return;
     }
 
-    const incoming = d.messages || [];
-    state.messages = older || preserve
+    state.messages = older || (preserve && !revalidate)
       ? mergeMessages(state.messages, incoming)
       : mergeMessages([], incoming);
     state.messages = state.messages.map((message) => ({
@@ -896,7 +958,7 @@ async function loadHistory(older, { preserve = false } = {}) {
     } else if (!preserve) {
       state.historyHasMore = incoming.length === MESSAGE_PAGE_SIZE;
     } else {
-      state.historyHasMore ||= incoming.length === MESSAGE_PAGE_SIZE;
+      state.historyHasMore = revalidate ? lastPageLength === MESSAGE_PAGE_SIZE : state.historyHasMore || incoming.length === MESSAGE_PAGE_SIZE;
     }
     state.historyLoading = false;
     renderDetail();
@@ -1027,7 +1089,30 @@ function renderDetail() {
     }
 
     const b = el("div", "bubble");
+    if (msg.analysis?.otp) {
+      const card = el("div", "otp-card");
+      card.append(el("strong", "otp-code", msg.analysis.otp));
+      card.append(button("复制验证码", async () => {
+        if (!navigator.clipboard) throw new Error("复制需要 HTTPS 或浏览器剪贴板权限");
+        await navigator.clipboard.writeText(msg.analysis.otp); toast("验证码已复制");
+      }));
+      const expires = msg.analysis.expires_at;
+      if (expires) card.append(el("small", "", expires <= Date.now() ? "按短信标注的有效期，可能已过期" : `短信标注有效至 ${new Date(expires).toLocaleTimeString()}`));
+      b.append(card);
+    }
     b.append(document.createTextNode(msg.body));
+    if (state.me?.ai_enabled && !msg.analysis?.otp) {
+      b.append(el("small", "analysis-message-state", `${GROUP_LABELS[msg.analysis?.category] || "待分析"} · ${analysisLabel(msg.analysis)}`));
+      const correction = el("details", "category-actions");
+      correction.append(el("summary", "", "调整分类"));
+      for (const category of ["personal", "notification", "promotion", "spam", "auto", ...(msg.analysis?.state === "failed" ? ["retry"] : [])]) {
+        correction.append(button(GROUP_LABELS[category] || (category === "auto" ? "恢复自动分类" : "重试分析"), async () => {
+          await api(`/messages/${msg.id}/category`, "PATCH", {category});
+          await refreshInbox({preserveHistory:true, revalidateHistory:true});
+        }));
+      }
+      b.append(correction);
+    }
 
     const name =
       state.devices.find((d) => d.id === msg.device_id)?.name || "来源设备";
@@ -1215,6 +1300,12 @@ function settingsView() {
   card.querySelector(".settings-row").append(copy, toggle);
   container.append(card);
 
+  const aiCard = el("section", "card stack ai-settings");
+  aiCard.append(el("h2", "", "AI 短信分组"));
+  aiCard.append(el("p", "muted", "开启后，历史及新增非验证码短信会自动发送到配置的 AI 服务分析。验证码仅用规则提取；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。"));
+  container.append(aiCard);
+  void renderAISettings(aiCard).catch((e) => { if (aiCard.isConnected) aiCard.append(el("p", "", e.message)); });
+
   const footer = el("footer", "settings-footer");
   footer.append(button("退出登录", logout, "logout-button"));
   container.append(footer);
@@ -1226,6 +1317,43 @@ function settingsView() {
   }).catch(() => {
     status.textContent = "通知已关闭";
   });
+}
+
+async function renderAISettings(card) {
+  const s = await api("/analysis/settings");
+  if (!card.isConnected) return;
+  card.append(el("p", "", `${s.enabled ? "已开启" : "已关闭"}${s.paused ? " · 已暂停" : ""} · 今日已调用 ${s.usage_count}/${s.daily_limit}${s.last_error ? " · " + s.last_error : ""}`));
+  card.append(el("p", "ai-queue-status", aiQueueLabel(s)));
+  if (!state.me?.device?.admin) { card.append(el("p", "", "请由管理员在 Web 设置配置中枢 AI")); return; }
+  const form = el("form", "stack");
+  const fields = {};
+  function field(key, label, type, value) {
+    const input = el("input"); input.type = type;
+    if (type === "checkbox") input.checked = Boolean(value); else input.value = value ?? "";
+    const wrapper = el("label", "", label); wrapper.append(input); form.append(wrapper); fields[key] = input;
+    return input;
+  }
+  field("enabled", "启用 AI 分组", "checkbox", s.enabled);
+  field("paused", "暂停队列", "checkbox", s.paused);
+  field("endpoint", "完整 Chat Completions 接口地址", "url", s.endpoint).placeholder = "https://example.com/v1/chat/completions";
+  field("model", "模型", "text", s.model);
+  const key = field("api_key", s.key_set ? "API 密钥（已设置；留空保留）" : "API 密钥（本地无鉴权服务可留空）", "password", "");
+  key.autocomplete = "new-password";
+  field("clear_key", "清除已保存密钥", "checkbox", false);
+  for (const [name,label,min,max] of [["timeout_seconds","超时（秒）",2,60],["requests_per_minute","每分钟调用上限",1,60],["daily_limit","每日调用上限（含失败与连接测试）",1,10000]]) {
+    const input = field(name,label,"number",s[name]); input.min = min; input.max = max; input.required = true;
+  }
+  field("redact", "遮蔽长数字、邮箱和链接", "checkbox", s.redact);
+  field("consent", "我了解开启后会自动分析历史与新增非验证码短信", "checkbox", false);
+  form.append(button("保存 AI 设置", async () => {
+    if (!form.reportValidity()) return;
+    const body = Object.fromEntries(Object.entries(fields).map(([name,input]) => [name,input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value]));
+    await api("/analysis/settings", "PUT", body); key.value = "";
+    await catchUp(); shell(); toast("AI 设置已保存");
+  }, "primary"));
+  form.append(button("测试连接（仅合成文本）", async () => { await api("/analysis/test", "POST", {}); toast("连接及分类测试通过"); }));
+  form.append(button("恢复队列并重试失败项（每批100条）", async () => { const result = await api("/analysis/retry", "POST", {}); toast(`已重新排队 ${result.retried} 条`); await catchUp(); shell(); }));
+  card.append(form);
 }
 
 // -------------------------------------------------------------
@@ -1258,11 +1386,16 @@ async function enablePush() {
 
 async function reloadMetadata() {
   const generation = state.generation;
-  const [d, s, c] = await Promise.all([api("/devices"), api("/sims"), api("/contacts")]);
+  const [d, s, c, ai] = await Promise.all([api("/devices"), api("/sims"), api("/contacts"), api("/analysis/settings")]);
   if (generation !== state.generation || !state.me) return;
   state.devices = d.devices;
   state.sims = s.sims;
   state.contacts = c.contacts;
+  state.ai = ai;
+  state.me.ai_enabled = ai.enabled;
+  if (!visibleGroups(ai.enabled).includes(state.group)) state.group = "all";
+  const queueStatus = $(".ai-queue-status");
+  if (queueStatus) queueStatus.textContent = aiQueueLabel(ai);
 }
 
 function disconnect() {
@@ -1283,6 +1416,7 @@ function disconnect() {
   state.devices = [];
   state.sims = [];
   state.contacts = {};
+  state.ai = null; state.counts = {}; state.group = "all";
   state.sender = state.receiver = state.q = state.sim = state.device = "";
   state.offset = state.cursor = state.epoch = 0;
   state.epochSeen = false;
@@ -1316,7 +1450,8 @@ async function catchUp() {
   try {
     const me = await api("/me");
     if (generation !== state.generation || !state.me) return;
-    const changed = me.cursor !== state.cursor || epochReset(state.epochSeen, state.epoch, me.epoch);
+    const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled;
+    const changed = analysisChanged || me.cursor !== state.cursor || epochReset(state.epochSeen, state.epoch, me.epoch);
     const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
       state.messages = [];
@@ -1334,7 +1469,7 @@ async function catchUp() {
     const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
     state.inboxDirty ||= changed || metadataChanged;
     if (state.page === "inbox" && state.inboxDirty) {
-      await refreshInbox({ metadata: false, preserveHistory: true });
+      await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: analysisChanged });
       state.inboxDirty = false;
     }
   } finally {

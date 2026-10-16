@@ -142,6 +142,7 @@ fun SettingsScreen(
     when (page) {
         SettingsPage.Overview -> SettingsOverviewPage(host)
         SettingsPage.Hub -> HubPage(host)
+        SettingsPage.Analysis -> AnalysisSettingsPage(host)
         SettingsPage.Capture -> CapturePage(host)
         SettingsPage.Sims -> SimsPage(host)
         SettingsPage.Notifications -> NotificationsPage(host)
@@ -185,7 +186,13 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         status = hubStatus(f),
                         onClick = { host.navigate(SettingsPage.Hub) },
                     )
-                }
+                },
+                SettingsRow("analysis") {
+                    SettingsItem(
+                        title = "AI 短信分组", summary = "验证码规则提取 · 可选中枢 AI 整理", icon = Icons.Default.Sms,
+                        onClick = { host.navigate(SettingsPage.Analysis) },
+                    )
+                },
             ),
         )
         settingsGroup(

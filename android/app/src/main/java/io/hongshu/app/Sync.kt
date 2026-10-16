@@ -411,7 +411,9 @@ object SyncEngine {
                         val pendingNotice = store.pendingNotification()
                         if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
                             store.acknowledgeNotification(pendingNotice)
-                        if (!data.getBoolean("more")) {
+                         if (!data.getBoolean("more")) {
+                            // Cosmetic analysis has a separate cursor and never creates notifications.
+                            syncMessageAnalysis(repo, session)
                             c.lastSync = System.currentTimeMillis()
                             c.lastSyncError = ""
                             c.syncHealthy = true
@@ -437,6 +439,33 @@ object SyncEngine {
                 }
             }
         }
+}
+
+internal fun syncMessageAnalysis(repo: Repository, session: JSONObject) {
+    val store = repo.store
+    try {
+        store.rememberAI(session.optBoolean("ai_enabled"))
+        store.backfillLocalRules()
+        if (!session.has("analysis_revision")) return // Older hub: rule-only UI.
+        for (page in 0 until 20) {
+            if (store.analysisCursor() == session.getLong("analysis_revision")) break
+            val data = try {
+                repo.api.request("/analysis?after=${store.analysisCursor()}&limit=200")
+            } catch (e: ApiException) {
+                if (e.code != "analysis_cursor_changed") throw e
+                store.resetAnalysis()
+                continue
+            }
+            if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) return
+            store.applyAnalysis(data.getJSONArray("items"), data.getLong("cursor"), data.getLong("epoch"))
+            if (!data.getBoolean("more")) break
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ApiException) {
+        if (e.status == 401) throw e
+        // Analysis retry must not make an otherwise successful SMS upload/download fail.
+    } catch (_: Exception) { /* retry independently on the next sync */ }
 }
 
 // The hub keeps its own copy of the upload switch. A toggle that never reached it (offline,

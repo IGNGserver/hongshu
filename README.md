@@ -77,3 +77,9 @@ CI 包含真实隔离 MySQL 服务、Go race/vet/build、Web test/check/build �
 
 不要提交 `.env`、签名材料、数据库备份、真实短信或凭据；参见 [SECURITY.md](SECURITY.md)。
 源码按 [MIT License](LICENSE) 提供。SmsForwarder/SMSGate 仅作为兼容性研究参考，不包含其复制代码。
+## 可选短信整理
+
+验证码由规则提取并提供卡片复制。AI 默认关闭，此时只有全部、验证码和其他短信；
+管理员主动开启后，历史与新增非验证码短信进入持久队列，显示个人、通知、推广、垃圾及待分析。
+所有短信仍保留原文，垃圾不自动删除。外部模型会收到正文（可选有限脱敏），启用前请阅读
+[分组设计与隐私边界](docs/MESSAGE_GROUPING.md)和[部署配置](docs/DEPLOYMENT.md)。

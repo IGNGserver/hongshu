@@ -49,6 +49,7 @@ sealed interface AppDestination {
 enum class SettingsPage(val title: String) {
     Overview("设置"),
     Hub("中枢连接"),
+    Analysis("AI 短信分组"),
     Capture("短信采集"),
     Sims("SIM 卡与号码"),
     Notifications("通知"),
