@@ -11,15 +11,16 @@ import (
 )
 
 type Message struct {
-	ID             int64  `json:"id"`
-	DeviceID       string `json:"device_id"`
-	Receiver       string `json:"receiver"`
-	Sender         string `json:"sender"`
-	Body           string `json:"body"`
-	Timestamp      int64  `json:"timestamp"`
-	SubscriptionID int    `json:"subscription_id"`
-	Contact        string `json:"contact"`
-	Historical     bool   `json:"historical"`
+	ID             int64    `json:"id"`
+	DeviceID       string   `json:"device_id"`
+	Receiver       string   `json:"receiver"`
+	Sender         string   `json:"sender"`
+	Body           string   `json:"body"`
+	Timestamp      int64    `json:"timestamp"`
+	SubscriptionID int      `json:"subscription_id"`
+	Contact        string   `json:"contact"`
+	Historical     bool     `json:"historical"`
+	Analysis       Analysis `json:"analysis"`
 }
 type Incoming struct {
 	Receiver       string `json:"receiver"`
@@ -119,6 +120,10 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "database_unavailable")
 			return
 		}
+		if e = insertAnalysis(r.Context(), tx, seq, m.Body, m.Timestamp); e != nil {
+			fail(w, 503, "database_unavailable")
+			return
+		}
 		if !m.Historical {
 			_, e = tx.ExecContext(r.Context(), "INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) SELECT ?,d.id,?,0 FROM devices d JOIN push_subscriptions p ON p.device_id=d.id WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE", seq, time.Now().UnixMilli(), d.ID)
 		}
@@ -140,13 +145,13 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"acks": acks, "cursor": seq})
 }
 
-const messageColumns = "m.id,m.device_id,m.receiver,m.sender,m.body,m.timestamp,m.subscription_id,COALESCE(c.name,''),m.historical"
+const messageColumns = "m.id,m.device_id,m.receiver,m.sender,m.body,m.timestamp,m.subscription_id,COALESCE(c.name,''),m.historical," + analysisFields
 
 func scanMessages(rows *sql.Rows) ([]Message, error) {
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if e := rows.Scan(&m.ID, &m.DeviceID, &m.Receiver, &m.Sender, &m.Body, &m.Timestamp, &m.SubscriptionID, &m.Contact, &m.Historical); e != nil {
+		if e := rows.Scan(&m.ID, &m.DeviceID, &m.Receiver, &m.Sender, &m.Body, &m.Timestamp, &m.SubscriptionID, &m.Contact, &m.Historical, &m.Analysis.OTP, &m.Analysis.ExpiresAt, &m.Analysis.Category, &m.Analysis.Manual, &m.Analysis.State, &m.Analysis.Error, &m.Analysis.Revision); e != nil {
 			return nil, e
 		}
 		out = append(out, m)
@@ -184,7 +189,7 @@ func (a *app) syncMessages(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "epoch_changed")
 		return
 	}
-	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender WHERE m.id>? ORDER BY m.id LIMIT ?", after, limit+1)
+	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m"+messageJoins+" WHERE m.id>? ORDER BY m.id LIMIT ?", after, limit+1)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -208,6 +213,14 @@ func (a *app) syncMessages(w http.ResponseWriter, r *http.Request) {
 func filters(r *http.Request) (string, []any) {
 	where := " WHERE 1=1"
 	args := []any{}
+	if g := r.URL.Query().Get("group"); g != "" && g != "all" {
+		if g == "other" {
+			where += " AND COALESCE(x.otp,'')=''"
+		} else {
+			where += " AND " + effectiveGroup + "=?"
+			args = append(args, g)
+		}
+	}
 	keys := []string{"sim", "device", "sender"}
 	cols := map[string]string{"sim": "m.receiver", "device": "m.device_id", "sender": "m.sender"}
 	for _, k := range keys {
@@ -225,6 +238,9 @@ func filters(r *http.Request) (string, []any) {
 	return where, args
 }
 func (a *app) history(w http.ResponseWriter, r *http.Request) {
+	if !a.validGroup(w, r) {
+		return
+	}
 	limit, ok := pageLimit(r)
 	before, ok2 := number(r, "before", 0)
 	if !ok || !ok2 {
@@ -242,7 +258,7 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 		args = append(args, timestamp, timestamp, before)
 	}
 	args = append(args, limit)
-	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m LEFT JOIN contacts c ON c.phone=m.sender"+where+" ORDER BY m.timestamp DESC,m.id DESC LIMIT ?", args...)
+	rows, e := a.db.QueryContext(r.Context(), "SELECT "+messageColumns+" FROM messages m"+messageJoins+where+" ORDER BY m.timestamp DESC,m.id DESC LIMIT ?", args...)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -256,6 +272,9 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"messages": ms})
 }
 func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
+	if !a.validGroup(w, r) {
+		return
+	}
 	limit, ok := pageLimit(r)
 	offset, ok2 := number(r, "offset", 0)
 	if !ok || !ok2 {
@@ -264,9 +283,9 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	where, args := filters(r)
 	args = append(args, limit, offset)
-	query := "SELECT " + messageColumns + " FROM messages m LEFT JOIN contacts c ON c.phone=m.sender JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m LEFT JOIN contacts c ON c.phone=m.sender" + where + ") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?"
-	if r.URL.Query().Get("q") == "" && r.URL.Query().Get("device") == "" {
-		query = "SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id LEFT JOIN contacts c ON c.phone=m.sender" + where + " ORDER BY h.timestamp DESC,h.message_id DESC LIMIT ? OFFSET ?"
+	query := "SELECT " + messageColumns + " FROM messages m" + messageJoins + " JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m" + messageJoins + where + ") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?"
+	if r.URL.Query().Get("q") == "" && r.URL.Query().Get("device") == "" && (r.URL.Query().Get("group") == "" || r.URL.Query().Get("group") == "all") {
+		query = "SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id" + messageJoins + where + " ORDER BY h.timestamp DESC,h.message_id DESC LIMIT ? OFFSET ?"
 	}
 	rows, e := a.db.QueryContext(r.Context(), query, args...)
 	if e != nil {

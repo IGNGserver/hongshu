@@ -3,6 +3,8 @@
 单用户中枢、Go HTTP/WebSocket 服务、MySQL 8.0+、原生 Web/PWA、Kotlin Compose Android。
 所有已授权设备能读全部短信，管理员能管理/撤销设备；不实现多租户、发送短信、MMS/RCS。
 
+验证码、可选 AI 分组、持久队列和独立元数据同步见 [MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)。
+
 ## 可靠性与业务标识
 
 - 接收号码由用户确认，SIM 的系统 subscription ID 仅是本设备映射，不是跨设备标识。

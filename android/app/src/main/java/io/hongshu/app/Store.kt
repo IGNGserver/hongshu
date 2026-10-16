@@ -31,12 +31,13 @@ data class CachedMessage(
     val historical: Boolean = false,
     // Captured on this phone and not yet acknowledged by the hub; id is -(outbox rowid).
     val local: Boolean = false,
+    val analysis: MessageAnalysis = MessageAnalysis(),
 )
 
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 6), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 7), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -97,6 +98,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createReliabilityState(db)
         db.execSQL("INSERT INTO meta VALUES ('history_boundary',0)")
         createCaptureDiagnostics(db)
+        createMessageAnalysis(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -122,6 +124,72 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.execSQL("UPDATE meta SET value=0 WHERE key='provider_id'")
         }
         if (oldVersion < 6) createCaptureDiagnostics(db)
+        if (oldVersion < 7) createMessageAnalysis(db)
+    }
+
+    private fun createMessageAnalysis(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE message_analysis (message_id INTEGER PRIMARY KEY,otp TEXT NOT NULL DEFAULT '',expires_at INTEGER NOT NULL DEFAULT 0,category TEXT NOT NULL DEFAULT '',manual INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',error TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL DEFAULT 0)")
+        for (key in listOf("analysis_cursor", "ai_enabled", "local_rule_cursor")) db.execSQL("INSERT OR IGNORE INTO meta VALUES (?,0)", arrayOf(key))
+    }
+
+    fun aiEnabled(): Boolean = meta("ai_enabled") != 0L
+    fun rememberAI(enabled: Boolean) {
+        if (aiEnabled() == enabled) return
+        writableDatabase.execSQL("UPDATE meta SET value=? WHERE key='ai_enabled'", arrayOf(if (enabled) 1 else 0))
+        changes.value++
+    }
+    fun analysisCursor(): Long = meta("analysis_cursor")
+
+    private fun saveAnalysis(db: SQLiteDatabase, id: Long, a: MessageAnalysis) {
+        // SQLite on API 26-28 predates UPSERT. Both statements run in the caller's transaction.
+        db.execSQL("UPDATE message_analysis SET otp=?,expires_at=?,category=?,manual=?,state=?,error=?,revision=? WHERE message_id=? AND revision<=?",
+            arrayOf<Any>(a.otp, a.expiresAt, a.category, if (a.manual) 1 else 0, a.state, a.error, a.revision, id, a.revision))
+        db.execSQL("INSERT OR IGNORE INTO message_analysis (message_id,otp,expires_at,category,manual,state,error,revision) VALUES (?,?,?,?,?,?,?,?)",
+            arrayOf<Any>(id, a.otp, a.expiresAt, a.category, if (a.manual) 1 else 0, a.state, a.error, a.revision))
+    }
+
+    fun applyAnalysis(items: JSONArray, cursor: Long, pageEpoch: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            check(!epochReset(epochSeen(), epoch(), pageEpoch)) { "Analysis epoch changed" }
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                saveAnalysis(db, item.getLong("id"), MessageAnalysis.from(item.getJSONObject("analysis")))
+            }
+            db.execSQL("UPDATE meta SET value=? WHERE key='analysis_cursor'", arrayOf(cursor))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        changes.value++
+    }
+
+    fun resetAnalysis() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("message_analysis", null, null)
+            db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor')")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    // Upgrade/old-server fallback, bounded and outside SQLiteOpenHelper migration/UI.
+    fun backfillLocalRules() {
+        val cursor = meta("local_rule_cursor")
+        val batch = readableDatabase.rawQuery("SELECT id,body FROM inbox WHERE id>? ORDER BY id LIMIT 200", arrayOf(cursor.toString())).use { c ->
+            buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) }
+        }
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for ((id, body) in batch) {
+                val otp = extractOtp(body).orEmpty()
+                db.execSQL("INSERT OR IGNORE INTO message_analysis (message_id,otp,state) VALUES (?,?,?)", arrayOf<Any>(id, otp, if (otp.isEmpty()) "pending" else "complete"))
+            }
+            batch.lastOrNull()?.let { db.execSQL("UPDATE meta SET value=? WHERE key='local_rule_cursor'", arrayOf(it.first)) }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        if (batch.isNotEmpty()) changes.value++
     }
 
     private fun createCaptureDiagnostics(db: SQLiteDatabase) {
@@ -1139,6 +1207,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     }
                 val inserted =
                     db.insertWithOnConflict("inbox", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+                val analysis = m.optJSONObject("analysis")?.let { MessageAnalysis.from(it) }
+                    ?: MessageAnalysis(otp = extractOtp(m.getString("body")).orEmpty())
+                saveAnalysis(db, m.getLong("id"), analysis)
                 if (inserted != -1L)
                     added.add(
                         CachedMessage(
@@ -1188,15 +1259,44 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             .rawQuery("SELECT DISTINCT receiver FROM inbox ORDER BY receiver", null)
             .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
 
+    fun groupCounts(q: String = "", sim: String = ""): Map<String, Int> {
+        val result = messageGroupLabels.keys.associateWith { 0 }.toMutableMap()
+        val args = mutableListOf<String>()
+        var where = "1=1"
+        if (sim.isNotEmpty()) { where += " AND i.receiver=?"; args += sim }
+        if (q.isNotEmpty()) {
+            where += " AND (instr(lower(i.body),lower(?))>0 OR instr(lower(i.sender),lower(?))>0 OR instr(lower(i.contact),lower(?))>0)"
+            args.addAll(listOf(q, q, q))
+        }
+        fun add(group: String, n: Int) {
+            result[group] = (result[group] ?: 0) + n
+            result["all"] = result.getValue("all") + n
+            if (group != "otp") result["other"] = result.getValue("other") + n
+        }
+        readableDatabase.rawQuery("SELECT CASE WHEN COALESCE(a.otp,'')<>'' THEN 'otp' WHEN COALESCE(a.category,'')<>'' THEN a.category ELSE 'pending' END g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
+            while (c.moveToNext()) add(c.getString(0), c.getInt(1))
+        }
+        for (m in localMessages(q = q, sim = sim)) add(if (extractOtp(m.body) != null) "otp" else "pending", 1)
+        return result
+    }
+
     fun messages(
         sender: String = "",
         q: String = "",
         sim: String = "",
         before: Long = Long.MAX_VALUE,
         limit: Int = 200,
+        group: String = "all",
     ): List<CachedMessage> {
         var where = "1=1"
         val args = mutableListOf<String>()
+        when (group) {
+            "", "all" -> Unit
+            "otp" -> where += " AND otp<>''"
+            "other" -> where += " AND otp=''"
+            "pending" -> where += " AND otp='' AND category=''"
+            else -> { where += " AND otp='' AND category=?"; args.add(group) }
+        }
         if (before != Long.MAX_VALUE) {
             val timestamp =
                 readableDatabase
@@ -1218,11 +1318,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 " AND (instr(lower(body),lower(?))>0 OR instr(lower(sender),lower(?))>0 OR instr(lower(contact),lower(?))>0)"
             args.addAll(listOf(q, q, q))
         }
-        val sql =
+        val enriched = "WITH enriched AS (SELECT inbox.*,COALESCE(a.otp,'') otp,COALESCE(a.expires_at,0) expires_at,COALESCE(a.category,'') category,COALESCE(a.manual,0) manual,COALESCE(a.state,'pending') state,COALESCE(a.error,'') error,COALESCE(a.revision,0) revision FROM inbox LEFT JOIN message_analysis a ON a.message_id=inbox.id)"
+        val columns = "id,device,receiver,sender,body,timestamp,contact,historical,otp,expires_at,category,manual,state,error,revision"
+        val sql = enriched +
             if (sender.isNotEmpty())
-                "SELECT id,device,receiver,sender,body,timestamp,contact,historical FROM inbox WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
+                " SELECT $columns FROM enriched WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
             else
-                "WITH matched AS (SELECT * FROM inbox WHERE $where), latest AS (SELECT sender,receiver,MAX(timestamp) event_time FROM matched GROUP BY sender,receiver), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.receiver=l.receiver AND m.timestamp=l.event_time GROUP BY m.sender,m.receiver) SELECT id,device,receiver,sender,body,timestamp,contact,historical FROM inbox WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
+                ", matched AS (SELECT * FROM enriched WHERE $where), latest AS (SELECT sender,receiver,MAX(timestamp) event_time FROM matched GROUP BY sender,receiver), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.receiver=l.receiver AND m.timestamp=l.event_time GROUP BY m.sender,m.receiver) SELECT $columns FROM enriched WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
         args.add(limit.coerceAtLeast(1).toString())
         return readableDatabase.rawQuery(sql, args.toTypedArray()).use { c ->
             buildList {
@@ -1236,6 +1338,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         c.getLong(5),
                         c.getString(6),
                         c.getInt(7) != 0,
+                        analysis = MessageAnalysis(c.getString(8), c.getLong(9), c.getString(10), c.getInt(11) != 0, c.getString(12), c.getString(13), c.getLong(14)),
                     )
                 )
             }
@@ -1290,9 +1393,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         q: String = "",
         sim: String = "",
         limit: Int = 200,
+        group: String = "all",
     ): List<CachedMessage> {
-        val remote = messages(sender, q, sim, limit = limit)
-        val local = localMessages(sender, q, sim)
+        val remote = messages(sender, q, sim, limit = limit, group = group)
+        val local = localMessages(sender, q, sim).filter { it.matchesGroup(group) }
         if (local.isEmpty()) return remote
         val newest = compareByDescending<CachedMessage> { it.timestamp }.thenByDescending { it.id }
         if (sender.isNotEmpty()) return (remote + local).sortedWith(newest).take(limit)
@@ -1313,6 +1417,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            db.delete("message_analysis", null, null)
             db.delete("contact_snapshot", null, null)
             db.execSQL("UPDATE meta SET value=0")
             db.execSQL("UPDATE meta SET value=-1 WHERE key='initial_head'")
@@ -1333,6 +1438,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            db.delete("message_analysis", null, null)
+            db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor','ai_enabled')")
             db.execSQL("UPDATE meta SET value=0 WHERE key='cursor'")
             db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
             db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")

@@ -2,6 +2,7 @@
 // generated in memory; only this test's random database is dropped afterwards.
 const { spawn, execFileSync } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
+const { createServer } = require("node:http");
 const { resolve } = require("node:path");
 const assert = require("node:assert/strict");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
@@ -47,8 +48,23 @@ async function request(path, token, method = "GET", body) {
 (async () => {
   let server,
     browser,
+    ai,
     created = false;
   try {
+    let aiCalls = 0;
+    ai = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const data = JSON.parse(raw);
+      const body = data.messages[1].content;
+      assert.ok(!body.includes("482913") && !body.includes("验证码"), "OTP leaked to classifier");
+      aiCalls++;
+      const category = body.includes("fixture-personal") ? "personal" : body.includes("fixture-promotion") ? "promotion" : body.includes("fixture-spam") ? "spam" : body.includes("fixture-unknown") ? "unknown" : "notification";
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({category})}}]}));
+    });
+    await new Promise((resolve) => ai.listen(0, "127.0.0.1", resolve));
+    const aiEndpoint = `http://127.0.0.1:${ai.address().port}/v1/chat/completions`;
     sql("CREATE DATABASE " + db + " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin");
     created = true;
     server = spawn(process.env.HONGSHU_BINARY, [], {
@@ -62,6 +78,7 @@ async function request(path, token, method = "GET", body) {
         LISTEN_ADDR: ":" + port,
         WEB_DIR: process.env.WEB_BUILD_DIR || resolve(root, "web"),
         MIGRATIONS_DIR: resolve(root, "db/migrations"),
+        HONGSHU_AI_ALLOWED_HOSTS: "127.0.0.1",
       },
       stdio: "ignore",
     });
@@ -164,6 +181,43 @@ async function request(path, token, method = "GET", body) {
       return false;
     });
     assert.equal(cachedAPI, false);
+    // End-to-end grouping uses a local synthetic classifier, never a real AI provider.
+    await request("/messages", token, "POST", {messages:[
+      "验证码为 482913，5分钟内有效", "fixture-personal", "fixture-promotion", "fixture-spam", "fixture-unknown",
+    ].map((text, i) => ({receiver:"+8613800000000",sender:"10086",body:text,timestamp:1700000000100+i,subscription_id:1}))});
+    assert.equal(aiCalls, 0, "disabled AI made requests");
+    await page.getByLabel("完整 Chat Completions 接口地址").fill(aiEndpoint);
+    await page.getByLabel("模型", {exact:true}).fill("synthetic");
+    await page.getByLabel("每分钟调用上限").fill("60");
+    await page.getByLabel("启用 AI 分组", {exact:true}).check();
+    await page.getByLabel("我了解开启后会自动分析历史与新增非验证码短信").check();
+    await page.getByRole("button", {name:"保存 AI 设置",exact:true}).click();
+    await page.getByText("AI 设置已保存", {exact:true}).waitFor();
+    await page.getByRole("button", {name:"收件箱",exact:true}).click();
+    await page.getByLabel("搜索短信").fill("");
+    await page.getByRole("button", {name:"个人 1",exact:true}).waitFor({timeout:20000});
+    await page.getByRole("button", {name:"推广 1",exact:true}).waitFor({timeout:20000});
+    await page.getByRole("button", {name:"垃圾 1",exact:true}).waitFor({timeout:20000});
+    await page.getByRole("button", {name:"通知 1",exact:true}).waitFor({timeout:20000});
+    await page.getByRole("button", {name:"验证码 1",exact:true}).click();
+    await page.locator(".conversation").first().click();
+    await page.getByText("482913", {exact:true}).waitFor();
+    assert.equal(await page.locator(".otp-code").count(), 1);
+    await page.getByRole("button", {name:"个人 1",exact:true}).click();
+    await page.locator(".conversation").filter({hasText:"fixture-personal"}).click();
+    await page.getByText("调整分类", {exact:true}).click();
+    await page.locator(".category-actions").getByRole("button", {name:"垃圾",exact:true}).click();
+    await page.getByRole("button", {name:"垃圾 2",exact:true}).waitFor();
+    await page.getByRole("button", {name:"待分析 1",exact:true}).click();
+    await page.locator(".conversation").filter({hasText:"fixture-unknown"}).click();
+    await page.getByText("待分析 · 待确认分类", {exact:true}).waitFor();
+    await page.getByRole("button", {name:"设置",exact:true}).click();
+    await page.getByLabel("启用 AI 分组", {exact:true}).uncheck();
+    await page.getByRole("button", {name:"保存 AI 设置",exact:true}).click();
+    await page.getByText("AI 设置已保存", {exact:true}).waitFor();
+    await page.getByRole("button", {name:"收件箱",exact:true}).click();
+    await page.getByRole("button", {name:"其他短信 5",exact:true}).waitFor();
+    assert.equal(await page.locator(".group-chips button").count(), 3);
     assert.deepEqual(errors, []);
     await page.setViewportSize({ width: 390, height: 844 });
     if (process.env.SMOKE_SCREENSHOT)
@@ -172,10 +226,11 @@ async function request(path, token, method = "GET", body) {
         fullPage: true,
       });
     console.log(
-      "Browser smoke passed: password login, inbox, XSS safety, mobile conversation, search, devices, settings, private PWA cache",
+      "Browser smoke passed: login, inbox, XSS, mobile, search, devices, settings, private PWA cache, rule OTP, automatic historical AI queue, groups, manual correction, pending review, AI off",
     );
   } finally {
     if (browser) await browser.close();
+    if (ai) await new Promise((resolve) => ai.close(resolve));
     if (server) {
       server.kill("SIGTERM");
       await new Promise((r) => server.once("exit", r));

@@ -481,3 +481,49 @@ CIFS 不支持可靠的 MySQL 文件锁，Gradle 原子缓存写也产生问题�
 没有降低断言或禁用测试。新增网络测试首次命中了旧已完成 worker 的测试等待条件，改为等待本次新 UUID 后重跑通过。
 CI 已增加在线 emulator runner，但推送后的 GitHub CI 结果需另行查询，不能用本地结果代替。
 本次没有 Docker daemon、未实际解析 Compose/构建 OCI 镜像/启动容器；无真实 SIM、生产恢复、公网 Push、发版或部署。
+# 短信分组验证范围
+
+新增 `server/analysis_test.go` 覆盖保守验证码、加密密钥、输出枚举校验、脱敏、私网默认拒绝；
+MySQL 测试覆盖按消息分组、权限、元数据分页、手动纠正竞态、暂停重试和租约恢复。
+Android `MessageAnalysisTest` 在 API 28/35 覆盖 SQLite 迁移、分类筛选、旧消息元数据更新、
+不重复通知、旧同步结果不得覆盖新分类及保留本机待上传消息。
+Web 测试覆盖 AI 开关对应入口及待分析状态，浏览器冒烟验证实际分组交互。
+真实厂商模型效果、计费、短信权限/验证码系统限制和真机通知仍需独立验收，模拟服务不代表实测。
+
+本轮分支 `agent/sms-ai-grouping`（版本不变），本地 scratch 为 `~/.build/短信同步系统/sms-ai-grouping`：
+- `bash scripts/verify-repository.sh`：通过，12 项运维测试；`git diff --check`、`gitleaks dir --no-banner --redact .` 通过。
+- `cd server && go test -race -count=1 ./... && go vet ./...`：通过；本机未设置 TEST_MYSQL_DSN，真库项跳过，不作为真库通过依据。
+- `cd web && npm test && npm run check`：21 项测试通过，语法检查通过。
+- scratch 中 `./gradlew --no-daemon --project-cache-dir "$SCRATCH/gradle-project-cache" :app:testDebugUnitTest --tests io.hongshu.app.MessageAnalysisTest --tests io.hongshu.app.MessageFormatTest`：通过，API 28/35 Robolectric（非模拟器/真机）。
+- 补跑 `RealtimeCaptureHostTest.versionFiveMigrationPreservesWatermarkLedgerUnknownAndBlockedRecords`：通过。
+
+### 2026-10-16 完整 CI 结果
+
+功能提交 `3a16351` 的 [Hongshu validation](https://github.com/IGNGserver/hongshu/actions/runs/38907562080)
+全部通过；从运行创建至完成 10 分 48 秒（含排队）。六个 job：
+
+| Job | 实际验证 | 结果 / job 耗时 |
+| --- | --- | --- |
+| verify | `bash scripts/verify-repository.sh`、`git diff --check` | 通过，9 秒 |
+| server | 隔离 MySQL 8.4.5：`go test -race -count=1 ./... && go vet ./... && go build -trimpath -o "$RUNNER_TEMP/hongshu" .`；`node scripts/browser-smoke.cjs` | 通过，2 分 11 秒 |
+| web | `npm test && npm run check && npm run build` | 21 项测试通过，6 秒 |
+| android (28) | `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`，以及 `:app:connectedDebugAndroidTest` | 通过，22 项模拟器测试，10 分 37 秒 |
+| android (33) | 同上 | 通过，48 项模拟器测试，7 分 43 秒 |
+| android (35) | 同上 | 通过，48 项模拟器测试，8 分 16 秒 |
+
+MySQL 验证包括旧数据有界回填、回滚/再升级、分类权限、人工纠正、配置代次、限速额度、
+新消息优先/历史倒序、租约恢复、元数据分页及分类事件不依赖新增短信游标。
+浏览器验证开启后自动历史分析、验证码不外发、分组、人工纠正、待确认和关闭 AI 恢复三入口。
+模型服务仅为本地合成夹具，未发送真实短信给外部 API。
+
+前两轮 CI 的失败没有绕过：[第一轮](https://github.com/IGNGserver/hongshu/actions/runs/38904738801)
+修复 MySQL 8.4 保留字列名及旧库迁移夹具；[第二轮](https://github.com/IGNGserver/hongshu/actions/runs/38905887144)
+修复仅分类变化没有 WebSocket 通知、刷新期间最终事件丢失，以及隔离网络测试未取消立即运行的周期同步。
+保留原有断言，另增加迁移、队列和实时刷新回归测试。
+
+全量构建和模拟器运行在 GitHub Actions；本机只跑快速测试/受影响单测，未在项目卷生成依赖或产物。
+本机 `BUILD_SCRATCH_ROOT=~/.build`，空间闸门实测可用 157 GiB；任务快照/测试产物约 23 MiB，
+本次 Go 共享缓存约 256 MiB、模块缓存约 21 MiB，均保留用于复测，未删除其他任务缓存。
+仓库为 public，本轮 Actions 不消耗私有仓库月度 2000 分钟额度（扣减 0 分钟）。
+未创建 PR、未合并、未发布、未部署；任务 worktree 和分支保留。真实厂商模型效果、真实费用、
+真机及生产环境验收未执行；垃圾分类不能视为来源认证或可靠的反诈判断。

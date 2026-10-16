@@ -85,6 +85,9 @@ class NetworkTest {
         val saved = prefs.all
         try {
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
+            // The application's periodic sync starts immediately on a fresh emulator.
+            // It must not drain this test's queue concurrently with its explicit sync calls.
+            WorkManager.getInstance(context).cancelUniqueWork("hongshu-periodic").result.get()
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
             WorkManager.getInstance(context)
                 .cancelUniqueWork("hongshu-capture-periodic")
@@ -94,6 +97,7 @@ class NetworkTest {
             test(context, Config(context))
         } finally {
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
+            WorkManager.getInstance(context).cancelUniqueWork("hongshu-periodic").result.get()
             WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
             WorkManager.getInstance(context)
                 .cancelUniqueWork("hongshu-capture-periodic")

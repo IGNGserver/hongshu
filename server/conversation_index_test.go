@@ -33,7 +33,7 @@ func TestIntegrationConversationIndexQueryPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plan string
-	if err = db.QueryRow("EXPLAIN ANALYZE SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id LEFT JOIN contacts c ON c.phone=m.sender ORDER BY h.timestamp DESC,h.message_id DESC LIMIT 5").Scan(&plan); err != nil {
+	if err = db.QueryRow("EXPLAIN ANALYZE SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id" + messageJoins + " ORDER BY h.timestamp DESC,h.message_id DESC LIMIT 5").Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(plan, "Table scan on m") || strings.Contains(plan, "Window aggregate") || !strings.Contains(plan, "index lookup on m using PRIMARY") {

@@ -1638,3 +1638,12 @@ input::placeholder {
     scroll-behavior: auto !important;
   }
 }
+.group-chips { display: flex; flex-wrap: wrap; gap: .5rem; padding: .5rem 0; }
+.analysis-status { font-size: .85rem; margin: .25rem 0; }
+.otp-card { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; padding: .75rem 0; border-bottom: 1px solid var(--md-sys-color-outline-variant); margin-bottom: .75rem; }
+.otp-code { font-size: 2rem; letter-spacing: .08em; overflow-wrap: anywhere; }
+.otp-card small { flex-basis: 100%; }
+.analysis-message-state { display: block; margin-top: .5rem; }
+.category-actions { margin-top: .5rem; }
+.category-actions button { margin: .25rem; }
+.ai-settings input:not([type=checkbox]) { width: 100%; }

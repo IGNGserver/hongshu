@@ -34,6 +34,13 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/contacts", a.auth(a.contacts))
 	mux.HandleFunc("POST /api/messages", a.auth(a.upload))
 	mux.HandleFunc("GET /api/messages", a.auth(a.history))
+	mux.HandleFunc("GET /api/analysis/settings", a.auth(a.analysisSettings))
+	mux.HandleFunc("PUT /api/analysis/settings", a.auth(a.saveAISettings))
+	mux.HandleFunc("POST /api/analysis/test", a.auth(a.testAI))
+	mux.HandleFunc("POST /api/analysis/retry", a.auth(a.retryAnalysis))
+	mux.HandleFunc("GET /api/analysis", a.auth(a.analysisSync))
+	mux.HandleFunc("GET /api/analysis/counts", a.auth(a.analysisCounts))
+	mux.HandleFunc("PATCH /api/messages/{id}/category", a.auth(a.changeCategory))
 	mux.HandleFunc("GET /api/conversations", a.auth(a.conversations))
 	mux.HandleFunc("GET /api/sync", a.auth(a.syncMessages))
 	mux.HandleFunc("GET /api/ws", a.auth(a.ws))
@@ -92,7 +99,12 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion})
+	s, err := loadAI(r.Context(), a.db, false)
+	if err != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "analysis_revision": s.Revision})
 }
 func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 	rows, e := a.db.QueryContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices ORDER BY created_at")

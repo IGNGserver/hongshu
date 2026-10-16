@@ -2,7 +2,10 @@ name: Hongshu validation
 
 on:
   push:
+    paths: ['server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', '.github/workflows/ci.yml', 'compose.yml', '.env.example', 'VERSION']
   pull_request:
+    paths: ['server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', '.github/workflows/ci.yml', 'compose.yml', '.env.example', 'VERSION']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,6 +27,7 @@ jobs:
       - name: Check whitespace errors
         run: git diff --check
   server:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -71,6 +75,7 @@ jobs:
         working-directory: web
         env: {WEB_BUILD_DIR: "${{ runner.temp }}/hongshu-web"}
   android:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -104,3 +109,15 @@ jobs:
           working-directory: android
           disable-animations: true
           script: ./gradlew --no-daemon --project-cache-dir "$GRADLE_USER_HOME/project-cache" :app:connectedDebugAndroidTest
+      - name: Show isolated instrumented test failure details
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, xml.etree.ElementTree as ET
+          root = pathlib.Path(os.environ['HONGSHU_BUILD_DIR']) / 'app/outputs/androidTest-results'
+          for path in root.rglob('*.xml'):
+              for case in ET.parse(path).iter('testcase'):
+                  for failure in case.findall('failure') + case.findall('error'):
+                      print(case.get('classname'), case.get('name'))
+                      print(failure.text or failure.get('message', ''))
+          PY

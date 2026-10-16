@@ -31,6 +31,8 @@ class StoreTest {
                 store.applySync(JSONArray().put(message(1)), 1)
                 val db = store.writableDatabase
                 db.execSQL("DROP TABLE captures")
+                db.execSQL("DROP TABLE message_analysis")
+                db.execSQL("DELETE FROM meta WHERE key IN ('analysis_cursor','ai_enabled','local_rule_cursor')")
                 db.execSQL("DROP TABLE contact_snapshot")
                 db.execSQL("DROP INDEX outbox_ready")
                 db.execSQL("DROP INDEX inbox_receiver")
@@ -40,7 +42,8 @@ class StoreTest {
                 db.version = 3
             }
             Store(context, name).use { store ->
-                assertEquals(6, store.readableDatabase.version)
+                assertEquals(7, store.readableDatabase.version)
+                assertEquals(0L, store.analysisCursor())
                 assertEquals(1, store.pendingCount())
                 assertEquals(1, store.sims().size)
                 assertEquals(1L, store.cursor())
@@ -62,10 +65,13 @@ class StoreTest {
                 store.saveSim(SimMapping(7, 0, sms.receiver, "SIM1"))
                 store.initializeHistoryBoundary(200)
                 store.writableDatabase.execSQL("DELETE FROM meta WHERE key='history_boundary'")
+                store.writableDatabase.execSQL("DROP TABLE message_analysis")
+                store.writableDatabase.execSQL("DELETE FROM meta WHERE key IN ('analysis_cursor','ai_enabled','local_rule_cursor')")
                 store.writableDatabase.version = 4
             }
             Store(context, name).use { store ->
-                assertEquals(6, store.readableDatabase.version)
+                assertEquals(7, store.readableDatabase.version)
+                assertEquals(0L, store.analysisCursor())
                 assertEquals(0L, store.providerWatermark())
                 assertEquals(1, store.pendingCount())
                 assertEquals(1, store.sims().size)

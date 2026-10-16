@@ -45,6 +45,8 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,6 +116,8 @@ private data class HomeLists(
     val receivers: List<String> = emptyList(),
     val sims: List<SimMapping> = emptyList(),
     val pending: PendingCounts = PendingCounts(),
+    val aiEnabled: Boolean = false,
+    val groupCounts: Map<String, Int> = emptyMap(),
 )
 
 @Composable
@@ -127,6 +131,8 @@ fun HongshuUI(activity: MainActivity) {
 
     var searchQuery by remember { mutableStateOf("") }
     var simFilter by remember { mutableStateOf("") }
+    var group by remember { mutableStateOf("all") }
+    var aiEnabled by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var setupHidden by remember { mutableStateOf(setupDismissed(activity)) }
@@ -194,28 +200,28 @@ fun HongshuUI(activity: MainActivity) {
             continuation?.invoke(grants.values.all { it })
         }
 
-    LaunchedEffect(searchQuery, simFilter) { messageLimit = 200 }
+    LaunchedEffect(searchQuery, simFilter, group) { messageLimit = 200 }
 
-    LaunchedEffect(changes, simFilter, messageLimit) {
+    LaunchedEffect(changes, simFilter, messageLimit, group) {
         loadedHomeMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
-                    messagesWithLocal("", "", simFilter, limit = messageLimit)
+                    messagesWithLocal("", "", simFilter, limit = messageLimit, group = group)
                 }
             }
     }
 
-    LaunchedEffect(changes, searchQuery, simFilter, messageLimit) {
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group) {
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
-                    messagesWithLocal("", searchQuery, simFilter, limit = messageLimit)
+                    messagesWithLocal("", searchQuery, simFilter, limit = messageLimit, group = group)
                 }
             }
     }
 
     val lists by
-        produceState(HomeLists(), changes) {
+        produceState(HomeLists(), changes, simFilter, searchQuery) {
             value =
                 withContext(Dispatchers.IO) {
                     repo.store.readUnlessClosed(HomeLists()) {
@@ -224,10 +230,16 @@ fun HongshuUI(activity: MainActivity) {
                             receivers = (sims.map { it.phone } + receivers()).filter { it.isNotEmpty() }.distinct(),
                             sims = sims,
                             pending = pendingCounts(),
+                            aiEnabled = aiEnabled(),
+                            groupCounts = groupCounts(searchQuery, simFilter),
                         )
                     }
                 }
         }
+    LaunchedEffect(lists.aiEnabled) {
+        aiEnabled = lists.aiEnabled
+        if (group !in visibleMessageGroups(aiEnabled)) group = "all"
+    }
     val facts =
         remember(changes, preferenceVersion, resumeCount, health, lists) {
             setupFacts(activity, repo.config, health, lists.pending)
@@ -303,6 +315,13 @@ fun HongshuUI(activity: MainActivity) {
                 showMessage("设置引导已隐藏，可在设置中继续完成")
             },
             onMessage = ::showMessage,
+            onGroupChange = { group = it },
+            onChangeCategory = { id, category ->
+                action {
+                    identityMutex.withLock { repo.api.request("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
+                    if (syncAndWait(activity)) "分类已更新" else "分类已保存，等待同步到本机"
+                }
+            },
         )
 
     Box(Modifier.fillMaxSize()) {
@@ -344,6 +363,9 @@ fun HongshuUI(activity: MainActivity) {
                                 busy = busy,
                                 refreshing = refreshing,
                                 setup = setup,
+                                group = group,
+                                aiEnabled = aiEnabled,
+                                groupCounts = lists.groupCounts,
                             ),
                         actions = homeActions,
                         twoPane = isExpanded,

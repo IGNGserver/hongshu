@@ -129,6 +129,9 @@ class HomeModel(
     val busy: Boolean,
     val refreshing: Boolean,
     val setup: SetupProgress,
+    val group: String = "all",
+    val aiEnabled: Boolean = false,
+    val groupCounts: Map<String, Int> = emptyMap(),
 )
 
 /** Callbacks from the main screen back to its owner. */
@@ -143,6 +146,8 @@ class HomeActions(
     val onRefresh: () -> Unit,
     val onDismissSetup: () -> Unit,
     val onMessage: (String) -> Unit,
+    val onGroupChange: (String) -> Unit = {},
+    val onChangeCategory: (Long, String) -> Unit = { _, _ -> },
 )
 
 private fun formatClock(timestamp: Long): String =
@@ -266,6 +271,23 @@ private fun ConversationListPane(
         }
         AnimatedVisibility(showSims) {
             SimFilterRow(model.receivers, model.sims, model.simFilter, actions.onSimFilterChange)
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(visibleMessageGroups(model.aiEnabled), key = { it }) { group ->
+                FilterChip(
+                    selected = model.group == group,
+                    onClick = { actions.onGroupChange(group) },
+                    label = { Text("${messageGroupLabels[group].orEmpty()} ${model.groupCounts[group] ?: 0}") },
+                )
+            }
+        }
+        if (model.aiEnabled) {
+            TextButton(onClick = { actions.onOpenSettings(SettingsPage.Analysis) }) {
+                Text("待分析 ${model.groupCounts["pending"] ?: 0} 条 · 查看队列状态")
+            }
         }
         val pullState = rememberPullToRefreshState()
         PullToRefreshBox(
@@ -467,6 +489,8 @@ private fun EmptyState(model: HomeModel, actions: HomeActions, searching: Boolea
             searching -> Triple(Icons.Default.Search, "搜索短信", "输入关键词、号码或联系人名称")
             model.simFilter.isNotEmpty() ->
                 Triple(Icons.Default.SimCard, "这张卡还没有短信", "清除筛选查看全部短信")
+            model.group != "all" ->
+                Triple(Icons.Default.ChatBubbleOutline, "这个分组暂无短信", "未完成分析的消息会保留在待分析中，也可以查看全部短信")
             !f.connected ->
                 Triple(Icons.Default.Sms, "连接中枢后开始同步", "短信会保存在你自己部署的中枢里，并同步到各台设备")
             else ->
@@ -544,7 +568,7 @@ private fun ConversationRow(
     modifier: Modifier = Modifier,
 ) {
     val displayName = message.contact.ifEmpty { message.sender }
-    val otp = remember(message.body) { extractOtp(message.body) }
+    val otp = message.analysis.otp.ifEmpty { extractOtp(message.body).orEmpty() }.ifEmpty { null }
     Row(
         modifier
             .fillMaxWidth()
@@ -615,10 +639,12 @@ private fun ConversationPane(
     // whole exit animation instead of reloading as soon as the destination changes.
     var messageLimit by remember(conversation) { mutableIntStateOf(200) }
     var messages by remember(conversation) { mutableStateOf<List<CachedMessage>?>(null) }
-    LaunchedEffect(conversation, model.changes, messageLimit) {
+    LaunchedEffect(conversation, model.changes, messageLimit, model.group) {
         messages =
             withContext(Dispatchers.IO) {
-                repo.store.messagesWithLocal(sender, "", conversation.receiver, limit = messageLimit)
+                repo.store.readUnlessClosed(emptyList()) {
+                    messagesWithLocal(sender, "", conversation.receiver, limit = messageLimit, group = model.group)
+                }
             }
     }
     val deviceId = repo.config.deviceId
@@ -639,7 +665,7 @@ private fun ConversationPane(
         context
             .getSystemService(ClipboardManager::class.java)
             .setPrimaryClip(ClipData.newPlainText("验证码", code))
-        actions.onMessage("验证码 $code 已复制")
+        actions.onMessage("验证码已复制")
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -705,6 +731,8 @@ private fun ConversationPane(
                             msg = msg,
                             isOutgoing = msg.deviceId == deviceId && msg.sender != sender,
                             onCopyCode = ::copyCode,
+                            aiEnabled = model.aiEnabled,
+                            onChangeCategory = { category -> actions.onChangeCategory(msg.id, category) },
                             modifier = Modifier.animateItem(),
                         )
                     }
@@ -756,8 +784,10 @@ private fun MessageBubble(
     isOutgoing: Boolean,
     onCopyCode: (String) -> Unit,
     modifier: Modifier = Modifier,
+    aiEnabled: Boolean = false,
+    onChangeCategory: (String) -> Unit = {},
 ) {
-    val otp = remember(msg.body) { extractOtp(msg.body) }
+    val otp = msg.analysis.otp.ifEmpty { extractOtp(msg.body).orEmpty() }.ifEmpty { null }
     val shape =
         if (isOutgoing) RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp)
         else RoundedCornerShape(24.dp, 24.dp, 24.dp, 6.dp)
@@ -776,23 +806,39 @@ private fun MessageBubble(
                 else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            if (otp != null) {
+                Text(otp, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = { onCopyCode(otp) }) { Text("复制验证码") }
+                if (msg.analysis.expiresAt > 0) Text(
+                    if (msg.analysis.expiresAt <= System.currentTimeMillis()) "按短信标注的有效期，可能已过期"
+                    else "短信标注有效至 ${formatClock(msg.analysis.expiresAt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
             SelectionContainer {
                 Text(
                     msg.body,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
+            }
         }
-        if (otp != null) {
-            AssistChip(
-                onClick = { onCopyCode(otp) },
-                label = { Text("复制验证码 $otp") },
-                leadingIcon = {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(AssistChipDefaults.IconSize))
-                },
-                shape = CircleShape,
-            )
+        if (aiEnabled && otp == null) {
+            Text("${messageGroupLabels[msg.analysis.category] ?: "待分析"} · ${if (msg.local) "上传后分析" else msg.analysis.label()}", style = MaterialTheme.typography.labelSmall)
+            if (!msg.local) {
+                var adjusting by remember(msg.id) { mutableStateOf(false) }
+                TextButton(onClick = { adjusting = !adjusting }) { Text("调整分类") }
+                if (adjusting) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        items(listOf("personal", "notification", "promotion", "spam", "auto") + if (msg.analysis.state == "failed") listOf("retry") else emptyList()) { category ->
+                            TextButton(onClick = { adjusting = false; onChangeCategory(category) }) {
+                                Text(messageGroupLabels[category] ?: if (category == "auto") "恢复自动分类" else "重试分析")
+                            }
+                        }
+                    }
+                }
+            }
         }
         Text(
             buildString {

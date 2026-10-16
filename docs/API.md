@@ -33,3 +33,16 @@ token 和密码没有放在 URL 的接口。登录失败按来源地址限速。
 HTTPS PUBLIC_URL、直接 TLS 或已通过 Origin 校验的 HTTPS 登录强制 Secure cookie。
 Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；Web 无持久缓存，从 /me 当前 head 观察变化，
 按需请求会话/历史，不请求 /sync 丢弃正文，因此不再有 /sync 的 409 重试死循环。
+## 短信分析扩展
+
+设计与隐私边界见 [MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)。所有接口沿用现有认证。
+
+- `GET /api/analysis/settings`：开关、暂停状态、队列计数、修订号；管理员额外读取非敏感配置及 key_set。
+- `PUT /api/analysis/settings`：仅管理员；完整配置 enabled、paused、endpoint、model、timeout_seconds、requests_per_minute、daily_limit、redact；api_key 留空保留，clear_key 显式清除。启用需 consent=true。
+- `POST /api/analysis/test`：仅管理员，以固定合成文本测试已保存配置，不发送短信。
+- `POST /api/analysis/retry`：管理员恢复全局失败任务；单条使用消息分类接口 retry。
+- `PATCH /api/messages/{id}/category`：授权设备设置 category=personal/notification/promotion/spam；category=auto 恢复自动分类；category=retry 重试失败项。
+- `GET /api/analysis?after=N&limit=200`：独立元数据增量，返回 items、cursor、more、epoch；游标超过修订头返回 409 analysis_cursor_changed。客户端将结果和游标同事务保存。
+- `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other。
+- `GET /api/analysis/counts`：接受 q/sim/device/sender 筛选，返回消息数 counts（不是会话数）。
+- `/api/me` 新增 ai_enabled、analysis_revision。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；原消息 ID 与 /sync 不因分类更新而改变。
