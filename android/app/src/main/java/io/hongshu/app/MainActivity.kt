@@ -198,13 +198,13 @@ fun HongshuUI(activity: MainActivity) {
 
     LaunchedEffect(changes, simFilter, messageLimit) {
         loadedHomeMessages =
-            withContext(Dispatchers.IO) { repo.store.messages("", "", simFilter, limit = messageLimit) }
+            withContext(Dispatchers.IO) { repo.store.messagesWithLocal("", "", simFilter, limit = messageLimit) }
     }
 
     LaunchedEffect(changes, searchQuery, simFilter, messageLimit) {
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
-                repo.store.messages("", searchQuery, simFilter, limit = messageLimit)
+                repo.store.messagesWithLocal("", searchQuery, simFilter, limit = messageLimit)
             }
     }
 

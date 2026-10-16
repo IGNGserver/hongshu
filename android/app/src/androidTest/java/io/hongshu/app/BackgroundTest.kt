@@ -46,7 +46,14 @@ class BackgroundTest {
                     clients.add(client)
                     thread(isDaemon = true) {
                         client.use {
-                            val input = client.getInputStream().buffered()
+                            // close() may shut this socket before the thread starts reading;
+                            // an uncaught exception here would crash the instrumented app.
+                            val input =
+                                runCatching { client.getInputStream().buffered() }.getOrNull()
+                            if (input == null) {
+                                clients.remove(client)
+                                return@use
+                            }
                             fun line(): String {
                                 val bytes = java.io.ByteArrayOutputStream()
                                 while (true) {

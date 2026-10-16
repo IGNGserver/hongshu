@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
@@ -115,60 +116,87 @@ fun LocalPendingPage(host: SettingsHost) {
     }
 
     SettingsScaffold(SettingsPage.Pending.title, host.back, host.busy) {
-        settingsItem("summary") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CountTile("等待上传", counts.ready, Modifier.weight(1f))
-                CountTile("待确认号码", counts.needsSim, Modifier.weight(1f), counts.needsSim > 0)
-                CountTile("异常", counts.invalid, Modifier.weight(1f), counts.invalid > 0)
-            }
+        settingsItem("intro") {
+            Text(
+                "这里是本机已收到、但中枢还没确认收到的短信。上传成功后会自动从这里消失，并出现在会话列表中。手机短信应用里的原短信不受影响。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            )
         }
+        if (counts.ready > 0)
+            settingsItem("group-ready") {
+                PendingGroupCard("等待上传 ${counts.ready} 条", uploadAttemptStatus(config, connected)) {
+                    FilledTonalButton(
+                        enabled = !host.busy,
+                        onClick = {
+                            host.action {
+                                syncNow(repo.context, manual = true)
+                                "已开始上传"
+                            }
+                        },
+                    ) {
+                        Text("立即上传")
+                    }
+                }
+            }
+        if (counts.needsSim > 0)
+            settingsItem("group-sim") {
+                PendingGroupCard(
+                    "需确认接收号码 ${counts.needsSim} 条",
+                    if (sims.isEmpty())
+                        "系统没有告诉鸿枢这些短信是哪张卡收到的，且尚未配置任何手机号。请先填写 SIM 卡号码。"
+                    else "系统没有告诉鸿枢这些短信是哪张卡收到的。确认后为它们选择接收号码即可上传。",
+                ) {
+                    if (sims.isEmpty())
+                        FilledTonalButton(onClick = { host.navigate(SettingsPage.Sims) }) {
+                            Text("填写 SIM 卡号码")
+                        }
+                    else
+                        FilledTonalButton(
+                            enabled = !host.busy,
+                            onClick = {
+                                host.action {
+                                    val keys = withContext(Dispatchers.IO) { repo.store.unresolvedKeys() }
+                                    withContext(Dispatchers.Main) {
+                                        assigning = keys.takeIf { it.isNotEmpty() }
+                                    }
+                                    if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
+                                }
+                            },
+                        ) {
+                            Text("指定接收号码")
+                        }
+                }
+            }
+        if (counts.invalid > 0)
+            settingsItem("group-invalid") {
+                PendingGroupCard(
+                    "无法上传 ${counts.invalid} 条",
+                    "内容或格式被本机校验或中枢拒绝。可以重试；确认不需要时，在下方逐条放弃上传。",
+                ) {
+                    OutlinedButton(
+                        enabled = !host.busy,
+                        onClick = {
+                            host.action {
+                                repo.store.retryInvalid()
+                                syncNow(repo.context, manual = true)
+                                "已重新排队 ${counts.invalid} 条记录"
+                            }
+                        },
+                    ) {
+                        Text("全部重试")
+                    }
+                }
+            }
         settingsItem("sync") {
             Text(
-                smsSyncStatus(repo.context, repo),
-                style = MaterialTheme.typography.bodyMedium,
+                "中枢同步：${smsSyncStatus(repo.context, repo)}",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
             )
         }
-        if (counts.needsSim > 0)
-            settingsItem("needs-sim") {
-                NoticeCard(
-                    icon = Icons.Default.SimCard,
-                    title = "${counts.needsSim} 条短信不确定是哪张卡收到的",
-                    text =
-                        if (sims.isEmpty()) "请先在“SIM 卡与号码”中填写手机号"
-                        else "选择接收号码后，这些短信会按该号码上传",
-                    actionLabel = if (sims.isEmpty()) "设置号码" else "指定号码",
-                    onAction = {
-                        if (sims.isEmpty()) host.navigate(SettingsPage.Sims)
-                        else
-                            host.action {
-                                val keys = withContext(Dispatchers.IO) { repo.store.unresolvedKeys() }
-                                withContext(Dispatchers.Main) {
-                                    assigning = keys.takeIf { it.isNotEmpty() }
-                                }
-                                if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
-                            }
-                    },
-                    modifier = Modifier.padding(bottom = 12.dp),
-                )
-            }
-        if (counts.invalid > 0)
-            settingsItem("retry-all") {
-                OutlinedButton(
-                    onClick = {
-                        host.action {
-                            repo.store.retryInvalid()
-                            syncNow(repo.context, manual = true)
-                            "已重新排队 ${counts.invalid} 条异常记录"
-                        }
-                    },
-                    enabled = !host.busy,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                ) {
-                    Text("重试 ${counts.invalid} 条异常记录")
-                }
-            }
         val list = records
         when {
             list == null ->
@@ -189,13 +217,13 @@ fun LocalPendingPage(host: SettingsHost) {
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                         )
-                        Text("所有短信都已上传", style = MaterialTheme.typography.titleMedium)
+                        Text("没有未上传的短信", style = MaterialTheme.typography.titleMedium)
                     }
                 }
             else ->
                 settingsGroup(
                     "records",
-                    "保留在本机的短信",
+                    "未上传的短信",
                     list.map { record ->
                         val state =
                             pendingState(
@@ -251,28 +279,27 @@ fun LocalPendingPage(host: SettingsHost) {
             }
         settingsItem("help") {
             ExpandableHelp(
-                "短信在中枢确认收到之前不会从本机删除；这里和中枢里的收件箱是分开的。号码不确定的短信不会按卡槽猜测归属；“指定号码”只在你确认后生效。“放弃上传”会从本机队列删除记录，手机短信应用中的原短信不受影响。"
+                "短信在中枢确认收到之前不会从本机删除；这里和中枢里的收件箱是分开的。号码不确定的短信不会按卡槽猜测归属；“指定接收号码”只在你确认后生效。“放弃上传”会从本机队列删除记录，手机短信应用中的原短信不受影响。"
             )
         }
     }
 }
 
 @Composable
-private fun CountTile(label: String, value: Int, modifier: Modifier, attention: Boolean = false) {
+private fun PendingGroupCard(
+    title: String,
+    detail: String,
+    action: @Composable () -> Unit,
+) {
     Surface(
-        modifier,
+        Modifier.fillMaxWidth().padding(bottom = 4.dp),
         shape = MaterialTheme.shapes.large,
-        color =
-            if (attention) MaterialTheme.colorScheme.tertiaryContainer
-            else MaterialTheme.colorScheme.surfaceContainer,
+        color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                "$value",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(label, style = MaterialTheme.typography.labelMedium)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            action()
         }
     }
 }

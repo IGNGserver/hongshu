@@ -37,7 +37,27 @@ enum class PendingState {
 data class PendingCounts(val ready: Int = 0, val needsSim: Int = 0, val invalid: Int = 0) {
     val total: Int get() = ready + needsSim + invalid
 
-    fun label(): String = "本地保留 $total 条 · $ready 条已映射待传 · $needsSim 条待确认号码 · $invalid 条异常"
+    // "Pending" means captured on this phone and not yet acknowledged by the hub.
+    fun label(): String =
+        if (total == 0) "没有未上传的短信"
+        else
+            "未上传 $total 条：" +
+                listOfNotNull(
+                        "$ready 条等待上传".takeIf { ready > 0 },
+                        "$needsSim 条需确认接收号码".takeIf { needsSim > 0 },
+                        "$invalid 条无法上传".takeIf { invalid > 0 },
+                    )
+                    .joinToString(" · ")
+
+    // One line for the home screen; names the part that needs the user, if any.
+    fun banner(): String =
+        "有 $total 条本机短信尚未上传到中枢" +
+            when {
+                needsSim > 0 && invalid > 0 -> "，其中 ${needsSim + invalid} 条需要你处理"
+                needsSim > 0 -> "，其中 $needsSim 条需要确认接收号码"
+                invalid > 0 -> "，其中 $invalid 条无法上传"
+                else -> ""
+            }
 }
 
 data class LocalPendingMessage(
@@ -72,11 +92,11 @@ fun pendingState(
 
 fun pendingStateLabel(state: PendingState): String =
     when (state) {
-        PendingState.NEEDS_SIM -> "接收号码待确认"
-        PendingState.INVALID -> "记录异常 · 保留等待处理"
+        PendingState.NEEDS_SIM -> "需确认接收号码：系统没有告知是哪张卡收到的"
+        PendingState.INVALID -> "无法上传：内容或格式被拒绝，可重试或放弃"
         PendingState.SERVER_DENIED -> "中枢已禁止本机上传"
-        PendingState.NEEDS_HUB -> "等待连接或重新授权中枢"
-        PendingState.PAUSED -> "同步已关闭 · 记录已保留"
+        PendingState.NEEDS_HUB -> "未连接中枢或授权已失效"
+        PendingState.PAUSED -> "“同步本机短信”已关闭，记录已保留"
         PendingState.WAITING_NETWORK -> "等待网络"
-        PendingState.WAITING_UPLOAD -> "等待上传确认"
+        PendingState.WAITING_UPLOAD -> "等待上传"
     }

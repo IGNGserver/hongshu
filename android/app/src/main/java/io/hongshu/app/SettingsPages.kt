@@ -457,6 +457,14 @@ fun SimsPage(host: SettingsHost) {
     val simPermissions =
         arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS)
 
+    fun setPhone(slot: Int, value: String) {
+        phones =
+            phones.toMutableList().also { list ->
+                while (list.size <= slot) list.add("")
+                list[slot] = value
+            }
+    }
+
     val lifecycleState by activity.lifecycle.currentStateFlow.collectAsState()
     LaunchedEffect(automatic, lifecycleState, host.refresh) {
         if (!lifecycleState.isAtLeast(Lifecycle.State.STARTED)) return@LaunchedEffect
@@ -489,7 +497,9 @@ fun SimsPage(host: SettingsHost) {
     fun chooseAutomatic() {
         host.enableWithPermission(simPermissions, "未授予电话权限，无法自动识别号码") {
             val active = scanSims(activity)
-            saveSimSelection(activity, true, active)
+            // Numbers typed for cards the system does not report are kept with the card; a
+            // blank field leaves that card unsynced rather than guessing its number.
+            saveSimSelection(activity, true, automaticSimMappings(active, phones))
             withContext(Dispatchers.Main) {
                 automatic = true
                 candidates = active
@@ -497,6 +507,17 @@ fun SimsPage(host: SettingsHost) {
             SimMonitor.start(activity)
             syncNow(activity, manual = true)
             "已切换为自动识别，换卡或换号会自动更新"
+        }
+    }
+
+    fun saveAutomaticNumbers() {
+        host.action {
+            val active = scanSims(activity)
+            saveSimSelection(activity, true, automaticSimMappings(active, phones))
+            withContext(Dispatchers.Main) { candidates = active }
+            SimMonitor.start(activity)
+            syncNow(activity, manual = true)
+            "号码已保存，换卡或换号会自动更新"
         }
     }
 
@@ -546,7 +567,7 @@ fun SimsPage(host: SettingsHost) {
                     }
                 }
                 Text(
-                    if (automatic) "从系统读取每张卡的号码，换卡后自动更新。"
+                    if (automatic) "从系统读取每张卡的号码，换卡后自动更新。系统读不到号码的卡可在下方填写。"
                     else "系统读不到号码时，手动填写每张卡的手机号，填完点保存。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -585,33 +606,41 @@ fun SimsPage(host: SettingsHost) {
             "SIM 卡",
             slots.map { slot ->
                 val sim = candidates.find { it.slot == slot }
+                val missingNumber = sim != null && sim.phone.isEmpty()
                 SettingsRow("slot-$slot-$automatic") {
                     if (automatic) {
-                        SettingsItem(
-                            title = "卡 ${slot + 1}",
-                            summary =
-                                when {
-                                    sim == null -> "未插卡"
-                                    sim.phone.isEmpty() -> "系统没有提供号码，可改用手动填写"
-                                    else -> sim.phone
-                                },
-                            icon = Icons.Default.SimCard,
-                            status =
-                                when {
-                                    sim == null -> StatusLevel.Off to "无卡"
-                                    sim.phone.isEmpty() -> StatusLevel.Attention to "未识别"
-                                    else -> StatusLevel.Ok to "已识别"
-                                },
-                        )
+                        Column {
+                            SettingsItem(
+                                title = "卡 ${slot + 1}",
+                                summary =
+                                    when {
+                                        sim == null -> "未插卡"
+                                        missingNumber -> "系统没有提供号码，请在下方填写"
+                                        else -> sim.phone
+                                    },
+                                icon = Icons.Default.SimCard,
+                                status =
+                                    when {
+                                        sim == null -> StatusLevel.Off to "无卡"
+                                        missingNumber -> StatusLevel.Attention to "未识别"
+                                        else -> StatusLevel.Ok to "已识别"
+                                    },
+                            )
+                            if (missingNumber)
+                                OutlinedTextField(
+                                    phones.getOrElse(slot) { "" },
+                                    { setPhone(slot, it) },
+                                    label = { Text("卡 ${slot + 1} 手机号（留空则不同步该卡）") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                    modifier =
+                                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                        }
                     } else {
                         OutlinedTextField(
                             phones.getOrElse(slot) { "" },
-                            { value ->
-                                phones = phones.toMutableList().also { list ->
-                                    while (list.size <= slot) list.add("")
-                                    list[slot] = value
-                                }
-                            },
+                            { setPhone(slot, it) },
                             label = { Text("卡 ${slot + 1} 手机号") },
                             placeholder = { Text(if (sim == null) "未插卡" else "例如 13800138000") },
                             singleLine = true,
@@ -641,9 +670,19 @@ fun SimsPage(host: SettingsHost) {
                     }
                 }
             }
+        else if (candidates.any { it.phone.isEmpty() })
+            settingsItem("auto-save") {
+                Button(
+                    onClick = ::saveAutomaticNumbers,
+                    enabled = !host.busy,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                ) {
+                    Text("保存号码")
+                }
+            }
         settingsItem("help") {
             ExpandableHelp(
-                "号码用于区分短信由哪张卡接收。号码无法确定的短信会先保留在本机，不会按卡槽猜测；设置号码后，能确定归属的记录会补传。"
+                "号码用于区分短信由哪张卡接收。号码无法确定的短信会先保留在本机，不会按卡槽猜测；设置号码后，能确定归属的记录会补传。留空表示不同步该卡。"
             )
         }
     }

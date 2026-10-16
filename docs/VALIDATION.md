@@ -20,6 +20,45 @@
 | 同一环境 `HONGSHU_SCREENSHOT_DIR=… :app:testDebugUnitTest --tests io.hongshu.app.UiScreenshotTest` | 通过；Robolectric 原生渲染 11 张截图（设置各页、首页、首次使用、对话，含深色），人工检查后修正了短对话被顶到顶部和长号码被截断两处问题 |
 | Go/MySQL、Web/PWA | 本轮无改动，未在本机执行；由 PR CI 承担 |
 | 真机、模拟器、API 28/33/35 设备矩阵、预测性返回手势实际手感、厂商 ROM | 未执行：本机无 adb 设备和模拟器；截图来自 Robolectric，不能代替真机验证 |
+# 2026-10-16 Android 未上传短信展示（PR-3）
+
+基于 `agent/android-upload-timeliness`（`082ddf3`），分支 `agent/android-pending-ux`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
+
+修复：“本机待同步短信”含义不明、“已映射待传”等术语；逐条状态只是按开关推测，看不到真实失败原因；
+状态栏直接显示 `中枢返回 503 (database_unavailable)`；本机短信上传前在会话列表中不可见；
+通知兜底以联系人名称作发件人立即上传导致会话分裂；同步状态混入队列计数。
+新增：页面改名“未上传到中枢的短信”并按原因分组（立即上传/指定接收号码/全部重试），显示上次尝试时间与原因；
+中枢错误码中文说明；会话视图合并未上传本机记录并标注“未上传”；名称标题的通知记录暂缓 150 秒等待号码；
+首页横幅直达该页面。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-pending-ux`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，2m30s；104 项 JVM/Robolectric 测试 0 失败（新增 `PendingDisplayTest` 4 项），lint 0 错误（新增 2 条既有风格的 UseKtx 警告） |
+| 界面实际渲染、真机 | 未执行；本机无设备/模拟器，界面仅经编译与 lint 检查，需在设备上目测 |
+
+# 2026-10-16 Android 上传时效（PR-2）
+
+基于 `agent/android-queue-unstick`（`f358f98`），分支 `agent/android-upload-timeliness`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
+
+修复：退避中的同步任务吞掉新短信与打开应用的触发；WorkManager 退避最长翻倍到 5 小时；联系人刷新失败让成功的上传进入退避；
+历史分页用失败重试续跑，拖住同一维护链上的新短信补漏；每批上传前重复登记 SIM；本机上传开关 PATCH 失败或同中枢重新登录后，
+中枢 `upload=false` 被误当成管理员禁用且永不自愈，重新登录还关闭本机采集。
+新增：紧急触发（新短信、补漏观察者、通知兜底、打开应用、中枢推送、用户操作）以加急任务上传并替换排队中的退避任务，
+不取消运行中的同步；第 5 次失败起固定 15 分钟重试；联系人失败仅标记；分页成功后 10 秒追加下一页；
+SIM 登记按设备 ID 缓存，`sim_not_confirmed` 时对缓存号码重登一次；上传开关“待确认”标志与同步时自动重发 PATCH。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-upload-timeliness`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，1m32s；100 项 JVM/Robolectric 测试 0 失败（新增 `SyncReconcileTest` 2 项、调度 2 项），lint 0 错误 |
+| `NetworkTest` 联系人故障与 SIM 登记次数断言 | 已按新语义更新（同步成功、联系人标记不健康；第二轮不重复 PUT），由 CI 模拟器执行 |
+| API 28/33/35 模拟器、真机、Android 12 以下加急前台通知 | 本机未执行；模拟器由推送 CI 承担，真机未验证 |
+
 # 2026-10-16 Android 待同步队列解堵（PR-1）
 
 基线 `3ea8242`，分支 `agent/android-queue-unstick`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支，不建 PR、不发版。

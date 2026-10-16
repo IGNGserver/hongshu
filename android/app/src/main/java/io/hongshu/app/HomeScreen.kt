@@ -257,8 +257,8 @@ private fun ConversationListPane(
         ) {
             NoticeCard(
                 icon = Icons.Default.Outbox,
-                title = "${f.pending.total} 条短信等待上传",
-                text = "保留在本机，联网或中枢可用后自动上传",
+                title = f.pending.banner(),
+                text = "点击查看原因并处理",
                 actionLabel = "查看",
                 onAction = { actions.onOpenSettings(SettingsPage.Pending) },
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -590,7 +590,7 @@ private fun ConversationRow(
                     )
                 }
                 Text(
-                    message.body,
+                    if (message.local) "未上传 · ${message.body}" else message.body,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -618,7 +618,7 @@ private fun ConversationPane(
     LaunchedEffect(conversation, model.changes, messageLimit) {
         messages =
             withContext(Dispatchers.IO) {
-                repo.store.messages(sender, "", conversation.receiver, limit = messageLimit)
+                repo.store.messagesWithLocal(sender, "", conversation.receiver, limit = messageLimit)
             }
     }
     val deviceId = repo.config.deviceId
@@ -798,6 +798,7 @@ private fun MessageBubble(
             buildString {
                 append(formatClock(msg.timestamp))
                 if (msg.historical) append(" · 历史补齐")
+                if (msg.local) append(" · 未上传到中枢")
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

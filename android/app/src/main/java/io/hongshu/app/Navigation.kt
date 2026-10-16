@@ -53,7 +53,7 @@ enum class SettingsPage(val title: String) {
     Sims("SIM 卡与号码"),
     Notifications("通知"),
     Background("后台运行"),
-    Pending("待上传短信"),
+    Pending("未上传到中枢的短信"),
     Diagnostics("诊断信息"),
     About("关于鸿枢"),
 }
