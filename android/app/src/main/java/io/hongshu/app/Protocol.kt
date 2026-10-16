@@ -9,7 +9,14 @@ data class SmsRecord(
     val timestamp: Long,
     val subscriptionId: Int,
     val historical: Boolean = false,
+    // The network timestamp that identifies a redelivered broadcast, set only when an
+    // implausible network time was replaced by the local receive time. Nullable so that
+    // copy(timestamp = ...) never carries a stale identity.
+    val networkTime: Long? = null,
 ) {
+    val identityTime: Long
+        get() = networkTime ?: timestamp
+
     fun fingerprint(): String = sha256("$receiver\u0000$sender\u0000$timestamp\u0000$body")
 }
 
@@ -23,6 +30,15 @@ fun sha256(value: String): String =
 fun confirmedNumber(value: String): Boolean = Regex("^\\+?[0-9]{3,20}$").matches(value)
 
 fun normalizeSimNumber(value: String): String = value.filterNot { it.isWhitespace() || it in "()-" }
+
+internal const val SMS_CLOCK_SKEW_LIMIT = 10 * 60 * 1000L
+
+// The PDU carries the SMSC's time, which some carriers and roaming networks get wrong by hours.
+// Beyond the limit the local receive time is a better ordering and pairing key.
+fun effectiveSmsTime(networkTime: Long, receivedAt: Long): Long =
+    if (networkTime <= 0 || kotlin.math.abs(networkTime - receivedAt) > SMS_CLOCK_SKEW_LIMIT)
+        receivedAt
+    else networkTime
 
 fun isHistoricalSMS(timestamp: Long, boundary: Long): Boolean = boundary > 0 && timestamp < boundary
 

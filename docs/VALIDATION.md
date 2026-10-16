@@ -1,3 +1,20 @@
+# 2026-10-16 Android 本地库并发与短信时间（PR-4）
+
+基于 `agent/android-pending-ux`（`c5769ee`），分支 `agent/android-store-robustness`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
+
+修复：多个组件各自打开同一 SQLite 文件、未启用 WAL，并发写入锁冲突会让广播落库失败而丢短信；
+运营商短信中心时间偏差数小时时，排序、与收件箱配对和上传都使用错误时间。
+新增：WAL、写连接 `busy_timeout=10000`、广播落库遇锁重试 3 次；与接收时间相差超过 10 分钟的网络时间改用接收时间，
+原网络时间仅保留为重投识别。未改为单例连接（迁移测试依赖真实关闭/重开），理由见 `REALTIME_SMS.md`。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；11 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gitleaks dir --no-banner --redact android/app/src docs` | 通过；no leaks found |
+| scratch `~/.build/短信同步系统/android-store-robustness`，JDK 17：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` | 通过，1m45s；107 项 JVM/Robolectric 测试 0 失败（新增 `StoreRobustnessTest` 3 项：3 个连接并发写 300 条无异常、遇锁重试、时间纠正与重投去重），lint 0 错误 |
+| API 28/33/35 模拟器、真机锁冲突与漫游时间 | 本机未执行；模拟器由推送 CI 承担，真机未验证 |
+
 # 2026-10-16 Android 界面：M3 Expressive、动效与设置重组
 
 基线 `3ea8242`（`0.1.0-alpha.21`），分支 `agent/android-m3e-ux`，版本号不变。只改 Android 客户端界面层，
@@ -19,8 +36,7 @@
 | macOS-dev2 scratch `/Users/lvziw/.build/短信同步系统/android-m3e-ux`（根盘剩余 209G）：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` | 通过，2m33s；116 项 JVM/Robolectric 测试，105 通过、11 项截图测试按设计跳过、0 失败；lint 无错误，新增代码无新警告（保留一处 `stopService(Intent)` 的 ImplicitSamInstance 误报，与原实现相同）；debug APK 生成 |
 | 同一环境 `HONGSHU_SCREENSHOT_DIR=… :app:testDebugUnitTest --tests io.hongshu.app.UiScreenshotTest` | 通过；Robolectric 原生渲染 11 张截图（设置各页、首页、首次使用、对话，含深色），人工检查后修正了短对话被顶到顶部和长号码被截断两处问题 |
 | Go/MySQL、Web/PWA | 本轮无改动，未在本机执行；由 PR CI 承担 |
-| 真机、模拟器、API 28/33/35 设备矩阵、预测性返回手势实际手感、厂商 ROM | 未执行：本机无 adb 设备和模拟器；截图来自 Robolectric，不能代替真机验证 |
-# 2026-10-16 Android 未上传短信展示（PR-3）
+| 真机、模拟器、API 28/33/35 设备矩阵、预测性返回手势实际手感、厂商 ROM | 未执行：本机无 adb 设备和模拟器；截图来自 Robolectric，不能代替真机验证 |# 2026-10-16 Android 未上传短信展示（PR-3）
 
 基于 `agent/android-upload-timeliness`（`082ddf3`），分支 `agent/android-pending-ux`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。
 

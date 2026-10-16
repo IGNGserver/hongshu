@@ -44,6 +44,37 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val changes = MutableStateFlow(0L)
     }
 
+    @Volatile private var closed = false
+
+    // The UI closes its store when the composition leaves, while a read started on the IO
+    // thread may still be running. Such a read has no screen left to update, so it is
+    // dropped instead of crashing the process on a closed connection pool.
+    fun <T> readUnlessClosed(fallback: T, block: Store.() -> T): T {
+        if (closed) return fallback
+        return try {
+            block()
+        } catch (e: IllegalStateException) {
+            if (closed) fallback else throw e
+        }
+    }
+
+    override fun close() {
+        closed = true
+        super.close()
+    }
+
+    // The broadcast receiver, notification listener, workers and UI each open their own
+    // connection to this file. WAL lets readers proceed during a write, and a longer busy
+    // timeout on the write (primary) connection makes concurrent writers wait instead of
+    // failing a broadcast capture; WAL reader connections keep Android's default.
+    init {
+        setWriteAheadLoggingEnabled(true)
+    }
+
+    override fun onConfigure(db: SQLiteDatabase) {
+        db.rawQuery("PRAGMA busy_timeout=10000", null).use { it.moveToFirst() }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE outbox (key TEXT PRIMARY KEY, receiver TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, timestamp INTEGER NOT NULL, sub INTEGER NOT NULL, slot INTEGER NOT NULL, historical INTEGER NOT NULL DEFAULT 0, blocked TEXT NOT NULL DEFAULT '')"
@@ -241,7 +272,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     private fun capture(m: SmsRecord, slot: Int, providerId: Long?, advance: Boolean): Boolean {
         val db = writableDatabase
         val broadcastKey =
-            sha256("${m.subscriptionId}\u0000${m.sender}\u0000${m.timestamp}\u0000${m.body}")
+            sha256("${m.subscriptionId}\u0000${m.sender}\u0000${m.identityTime}\u0000${m.body}")
         val key = if (providerId == null) broadcastKey else "provider:$providerId"
         db.beginTransaction()
         try {
