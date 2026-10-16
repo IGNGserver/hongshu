@@ -50,7 +50,7 @@ type AISettings struct {
 	Queue      map[string]int64 `json:"queue"`
 }
 
-const analysisFields = "COALESCE(x.otp,''),COALESCE(x.expires_at,0),COALESCE(x.category,''),COALESCE(x.manual,FALSE),COALESCE(x.state,'pending'),COALESCE(x.error,''),COALESCE(x.revision,0)"
+const analysisFields = "COALESCE(x.otp,''),COALESCE(x.expires_at,0),COALESCE(x.category,''),COALESCE(x.manual_override,FALSE),COALESCE(x.state,'pending'),COALESCE(x.error,''),COALESCE(x.revision,0)"
 const messageJoins = " LEFT JOIN contacts c ON c.phone=m.sender LEFT JOIN message_analysis x ON x.message_id=m.id"
 const effectiveGroup = "CASE WHEN COALESCE(x.otp,'')<>'' THEN 'otp' WHEN COALESCE(x.category,'')<>'' THEN x.category ELSE 'pending' END"
 const settingsSQL = "SELECT enabled,paused,endpoint,model,secret,timeout_seconds,requests_per_minute,daily_limit,redact,generation,revision,usage_day,usage_count,last_error FROM ai_settings WHERE id=1"
@@ -465,7 +465,7 @@ func (a *app) changeCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	var otp, state string
 	var manual bool
-	if tx.QueryRowContext(r.Context(), "SELECT otp,state,manual FROM message_analysis WHERE message_id=? FOR UPDATE", id).Scan(&otp, &state, &manual) != nil {
+	if tx.QueryRowContext(r.Context(), "SELECT otp,state,manual_override FROM message_analysis WHERE message_id=? FOR UPDATE", id).Scan(&otp, &state, &manual) != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
@@ -489,7 +489,7 @@ func (a *app) changeCategory(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	_, e = tx.ExecContext(r.Context(), "UPDATE message_analysis SET category=?,manual=?,state=?,error='',attempts=0,next_at=0,lease_token='',leased_until=0,revision=? WHERE message_id=?", category, manual, state, rev, id)
+	_, e = tx.ExecContext(r.Context(), "UPDATE message_analysis SET category=?,manual_override=?,state=?,error='',attempts=0,next_at=0,lease_token='',leased_until=0,revision=? WHERE message_id=?", category, manual, state, rev, id)
 	if e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -519,7 +519,7 @@ func (a *app) retryAnalysis(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "ai_disabled")
 		return
 	}
-	rows, e := tx.QueryContext(r.Context(), "SELECT message_id FROM message_analysis WHERE state='failed' AND manual=FALSE ORDER BY message_id DESC LIMIT 100 FOR UPDATE")
+	rows, e := tx.QueryContext(r.Context(), "SELECT message_id FROM message_analysis WHERE state='failed' AND manual_override=FALSE ORDER BY message_id DESC LIMIT 100 FOR UPDATE")
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -651,7 +651,10 @@ func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
 	}
 	j := &analysisJob{Settings: s}
 	var attempts int
-	e = tx.QueryRowContext(ctx, "SELECT x.message_id,m.body,x.attempts FROM message_analysis x JOIN messages m ON m.id=x.message_id WHERE x.otp='' AND x.manual=FALSE AND x.category='' AND ((x.state='pending' AND x.next_at<=?) OR (x.state='processing' AND x.leased_until<=?)) ORDER BY m.historical ASC,m.timestamp DESC,m.id DESC LIMIT 1 FOR UPDATE SKIP LOCKED", now, now).Scan(&j.ID, &j.Body, &attempts)
+	// All queue mutations take the settings-row lock first. Do not lock messages
+	// while sorting candidates: ingestion already holds message/FK locks before
+	// allocating an analysis revision, and reversing that order risks deadlocks.
+	e = tx.QueryRowContext(ctx, "SELECT x.message_id,m.body,x.attempts FROM message_analysis x JOIN messages m ON m.id=x.message_id WHERE x.otp='' AND x.manual_override=FALSE AND x.category='' AND ((x.state='pending' AND x.next_at<=?) OR (x.state='processing' AND x.leased_until<=?)) ORDER BY m.historical ASC,m.timestamp DESC,m.id DESC LIMIT 1", now, now).Scan(&j.ID, &j.Body, &attempts)
 	if e == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -773,7 +776,7 @@ func (a *app) finishAnalysis(ctx context.Context, j *analysisJob, category, code
 	}
 	var token string
 	var attempts int
-	e = tx.QueryRowContext(ctx, "SELECT lease_token,attempts FROM message_analysis WHERE message_id=? AND manual=FALSE FOR UPDATE", j.ID).Scan(&token, &attempts)
+	e = tx.QueryRowContext(ctx, "SELECT lease_token,attempts FROM message_analysis WHERE message_id=? AND manual_override=FALSE FOR UPDATE", j.ID).Scan(&token, &attempts)
 	if e == sql.ErrNoRows {
 		return nil
 	}

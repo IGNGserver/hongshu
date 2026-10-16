@@ -134,7 +134,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     fun aiEnabled(): Boolean = meta("ai_enabled") != 0L
     fun rememberAI(enabled: Boolean) {
+        if (aiEnabled() == enabled) return
         writableDatabase.execSQL("UPDATE meta SET value=? WHERE key='ai_enabled'", arrayOf(if (enabled) 1 else 0))
+        changes.value++
     }
     fun analysisCursor(): Long = meta("analysis_cursor")
 
@@ -187,6 +189,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             batch.lastOrNull()?.let { db.execSQL("UPDATE meta SET value=? WHERE key='local_rule_cursor'", arrayOf(it.first)) }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+        if (batch.isNotEmpty()) changes.value++
     }
 
     private fun createCaptureDiagnostics(db: SQLiteDatabase) {

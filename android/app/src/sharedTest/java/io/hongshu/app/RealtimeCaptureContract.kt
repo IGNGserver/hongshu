@@ -665,10 +665,15 @@ abstract class RealtimeCaptureContract {
                 store.writableDatabase.execSQL(
                     "DELETE FROM meta WHERE key LIKE 'realtime_%' OR key IN ('last_broadcast','last_capture')"
                 )
+                // Reconstruct v5 rather than merely relabeling the current schema.
+                store.writableDatabase.execSQL("DROP TABLE message_analysis")
+                store.writableDatabase.execSQL("DELETE FROM meta WHERE key IN ('analysis_cursor','ai_enabled','local_rule_cursor')")
                 store.writableDatabase.version = 5
             }
             Store(context, name).use { store ->
-                assertEquals(6, store.readableDatabase.version)
+                assertEquals(7, store.readableDatabase.version)
+                assertEquals(0L, store.analysisCursor())
+                assertFalse(store.aiEnabled())
                 assertEquals(50L, store.providerWatermark())
                 assertEquals(2, store.localPending().size)
                 assertEquals(1, store.blockedCount())

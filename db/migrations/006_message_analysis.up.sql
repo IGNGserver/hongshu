@@ -11,7 +11,7 @@ INSERT INTO ai_settings (id,secret,backfill_id,backfill_before) SELECT 1,'',COAL
 CREATE TABLE message_analysis (
  message_id BIGINT PRIMARY KEY, otp VARCHAR(8) NOT NULL DEFAULT '', expires_at BIGINT NOT NULL DEFAULT 0,
  rule_version INT NOT NULL DEFAULT 1, category VARCHAR(20) NOT NULL DEFAULT '',
- manual BOOLEAN NOT NULL DEFAULT FALSE, state VARCHAR(20) NOT NULL DEFAULT 'pending',
+ manual_override BOOLEAN NOT NULL DEFAULT FALSE, state VARCHAR(20) NOT NULL DEFAULT 'pending',
  error VARCHAR(50) NOT NULL DEFAULT '', attempts INT NOT NULL DEFAULT 0,
  next_at BIGINT NOT NULL DEFAULT 0, leased_until BIGINT NOT NULL DEFAULT 0,
  lease_token VARCHAR(32) NOT NULL DEFAULT '', revision BIGINT NOT NULL,

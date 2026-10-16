@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +30,12 @@ func TestOTP(t *testing.T) {
 		{"验证码：1234.50元", "", 0},
 		{"验证码为 12345678901", "", 0},
 		{"Your discount code is SAVE2026", "", 0},
+		{"验证码 1234已失效，5分钟后可再次申请", "1234", 0},
+		{"Your code is 1234. Wait 5 minutes before requesting a new valid code.", "1234", 0},
+		{"验证码 1234，有效期：30秒", "1234", 30000},
+		{"Your order code is 123456", "", 0},
+		{"验证码 1234 或 5678", "", 0},
+		{"Your code is 1234 or 5678", "", 0},
 	} {
 		t.Run(v.body, func(t *testing.T) {
 			got, expires := extractOTP(v.body, 1000)
@@ -42,6 +50,84 @@ func TestOTP(t *testing.T) {
 				t.Fatalf("expiry %d want %d", expires, want)
 			}
 		})
+	}
+}
+
+func TestAnalysisUpgradeBackfillAndRollback(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	rollback := func() {
+		t.Helper()
+		data, e := os.ReadFile("../db/migrations/006_message_analysis.down.sql")
+		if e != nil {
+			t.Fatal(e)
+		}
+		for _, statement := range strings.Split(string(data), ";") {
+			if strings.TrimSpace(statement) != "" {
+				if _, e = db.Exec(statement); e != nil {
+					t.Fatal(e)
+				}
+			}
+		}
+		if _, e = db.Exec("DELETE FROM schema_migrations WHERE version='006_message_analysis.up.sql'"); e != nil {
+			t.Fatal(e)
+		}
+	}
+	rollback()
+	if _, e := db.Exec("INSERT INTO devices (id,name,kind,token_hash,created_at) VALUES ('synthetic','Synthetic','android',?,0)", hash("synthetic")); e != nil {
+		t.Fatal(e)
+	}
+	insert := func(id int) {
+		t.Helper()
+		if _, e := db.Exec("INSERT INTO messages VALUES (?,'synthetic',?,'+8613800000000','10086','验证码 482913',?,1,TRUE)", id, hash(strconv.Itoa(id)), id); e != nil {
+			t.Fatal(e)
+		}
+	}
+	for i := 1; i <= 205; i++ {
+		insert(i)
+	}
+	if e := migrate(ctx, db, "../db/migrations"); e != nil {
+		t.Fatal(e)
+	}
+	s, e := loadAI(ctx, db, false)
+	if e != nil || s.Enabled {
+		t.Fatal("upgrade enabled AI", e)
+	}
+	// An old writer adds a message after the migration snapshot.
+	insert(206)
+	a := &app{db: db}
+	for batch := 1; batch <= 4; batch++ {
+		if e = a.backfillAnalysis(ctx); e != nil {
+			t.Fatal(e)
+		}
+		var count int
+		if e = db.QueryRow("SELECT COUNT(*) FROM message_analysis").Scan(&count); e != nil {
+			t.Fatal(e)
+		}
+		want := batch * 100
+		if want > 205 {
+			want = 205
+		}
+		if batch == 4 {
+			want = 206
+		}
+		if count != want {
+			t.Fatalf("batch %d got %d want %d", batch, count, want)
+		}
+		if batch == 1 {
+			var oldest int
+			if e = db.QueryRow("SELECT MIN(message_id) FROM message_analysis").Scan(&oldest); e != nil || oldest != 106 {
+				t.Fatal("upgrade must backfill recent IDs first", e)
+			}
+		}
+	}
+	rollback()
+	var count int
+	if e = db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&count); e != nil || count != 206 {
+		t.Fatal("rollback changed raw SMS", e)
+	}
+	if e = migrate(ctx, db, "../db/migrations"); e != nil {
+		t.Fatal("re-upgrade", e)
 	}
 }
 
@@ -70,6 +156,13 @@ func TestAISecretAndEndpoint(t *testing.T) {
 	t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", "localhost")
 	if validateAIEndpoint("http://localhost:11434/v1/chat/completions") != nil {
 		t.Fatal("explicit local host")
+	}
+}
+
+func TestOTPBoundedTokenWindows(t *testing.T) {
+	code, _ := extractOTP(strings.Repeat("code 482913. ", 5000), 1000)
+	if code != "482913" {
+		t.Fatal("long synthetic input")
 	}
 }
 
@@ -295,5 +388,24 @@ func TestAnalysisIntegration(t *testing.T) {
 	resetRate()
 	if other, e := a.claimAnalysis(context.Background()); e != nil || other != nil {
 		t.Fatal("completed messages requeued")
+	}
+	// Classifier selection must not acquire source-message locks in the reverse
+	// order to ingestion (message first, analysis settings second).
+	c.call("PATCH", "/api/messages/3/category", token, map[string]string{"category": "auto"}, 200)
+	resetRate()
+	writer, e := db.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer writer.Rollback()
+	var body string
+	if e = writer.QueryRow("SELECT body FROM messages WHERE id=3 FOR UPDATE").Scan(&body); e != nil {
+		t.Fatal(e)
+	}
+	claimCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	j, e = a.claimAnalysis(claimCtx)
+	if e != nil || j == nil || j.ID != 3 {
+		t.Fatal("classifier locked source messages", e)
 	}
 }
