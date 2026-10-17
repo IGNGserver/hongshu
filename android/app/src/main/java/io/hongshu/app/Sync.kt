@@ -391,6 +391,12 @@ object SyncEngine {
                     // Contact names are cosmetic: a failure keeps the cached names and never
                     // turns an otherwise successful upload/download into a failed sync.
                     c.contactsHealthy = contactsHealthy
+                    if (session.has("global_watermark_id")) {
+                        store.updateGlobalWatermark(session.optLong("global_watermark_id"))
+                    }
+                    if (session.optLong("unread_count", -1L) == 0L) {
+                        context.getSystemService(NotificationManager::class.java).cancel(2)
+                    }
                     val pairedAt = me.optLong("created_at")
                     for (page in 0 until 100) {
                         val data =

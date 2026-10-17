@@ -32,12 +32,13 @@ data class CachedMessage(
     // Captured on this phone and not yet acknowledged by the hub; id is -(outbox rowid).
     val local: Boolean = false,
     val analysis: MessageAnalysis = MessageAnalysis(),
+    val unreadCount: Int = 0,
 )
 
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 7), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 8), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -99,6 +100,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.execSQL("INSERT INTO meta VALUES ('history_boundary',0)")
         createCaptureDiagnostics(db)
         createMessageAnalysis(db)
+        createReadState(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -125,6 +127,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
         if (oldVersion < 6) createCaptureDiagnostics(db)
         if (oldVersion < 7) createMessageAnalysis(db)
+        if (oldVersion < 8) createReadState(db)
+    }
+
+    private fun createReadState(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS conversation_reads (sender TEXT PRIMARY KEY, last_read_message_id INTEGER NOT NULL)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('global_watermark_id', 0)")
+        // For existing messages on upgrade, initialize watermark to current max inbox ID so upgrade doesn't mark all as unread
+        db.execSQL("UPDATE meta SET value=(SELECT COALESCE(MAX(id), 0) FROM inbox) WHERE key='global_watermark_id' AND value=0")
     }
 
     private fun createMessageAnalysis(db: SQLiteDatabase) {
@@ -161,6 +171,67 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
         changes.value++
+    }
+
+    fun markRead(sender: String = "", messageId: Long = 0L, all: Boolean = false) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            if (all) {
+                db.execSQL(
+                    "UPDATE meta SET value=(SELECT COALESCE(MAX(id),0) FROM inbox) WHERE key='global_watermark_id'"
+                )
+            } else if (sender.isNotEmpty()) {
+                val targetId = if (messageId > 0) messageId else {
+                    var maxId = 0L
+                    db.rawQuery("SELECT COALESCE(MAX(id),0) FROM inbox WHERE sender=?", arrayOf(sender)).use {
+                        if (it.moveToFirst()) maxId = it.getLong(0)
+                    }
+                    maxId
+                }
+                if (targetId > 0) {
+                    db.execSQL(
+                        "INSERT OR REPLACE INTO conversation_reads (sender, last_read_message_id) VALUES (?, MAX(COALESCE((SELECT last_read_message_id FROM conversation_reads WHERE sender=?), 0), ?))",
+                        arrayOf<Any>(sender, sender, targetId)
+                    )
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        changes.value++
+    }
+
+    fun updateGlobalWatermark(watermark: Long) {
+        if (watermark <= 0) return
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=MAX(value, ?) WHERE key='global_watermark_id'",
+            arrayOf(watermark)
+        )
+        changes.value++
+    }
+
+    fun unreadCounts(): Map<String, Int> {
+        val watermark = meta("global_watermark_id")
+        return readableDatabase.rawQuery(
+            """
+            SELECT i.sender, COUNT(*)
+            FROM inbox i
+            LEFT JOIN conversation_reads cr ON cr.sender=i.sender
+            WHERE i.historical=0
+              AND i.id > ?
+              AND i.id > COALESCE(cr.last_read_message_id, 0)
+            GROUP BY i.sender
+            """.trimIndent(),
+            arrayOf(watermark.toString())
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) {
+                    put(c.getString(0), c.getInt(1))
+                }
+            }
+        }
     }
 
     fun resetAnalysis() {
@@ -1623,14 +1694,24 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             localMessages(sender, q, sim)
                 .filter { it.matchesGroup(group) }
                 .filterNot(::hasSyncedLocalCopy)
-        if (local.isEmpty()) return remote
+        val unreadMap = if (sender.isEmpty()) unreadCounts() else emptyMap()
+        if (local.isEmpty()) {
+            return if (unreadMap.isEmpty()) remote else remote.map {
+                val u = unreadMap[it.sender] ?: 0
+                if (u > 0) it.copy(unreadCount = u) else it
+            }
+        }
         val newest = compareByDescending<CachedMessage> { it.timestamp }.thenByDescending { it.id }
         if (sender.isNotEmpty()) return (remote + local).sortedWith(newest).take(limit)
         // Conversation list: one head per sender, whichever receiving phone is newer.
         return (remote + local)
             .groupBy { it.sender }
             .values
-            .map { it.sortedWith(newest).first() }
+            .map {
+                val top = it.sortedWith(newest).first()
+                val u = unreadMap[top.sender] ?: 0
+                if (u > 0) top.copy(unreadCount = u) else top
+            }
             .sortedWith(newest)
             .take(limit)
     }

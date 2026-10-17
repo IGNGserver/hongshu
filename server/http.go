@@ -41,6 +41,7 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/analysis", a.auth(a.analysisSync))
 	mux.HandleFunc("GET /api/analysis/counts", a.auth(a.analysisCounts))
 	mux.HandleFunc("PATCH /api/messages/{id}/category", a.auth(a.changeCategory))
+	mux.HandleFunc("POST /api/messages/read", a.auth(a.markRead))
 	mux.HandleFunc("GET /api/conversations", a.auth(a.conversations))
 	mux.HandleFunc("GET /api/sync", a.auth(a.syncMessages))
 	mux.HandleFunc("GET /api/ws", a.auth(a.ws))
@@ -104,7 +105,12 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "analysis_revision": s.Revision})
+	watermark, unread, err := a.getUnreadState(r)
+	if err != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "analysis_revision": s.Revision, "global_watermark_id": watermark, "unread_count": unread})
 }
 func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 	rows, e := a.db.QueryContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices ORDER BY created_at")

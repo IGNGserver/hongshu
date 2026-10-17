@@ -42,7 +42,7 @@ class StoreTest {
                 db.version = 3
             }
             Store(context, name).use { store ->
-                assertEquals(7, store.readableDatabase.version)
+                assertEquals(8, store.readableDatabase.version)
                 assertEquals(0L, store.analysisCursor())
                 assertEquals(1, store.pendingCount())
                 assertEquals(1, store.sims().size)
@@ -70,7 +70,7 @@ class StoreTest {
                 store.writableDatabase.version = 4
             }
             Store(context, name).use { store ->
-                assertEquals(7, store.readableDatabase.version)
+                assertEquals(8, store.readableDatabase.version)
                 assertEquals(0L, store.analysisCursor())
                 assertEquals(0L, store.providerWatermark())
                 assertEquals(1, store.pendingCount())

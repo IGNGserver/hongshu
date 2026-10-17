@@ -141,6 +141,20 @@ export function themeColorFor(choice, mediaQuery) {
   return THEME_COLORS[scheme];
 }
 
+export function updateAppBadge(count) {
+  if (typeof navigator !== "undefined" && "setAppBadge" in navigator) {
+    if (count > 0) {
+      navigator.setAppBadge(count).catch(() => {});
+    } else {
+      navigator.clearAppBadge().catch(() => {});
+    }
+  }
+  if (typeof document !== "undefined") {
+    const baseTitle = "鸿枢 · 短信中枢";
+    document.title = count > 0 ? `(${count}) ${baseTitle}` : baseTitle;
+  }
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -178,6 +192,7 @@ const state = {
   renderedRows: new Map(),
   seenMessageId: 0,
   arrivalsPending: false,
+  unreadCount: 0,
 };
 
 const errors = {
@@ -224,6 +239,7 @@ const ICONS = {
   visibility: `<svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
   visibilityOff: `<svg viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>`,
   arrowDownward: `<svg viewBox="0 0 24 24"><path d="M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"/></svg>`,
+  markEmailRead: `<svg viewBox="0 0 24 24"><path d="M12 19c0-3.87 3.13-7 7-7 1.08 0 2.09.25 3 .68V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h9.08c-.05-.33-.08-.66-.08-1zM4 6l8 5 8-5v2l-8 5-8-5V6zm13.35 12.85l-1.77-1.77-1.42 1.41 3.19 3.19 5.66-5.66-1.42-1.41-4.24 4.24z"/></svg>`,
   emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
     <rect x="42" y="46" width="76" height="58" rx="16" fill="currentColor" fill-opacity="0.3"/>
@@ -660,11 +676,27 @@ function inboxView() {
   logo.alt = "";
   const status = el("span", "status");
   status.setAttribute("role", "status");
+  const markAllBtn = iconButton(ICONS.markEmailRead, "全部标记为已读", async () => {
+    try {
+      setBusy(true);
+      await api("/messages/read", "POST", { all: true });
+      state.unreadCount = 0;
+      updateAppBadge(0);
+      for (const c of state.conversations) c.unread_count = 0;
+      renderConversations();
+      toast("已全部标记为已读");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }, "mark-all-read");
   header.append(
     logo,
     el("strong", "brand-title", "鸿枢"),
     status,
     el("span", "spacer"),
+    markAllBtn,
     iconButton(ICONS.settings, "设置", openSettings),
   );
 
@@ -1108,6 +1140,9 @@ function renderConversations({ arrivals = false } = {}) {
     const bottom = el("div", "preview-bottom");
     if (m.analysis?.otp) bottom.append(el("span", "otp-tag", "验证码"));
     bottom.append(el("p", "", m.body));
+    if (m.unread_count > 0) {
+      bottom.append(el("span", "unread-badge", m.unread_count > 99 ? "99+" : String(m.unread_count)));
+    }
     preview.append(top, bottom);
 
     b.append(avatar(contact, m.sender), preview);
@@ -1216,6 +1251,17 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
     }
     state.historyLoading = false;
     const freshCount = renderDetail();
+
+    if (!older && state.sender && incoming.length > 0) {
+      const conv = state.conversations.find((c) => c.sender === state.sender);
+      if (conv && conv.unread_count > 0) {
+        state.unreadCount = Math.max(0, (state.unreadCount || 0) - conv.unread_count);
+        conv.unread_count = 0;
+        updateAppBadge(state.unreadCount);
+        renderConversations();
+        api("/messages/read", "POST", { sender: state.sender }).catch(() => {});
+      }
+    }
 
     const nextStream = $(".messages");
     if (nextStream) {
@@ -1896,6 +1942,8 @@ function disconnect() {
   state.arrivalsPending = false;
   state.renderedRows = new Map();
   state.seenMessageId = 0;
+  state.unreadCount = 0;
+  updateAppBadge(0);
 }
 
 function realtime() {
@@ -1942,6 +1990,10 @@ async function catchUp() {
     // fetch only displayed history, never replay/download discarded SMS bodies.
     state.cursor = me.cursor;
     state.me = me;
+    if (typeof me.unread_count === "number") {
+      state.unreadCount = me.unread_count;
+      updateAppBadge(state.unreadCount);
+    }
     await reloadMetadata();
     if (generation !== state.generation || !state.me) return;
     const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
@@ -1971,6 +2023,10 @@ async function start() {
   state.epochSeen = true;
   state.loggedOut = false;
   state.generation++;
+  if (typeof state.me.unread_count === "number") {
+    state.unreadCount = state.me.unread_count;
+    updateAppBadge(state.unreadCount);
+  }
   await reloadMetadata();
   shell();
   if ("serviceWorker" in navigator) {
