@@ -67,6 +67,15 @@ class QueueRepairTest {
     }
 
     @Test
+    fun multipleProviderCandidatesDoNotConsumeAThirdBroadcast() = withStore { store ->
+        val message = SmsRecord(phone, "10086", "same provider text", 1_700_000_000_000, 7)
+        assertTrue(store.captureProvider(100, message))
+        assertTrue(store.captureProvider(101, message.copy(timestamp = message.timestamp + 1000)))
+        assertTrue(store.queue(message.copy(timestamp = message.timestamp + 2000), 0))
+        assertEquals(3, store.pendingCount())
+    }
+
+    @Test
     fun differentSendersOrSimsAreNotPaired() = withStore { store ->
         store.queue(SmsRecord(phone, "10086", "same text", 1_700_000_000_000, 7))
         assertTrue(store.captureProvider(100, SmsRecord("", "10010", "same text", 1_700_000_000_000, -1)))
@@ -122,6 +131,29 @@ class QueueRepairTest {
                 assertTrue(it.moveToFirst())
                 assertEquals(key, it.getString(0))
             }
+    }
+
+    @Test
+    fun unknownLegacyCaptureDoesNotChooseBetweenTwoCompatibleKnownRows() = withStore { store ->
+        store.saveSim(sim)
+        store.saveSim(SimMapping(8, 1, "+8613900000000", "SIM2"))
+        val body = "ambiguous legacy code"
+        assertTrue(
+            store.captureProvider(
+                100,
+                SmsRecord(phone, "10086", body, 1_700_000_000_000, 7),
+            )
+        )
+        assertTrue(
+            store.captureProvider(
+                101,
+                SmsRecord("+8613900000000", "10086", body, 1_700_000_000_000, 8)
+            )
+        )
+        assertTrue(store.queue(SmsRecord("", "+86 10086", body, 1_700_000_001_000, -1)))
+        assertEquals(3, store.pendingCount())
+        assertEquals(0, store.reconcileUnknownSimCaptures())
+        assertEquals(3, store.pendingCount())
     }
 
     @Test

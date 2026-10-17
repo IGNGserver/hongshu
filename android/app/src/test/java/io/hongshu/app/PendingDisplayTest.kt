@@ -72,6 +72,51 @@ class PendingDisplayTest {
     }
 
     @Test
+    fun syncReconcilesAnOutboxAfterTheUploadAckWasLost() = withStore { store ->
+        store.saveSim(SimMapping(7, 0, phone, "SIM1"))
+        val local = SmsRecord(phone, "10086", "lost ACK", 5000, 7)
+        store.queue(local)
+        assertEquals(1, store.pendingCount())
+        store.applySync(
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("id", 1)
+                        .put("device_id", "self")
+                        .put("receiver", local.receiver)
+                        .put("sender", local.sender)
+                        .put("body", local.body)
+                        .put("timestamp", local.timestamp)
+                ),
+            1,
+            self = "self",
+        )
+        assertEquals(0, store.pendingCount())
+        assertFalse(store.messagesWithLocal(sender = local.sender).any { it.local })
+    }
+
+    @Test
+    fun syncDoesNotReconcileAnotherDevicesIdenticalMessage() = withStore { store ->
+        val local = SmsRecord(phone, "10086", "other device copy", 6000, 7)
+        store.queue(local)
+        store.applySync(
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("id", 1)
+                        .put("device_id", "other")
+                        .put("receiver", local.receiver)
+                        .put("sender", local.sender)
+                        .put("body", local.body)
+                        .put("timestamp", local.timestamp)
+                ),
+            1,
+            self = "self",
+        )
+        assertEquals(1, store.pendingCount())
+    }
+
+    @Test
     fun nameTitledNotificationWaitsForTheNumberBeforeUpload() = withStore { store ->
         val now = 10_000_000L
         assertTrue(store.queueNotification(SmsRecord(phone, "妈妈", "synthetic", now, 7)))

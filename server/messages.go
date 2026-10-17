@@ -87,6 +87,19 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	acks := make([]ack, 0, len(in.Messages))
 	for _, m := range in.Messages {
 		fp := fingerprint(m)
+		// Idempotency must win over the current SIM registry. The original upload may have
+		// committed before a database restore or SIM cleanup removed its registration; a retry
+		// of that exact message still needs a success ACK so the client can clear its outbox.
+		var id int64
+		e = tx.QueryRowContext(r.Context(), "SELECT id FROM messages WHERE device_id=? AND fingerprint=?", d.ID, fp).Scan(&id)
+		if e == nil {
+			acks = append(acks, ack{ID: id, Duplicate: true, Fingerprint: fp})
+			continue
+		}
+		if e != sql.ErrNoRows {
+			fail(w, 503, "database_unavailable")
+			return
+		}
 		var confirmed int
 		e = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sims WHERE device_id=? AND phone=?", d.ID, m.Receiver).Scan(&confirmed)
 		if e != nil {
@@ -98,16 +111,6 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			// messages whose receiver is already confirmed.
 			acks = append(acks, ack{Error: "sim_not_confirmed", Fingerprint: fp})
 			continue
-		}
-		var id int64
-		e = tx.QueryRowContext(r.Context(), "SELECT id FROM messages WHERE device_id=? AND fingerprint=?", d.ID, fp).Scan(&id)
-		if e == nil {
-			acks = append(acks, ack{ID: id, Duplicate: true, Fingerprint: fp})
-			continue
-		}
-		if e != sql.ErrNoRows {
-			fail(w, 503, "database_unavailable")
-			return
 		}
 		seq++
 		_, e = tx.ExecContext(r.Context(), "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?)", seq, d.ID, fp, m.Receiver, m.Sender, m.Body, m.Timestamp, m.SubscriptionID, m.Historical)

@@ -101,6 +101,22 @@ fun normalizeSender(value: String): String {
 fun sameSender(left: String, right: String): Boolean =
     left == right || normalizeSender(left) == normalizeSender(right)
 
+// Notification titles are often contact or brand names while SMS broadcasts/provider rows use
+// the numeric sender. A title may bridge that representation only when it is visible in the
+// message itself; a body-only match without title evidence remains ambiguous. Numeric titles use
+// the normal sender canonicalization and never match a different numeric sender by body alone.
+internal fun notificationSenderMatches(title: String, sender: String, body: String): Boolean {
+    if (sameSender(title, sender)) return true
+    val normalizedTitle = normalizeSimNumber(title)
+    if (confirmedNumber(normalizedTitle)) return false
+    val normalizedSender = normalizeSimNumber(sender)
+    return (
+        title.isNotBlank() &&
+            confirmedNumber(normalizedSender) &&
+            body.contains(title, ignoreCase = true)
+    )
+}
+
 // One side must know its SIM; two unknown captures are never merged by content alone.
 // Equal known subscriptions pair even when the number snapshot changed in between (the user
 // corrected or the carrier updated the number); a known/unknown pair needs compatible numbers.

@@ -382,20 +382,20 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         ),
                     )
                     .use { c ->
-                        var found: CaptureMatch? = null
-                        while (found == null && c.moveToNext()) {
-                            if (
-                                sameSender(c.getString(1), m.sender) &&
-                                    compatibleSims(
-                                        c.getInt(2),
-                                        c.getString(3),
-                                        m.subscriptionId,
-                                        m.receiver,
-                                    )
-                            )
-                                found = CaptureMatch(c.getString(0), c.getInt(2), c.getString(3))
-                        }
-                        found
+                        buildList {
+                            while (c.moveToNext()) {
+                                if (
+                                    sameSender(c.getString(1), m.sender) &&
+                                        compatibleSims(
+                                            c.getInt(2),
+                                            c.getString(3),
+                                            m.subscriptionId,
+                                            m.receiver,
+                                        )
+                                )
+                                    add(CaptureMatch(c.getString(0), c.getInt(2), c.getString(3)))
+                            }
+                        }.singleOrNull()
                     }
             if (match != null) {
                 val values =
@@ -449,6 +449,24 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     private data class CaptureMatch(val key: String, val sub: Int, val receiver: String)
 
+    private data class CaptureCandidate(
+        val key: String,
+        val sender: String,
+        val sub: Int,
+        val receiver: String,
+        val timestamp: Long,
+    )
+
+    private data class UnknownCapture(
+        val key: String,
+        val source: String,
+        val sender: String,
+        val body: String,
+        val timestamp: Long,
+        val sub: Int,
+        val receiver: String,
+    )
+
     // The SIM-less half of a pair learns the SIM from its counterpart. Rows already
     // acknowledged by the hub have no outbox entry and are left alone.
     private fun inheritSim(db: SQLiteDatabase, key: String, m: SmsRecord, slot: Int) {
@@ -481,70 +499,172 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val db = writableDatabase
         val orphans =
             db.rawQuery(
-                    "SELECT o.key,c.source,c.sender,c.body,c.timestamp FROM outbox o JOIN captures c ON c.key=o.key WHERE o.receiver='' AND o.sub<0 AND ((c.source='broadcast' AND c.provider_id IS NULL) OR (c.source='provider' AND c.broadcast_key IS NULL))",
+                    "SELECT o.key,c.source,c.sender,c.body,c.timestamp,c.sub,c.receiver FROM outbox o JOIN captures c ON c.key=o.key WHERE o.receiver='' AND o.sub<0 AND ((c.source='broadcast' AND c.provider_id IS NULL) OR (c.source='provider' AND c.broadcast_key IS NULL))",
                     null,
                 )
                 .use { c ->
                     buildList {
                         while (c.moveToNext())
                             add(
-                                listOf(
+                                UnknownCapture(
                                     c.getString(0),
                                     c.getString(1),
                                     c.getString(2),
                                     c.getString(3),
-                                    c.getLong(4).toString(),
+                                    c.getLong(4),
+                                    c.getInt(5),
+                                    c.getString(6),
                                 )
                             )
                     }
                 }
         var merged = 0
-        for ((key, source, sender, body, time) in orphans) {
-            val timestamp = time.toLong()
+        for (orphan in orphans) {
             val free =
-                if (source == "broadcast") "source='provider' AND broadcast_key IS NULL"
+                if (orphan.source == "broadcast") "source='provider' AND broadcast_key IS NULL"
                 else "source='broadcast' AND provider_id IS NULL"
             db.beginTransaction()
             try {
-                val target =
+                val targets =
                     db.rawQuery(
-                            "SELECT key,sender FROM captures WHERE $free AND body=? AND (sub>=0 OR receiver<>'') AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
+                            "SELECT key,sender,sub,receiver,timestamp FROM captures WHERE $free AND body=? AND (sub>=0 OR receiver<>'') AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
                             arrayOf(
-                                body,
-                                (timestamp - 120000).toString(),
-                                (timestamp + 120000).toString(),
-                                timestamp.toString(),
+                                orphan.body,
+                                (orphan.timestamp - 120000).toString(),
+                                (orphan.timestamp + 120000).toString(),
+                                orphan.timestamp.toString(),
                             ),
                         )
                         .use { c ->
-                            var found: String? = null
-                            while (found == null && c.moveToNext())
-                                if (sameSender(c.getString(1), sender)) found = c.getString(0)
-                            found
+                            buildList {
+                                while (c.moveToNext()) {
+                                    val candidate =
+                                        CaptureCandidate(
+                                            c.getString(0),
+                                            c.getString(1),
+                                            c.getInt(2),
+                                            c.getString(3),
+                                            c.getLong(4),
+                                        )
+                                    if (
+                                        sameSender(candidate.sender, orphan.sender) &&
+                                            compatibleSims(
+                                                orphan.sub,
+                                                orphan.receiver,
+                                                candidate.sub,
+                                                candidate.receiver,
+                                            )
+                                    )
+                                        add(candidate)
+                                }
+                            }
                         }
-                if (target != null) {
+                if (targets.size == 1) {
+                    val target = targets.single().key
                     val identity =
                         db.rawQuery(
-                                "SELECT broadcast_key,provider_id FROM captures WHERE key=?",
-                                arrayOf(key),
-                            )
+                            "SELECT broadcast_key,provider_id FROM captures WHERE key=?",
+                            arrayOf(orphan.key),
+                        )
                             .use { c ->
                                 if (!c.moveToFirst()) null
-                                else if (source == "broadcast") c.getString(0)
+                                else if (orphan.source == "broadcast") c.getString(0)
                                 else c.getLong(1).toString()
                             }
-                    db.delete("captures", "key=?", arrayOf(key))
-                    db.delete("outbox", "key=?", arrayOf(key))
+                    db.delete("captures", "key=?", arrayOf(orphan.key))
+                    db.delete("outbox", "key=?", arrayOf(orphan.key))
                     if (identity != null)
                         db.update(
                             "captures",
                             ContentValues().apply {
-                                if (source == "broadcast") put("broadcast_key", identity)
+                                if (orphan.source == "broadcast") put("broadcast_key", identity)
                                 else put("provider_id", identity.toLong())
                             },
                             "key=?",
                             arrayOf(target),
                         )
+                    merged++
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+        if (merged > 0) changes.value++
+        return merged
+    }
+
+    // A notification may use a brand/contact title while the provider or broadcast exposes a
+    // numeric sender. Once a unique compatible local counterpart exists, remove only the
+    // provisional outbox row—even if that counterpart was already ACKed—and retain the
+    // notification capture as replay/dedup evidence.
+    fun reconcileNotificationCaptures(): Int {
+        val db = writableDatabase
+        val orphans =
+            db.rawQuery(
+                    "SELECT o.key,c.sender,c.body,c.timestamp,c.sub,c.receiver FROM outbox o JOIN captures c ON c.key=o.key WHERE c.source='notification'",
+                    null,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            add(
+                                UnknownCapture(
+                                    c.getString(0),
+                                    "notification",
+                                    c.getString(1),
+                                    c.getString(2),
+                                    c.getLong(3),
+                                    c.getInt(4),
+                                    c.getString(5),
+                                )
+                            )
+                    }
+                }
+        var merged = 0
+        for (orphan in orphans) {
+            db.beginTransaction()
+            try {
+                val targets =
+                    db.rawQuery(
+                            "SELECT key,sender,sub,receiver,timestamp FROM captures WHERE source<>'notification' AND body=? AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
+                            arrayOf(
+                                orphan.body,
+                                (orphan.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
+                                (orphan.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
+                                orphan.timestamp.toString(),
+                            ),
+                        )
+                        .use { c ->
+                            buildList {
+                                while (c.moveToNext()) {
+                                    val candidate =
+                                        CaptureCandidate(
+                                            c.getString(0),
+                                            c.getString(1),
+                                            c.getInt(2),
+                                            c.getString(3),
+                                            c.getLong(4),
+                                        )
+                                    if (
+                                        notificationSenderMatches(
+                                            orphan.sender,
+                                            candidate.sender,
+                                            orphan.body,
+                                        ) &&
+                                            compatibleSims(
+                                                orphan.sub,
+                                                orphan.receiver,
+                                                candidate.sub,
+                                                candidate.receiver,
+                                            )
+                                    )
+                                        add(candidate)
+                                }
+                            }
+                        }
+                if (targets.size == 1) {
+                    db.delete("outbox", "key=?", arrayOf(orphan.key))
                     merged++
                 }
                 db.setTransactionSuccessful()
@@ -661,24 +781,45 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         broadcastKey: String,
     ): Boolean {
         val free = if (providerId == null) "broadcast_key IS NULL" else "provider_id IS NULL"
-        val key =
+        val candidates =
             db.rawQuery(
-                    "SELECT key FROM captures WHERE source='notification' AND $free AND sender=? AND body=? AND (sub<0 OR CAST(? AS INTEGER)<0 OR sub=?) AND (receiver='' OR ?='' OR receiver=?) AND timestamp BETWEEN ? AND ? LIMIT 2",
+                    "SELECT key,sender,sub,receiver,timestamp FROM captures WHERE source='notification' AND $free AND body=? AND timestamp BETWEEN ? AND ? ORDER BY ABS(timestamp-?),key",
                     arrayOf(
-                        m.sender,
                         m.body,
-                        m.subscriptionId.toString(),
-                        m.subscriptionId.toString(),
-                        m.receiver,
-                        m.receiver,
                         (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
                         (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
+                        m.timestamp.toString(),
                     ),
                 )
-                .use {
-                    if (!it.moveToFirst()) null
-                    else it.getString(0).takeUnless { _ -> it.moveToNext() }
-                } ?: return false
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext()) {
+                            val candidate =
+                                CaptureCandidate(
+                                    c.getString(0),
+                                    c.getString(1),
+                                    c.getInt(2),
+                                    c.getString(3),
+                                    c.getLong(4),
+                                )
+                            if (
+                                notificationSenderMatches(
+                                    candidate.sender,
+                                    m.sender,
+                                    m.body,
+                                ) &&
+                                    compatibleSims(
+                                        candidate.sub,
+                                        candidate.receiver,
+                                        m.subscriptionId,
+                                        m.receiver,
+                                    )
+                            )
+                                add(candidate)
+                        }
+                    }
+                }
+        val key = candidates.singleOrNull()?.key ?: return false
         db.update(
             "captures",
             ContentValues().apply {
@@ -718,33 +859,77 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         try {
             val seen =
                 db.rawQuery(
-                        "SELECT 1 FROM captures WHERE key=? OR (source='notification' AND sender=? AND body=? AND sub=? AND receiver=? AND timestamp BETWEEN ? AND ?) LIMIT 1",
+                        "SELECT key,sender,sub,receiver,timestamp FROM captures WHERE source='notification' AND body=? AND timestamp BETWEEN ? AND ?",
                         arrayOf(
-                            key,
-                            m.sender,
                             m.body,
-                            m.subscriptionId.toString(),
-                            m.receiver,
                             (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
                             (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
                         ),
                     )
-                    .use { it.moveToFirst() }
+                    .use { c ->
+                        var found = false
+                        while (!found && c.moveToNext()) {
+                            val candidate =
+                                CaptureCandidate(
+                                    c.getString(0),
+                                    c.getString(1),
+                                    c.getInt(2),
+                                    c.getString(3),
+                                    c.getLong(4),
+                                )
+                            found =
+                                candidate.key == key ||
+                                    (notificationSenderMatches(
+                                        m.sender,
+                                        candidate.sender,
+                                        m.body,
+                                    ) &&
+                                        (compatibleSims(
+                                            m.subscriptionId,
+                                            m.receiver,
+                                            candidate.sub,
+                                            candidate.receiver,
+                                        ) ||
+                                            (m.subscriptionId < 0 &&
+                                                candidate.sub < 0 &&
+                                                m.receiver.isEmpty() &&
+                                                candidate.receiver.isEmpty())))
+                        }
+                        found
+                    }
             val counterpart =
                 db.rawQuery(
-                        "SELECT key FROM captures WHERE source<>'notification' AND sender=? AND body=? AND (sub<0 OR CAST(? AS INTEGER)<0 OR sub=?) AND (receiver='' OR ?='' OR receiver=?) AND timestamp BETWEEN ? AND ? LIMIT 2",
+                        "SELECT key,sender,sub,receiver,timestamp FROM captures WHERE source<>'notification' AND body=? AND timestamp BETWEEN ? AND ?",
                         arrayOf(
-                            m.sender,
                             m.body,
-                            m.subscriptionId.toString(),
-                            m.subscriptionId.toString(),
-                            m.receiver,
-                            m.receiver,
                             (m.timestamp - NOTIFICATION_MATCH_WINDOW).toString(),
                             (m.timestamp + NOTIFICATION_MATCH_WINDOW).toString(),
                         ),
                     )
-                    .use { it.count == 1 }
+                    .use { c ->
+                        var matches = 0
+                        while (c.moveToNext()) {
+                            val candidate =
+                                CaptureCandidate(
+                                    c.getString(0),
+                                    c.getString(1),
+                                    c.getInt(2),
+                                    c.getString(3),
+                                    c.getLong(4),
+                                )
+                            if (
+                                notificationSenderMatches(m.sender, candidate.sender, m.body) &&
+                                    compatibleSims(
+                                        m.subscriptionId,
+                                        m.receiver,
+                                        candidate.sub,
+                                        candidate.receiver,
+                                    )
+                            )
+                                matches++
+                        }
+                        matches == 1
+                    }
             if (seen || counterpart) {
                 db.setTransactionSuccessful()
                 return false
@@ -1174,6 +1359,40 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         )
     }
 
+    // An upload can commit at the hub before the HTTP response reaches the phone. The normal
+    // retry is idempotent, but a sync page may be the first durable evidence the client sees.
+    // Only reconcile messages written by this device; an identical message from another device
+    // must not delete this phone's local capture.
+    private fun reconcileSyncedOutbox(
+        db: SQLiteDatabase,
+        message: JSONObject,
+        self: String,
+        resolveReceiver: ((Int) -> String)?,
+    ) {
+        if (self.isEmpty() || message.getString("device_id") != self) return
+        val receiver = message.getString("receiver")
+        val sender = message.getString("sender")
+        val body = message.getString("body")
+        val timestamp = message.getLong("timestamp")
+        val keys =
+            db.rawQuery(
+                    "SELECT key,receiver,sub FROM outbox WHERE sender=? AND body=? AND timestamp=?",
+                    arrayOf(sender, body, timestamp.toString()),
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext()) {
+                            val localReceiver =
+                                c.getString(1).ifEmpty {
+                                    resolveReceiver?.invoke(c.getInt(2)).orEmpty()
+                                }
+                            if (localReceiver == receiver) add(c.getString(0))
+                        }
+                    }
+                }
+        for (key in keys) db.delete("outbox", "key=?", arrayOf(key))
+    }
+
     fun applySync(
         messages: JSONArray,
         cursor: Long,
@@ -1183,6 +1402,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     ): List<CachedMessage> {
         val db = writableDatabase
         val added = mutableListOf<CachedMessage>()
+        val resolveReceiver = self.takeIf { it.isNotEmpty() }?.let {
+            receiverResolver(allowFallback = false)
+        }
         db.beginTransaction()
         try {
             check(pageEpoch == null || !epochReset(epochSeen(), epoch(), pageEpoch)) {
@@ -1194,6 +1416,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             }
             for (i in 0 until messages.length()) {
                 val m = messages.getJSONObject(i)
+                reconcileSyncedOutbox(db, m, self, resolveReceiver)
                 val cv =
                     ContentValues().apply {
                         put("id", m.getLong("id"))
@@ -1396,7 +1619,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         group: String = "all",
     ): List<CachedMessage> {
         val remote = messages(sender, q, sim, limit = limit, group = group)
-        val local = localMessages(sender, q, sim).filter { it.matchesGroup(group) }
+        val local =
+            localMessages(sender, q, sim)
+                .filter { it.matchesGroup(group) }
+                .filterNot(::hasSyncedLocalCopy)
         if (local.isEmpty()) return remote
         val newest = compareByDescending<CachedMessage> { it.timestamp }.thenByDescending { it.id }
         if (sender.isNotEmpty()) return (remote + local).sortedWith(newest).take(limit)
@@ -1408,6 +1634,20 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             .sortedWith(newest)
             .take(limit)
     }
+
+    private fun hasSyncedLocalCopy(local: CachedMessage): Boolean =
+        readableDatabase
+            .rawQuery(
+                "SELECT 1 FROM inbox WHERE device=? AND receiver=? AND sender=? AND body=? AND timestamp=? LIMIT 1",
+                arrayOf(
+                    config.deviceId,
+                    local.receiver,
+                    local.sender,
+                    local.body,
+                    local.timestamp.toString(),
+                ),
+            )
+            .use { it.moveToFirst() }
 
     fun resetForNewIdentity(
         connectedAt: Long = System.currentTimeMillis(),
