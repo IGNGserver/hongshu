@@ -41,6 +41,13 @@ test("rows animate only when new or moved forward since the last render", () => 
   assert.deepEqual([...freshConversationKeys(previous, [added, moved, b])], [conversationKey(added), conversationKey(moved)]);
 });
 
+test("conversation identity is the sender, not the receiving phone", () => {
+  const first = { sender: "10086", receiver: "+861", timestamp: 100 };
+  const second = { sender: "10086", receiver: "+862", timestamp: 200 };
+  assert.equal(conversationKey(first), conversationKey(second));
+  assert.equal(new Set([conversationKey(first), conversationKey(second)]).size, 1);
+});
+
 test("icon.svg is self-contained so <img> and favicon can render it", () => {
   const svg = read("icon.svg");
   const refs = [...svg.matchAll(/\bhref="([^"]*)"/g)].map((m) => m[1]);

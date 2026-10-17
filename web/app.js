@@ -25,6 +25,12 @@ export function restoreScrollPosition(scrollTop, previousHeight, nextHeight) {
 }
 
 export const GROUP_LABELS = { all: "全部短信", otp: "验证码", other: "其他短信", personal: "个人", notification: "通知", promotion: "推广", spam: "垃圾", pending: "待分析" };
+export const AI_PROTOCOLS = {
+  openai_responses: "OpenAI Responses API（推荐）",
+  openai_chat_completions: "OpenAI Chat Completions（兼容）",
+  anthropic_messages: "Anthropic Messages",
+  gemini_generate_content: "Google Gemini Generate Content",
+};
 export function visibleGroups(enabled) {
   return enabled ? ["all", "otp", "personal", "notification", "promotion", "spam", "pending"] : ["all", "otp", "other"];
 }
@@ -60,7 +66,9 @@ export function linkSegments(text) {
 export function isFreshArrival(value, seenHigh) {
   return seenHigh > 0 && value > seenHigh;
 }
-export const conversationKey = (c) => `${c.sender}\u0000${c.receiver}`;
+// A conversation belongs to the sender. The receiver on a conversation row is only
+// the latest message's receiving number, never part of the selection identity.
+export const conversationKey = (c) => String(c.sender || "");
 // After a realtime arrival, the rows that are new or moved forward since the last render.
 export function freshConversationKeys(previous, conversations) {
   const fresh = new Set();
@@ -143,7 +151,6 @@ const state = {
   sims: [],
   page: "inbox",
   sender: "",
-  receiver: "",
   q: "",
   sim: "",
   device: "",
@@ -184,6 +191,7 @@ const errors = {
   invalid_ai_endpoint: "AI 地址需为完整 HTTPS 接口；本地服务须由部署者加入允许主机名单",
   ai_consent_or_config_required: "请填写 AI 配置并同意历史和新增短信分析说明",
   invalid_ai_settings: "请检查 AI 参数范围",
+  invalid_ai_protocol: "请选择受支持的 AI 协议",
   ai_budget_or_rate_limit: "已达到调用限速或今日额度，请稍后再试",
   ai_disabled: "AI 已关闭，请刷新页面",
   otp_rule_managed: "验证码由规则管理，不能手动修改 AI 分类",
@@ -329,7 +337,6 @@ function leaveDetailHistory() {
 function closeDetail() {
   const wasOpen = Boolean(state.sender);
   state.sender = "";
-  state.receiver = "";
   state.messages = [];
   state.seenMessageId = 0;
   setDetailOpen(false);
@@ -692,8 +699,26 @@ function inboxView() {
   searchContainer.append(search, clearBtn);
 
   const chipRow = el("div", "chip-row");
-  // The filter comes first so it stays in view while the group chips scroll.
-  chipRow.append(el("div", "filter-slot"), el("div", "group-chips"));
+  // Keep the filter pinned while the group tabs use a controlled, mouse-friendly rail.
+  const filterSlot = el("div", "filter-slot");
+  const rail = el("div", "chip-rail");
+  const previous = el("button", "chip-rail-button");
+  previous.type = "button";
+  previous.innerHTML = ICONS.chevronLeft;
+  previous.setAttribute("aria-label", "向左滚动选项卡");
+  previous.title = "向左滚动选项卡";
+  const scroller = el("div", "chip-scroller");
+  scroller.tabIndex = 0;
+  scroller.setAttribute("aria-label", "短信分组选项卡");
+  scroller.append(el("div", "group-chips"));
+  const next = el("button", "chip-rail-button");
+  next.type = "button";
+  next.innerHTML = ICONS.chevronRight;
+  next.setAttribute("aria-label", "向右滚动选项卡");
+  next.title = "向右滚动选项卡";
+  rail.append(previous, scroller, next);
+  chipRow.append(filterSlot, rail);
+  installChipRail(rail, scroller, previous, next);
 
   const list = el("div", "list");
   list.addEventListener("scroll", () => {
@@ -711,6 +736,78 @@ function inboxView() {
   renderConversations();
   renderDetail();
   void refreshInbox().catch((e) => toast(e.message));
+}
+
+function installChipRail(rail, scroller, previous, next) {
+  let pointerStart = null;
+  let suppressClick = false;
+  const update = () => {
+    const max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    const overflowing = max > 1;
+    rail.classList.toggle("is-overflowing", overflowing);
+    previous.hidden = !overflowing || scroller.scrollLeft <= 1;
+    next.hidden = !overflowing || scroller.scrollLeft >= max - 1;
+    previous.disabled = !overflowing || scroller.scrollLeft <= 1;
+    next.disabled = !overflowing || scroller.scrollLeft >= max - 1;
+  };
+  const move = (direction) => {
+    scroller.scrollBy({
+      left: direction * Math.max(scroller.clientWidth * 0.78, 160),
+      behavior: reducedMotion() ? "auto" : "smooth",
+    });
+  };
+  previous.onclick = () => move(-1);
+  next.onclick = () => move(1);
+  scroller.addEventListener("scroll", update, { passive: true });
+  scroller.addEventListener("wheel", (event) => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || scroller.scrollWidth <= scroller.clientWidth) return;
+    event.preventDefault();
+    scroller.scrollLeft += event.deltaY;
+  }, { passive: false });
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    pointerStart = { id: event.pointerId, x: event.clientX, scrollLeft: scroller.scrollLeft, moved: false };
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!pointerStart || pointerStart.id !== event.pointerId) return;
+    const distance = event.clientX - pointerStart.x;
+    if (!pointerStart.moved && Math.abs(distance) < 4) return;
+    pointerStart.moved = true;
+    suppressClick = true;
+    scroller.setPointerCapture?.(event.pointerId);
+    rail.classList.add("is-dragging");
+    scroller.scrollLeft = pointerStart.scrollLeft - distance;
+    event.preventDefault();
+  });
+  const endPointer = (event) => {
+    if (!pointerStart || pointerStart.id !== event.pointerId) return;
+    if (scroller.hasPointerCapture?.(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+    pointerStart = null;
+    rail.classList.remove("is-dragging");
+    if (suppressClick) requestAnimationFrame(() => { suppressClick = false; });
+  };
+  scroller.addEventListener("pointerup", endPointer);
+  scroller.addEventListener("pointercancel", endPointer);
+  scroller.addEventListener("click", (event) => {
+    if (!suppressClick) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  scroller.addEventListener("keydown", (event) => {
+    const step = Math.max(scroller.clientWidth * 0.78, 160);
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      move(event.key === "ArrowRight" ? 1 : -1);
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      scroller.scrollTo({ left: event.key === "End" ? scroller.scrollWidth : 0, behavior: reducedMotion() ? "auto" : "smooth" });
+    } else if (event.key === "PageDown" || event.key === "PageUp") {
+      event.preventDefault();
+      scroller.scrollBy({ left: event.key === "PageDown" ? step : -step, behavior: reducedMotion() ? "auto" : "smooth" });
+    }
+  });
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(update).observe(scroller);
+  requestAnimationFrame(update);
 }
 
 // SIM and device filters share one chip and one menu; it only appears when there is
@@ -974,7 +1071,7 @@ function renderConversations({ arrivals = false } = {}) {
   const fresh = arrivals ? freshConversationKeys(state.renderedRows, state.conversations) : new Set();
   state.renderedRows = new Map(state.conversations.map((m) => [conversationKey(m), m.timestamp]));
   state.conversations.forEach((m) => {
-    const isSelected = state.sender === m.sender && state.receiver === m.receiver;
+    const isSelected = state.sender === m.sender;
     const b = el(
       "button",
       "conversation" + (isSelected ? " selected" : "") +
@@ -988,7 +1085,6 @@ function renderConversations({ arrivals = false } = {}) {
     b.onclick = async () => {
       if (!isSelected) {
         state.sender = m.sender;
-        state.receiver = m.receiver;
         state.messages = [];
         state.seenMessageId = 0;
         state.historyHasMore = true;
@@ -1053,7 +1149,6 @@ function updateHistoryStatus() {
 
 async function loadHistory(older, { preserve = false, revalidate = false } = {}) {
   const sender = state.sender;
-  const receiver = state.receiver;
   if (!sender || (older && (!state.historyHasMore || state.historyLoading))) return;
 
   if (!older) {
@@ -1072,7 +1167,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
   const args = {
     group: state.group,
     sender,
-    sim: receiver || state.sim,
+    sim: state.sim,
     device: state.device,
     q: state.q,
     limit: MESSAGE_PAGE_SIZE,
@@ -1100,8 +1195,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       signal?.aborted ||
       requestId !== historyRequestId ||
       generation !== state.generation || !state.me ||
-      sender !== state.sender ||
-      receiver !== state.receiver
+      sender !== state.sender
     ) {
       return;
     }
@@ -1158,7 +1252,7 @@ function renderDetail() {
   if (!detail) return 0;
   detail.replaceChildren();
   // Fade through when a different conversation replaces the current one.
-  const detailKey = state.sender ? conversationKey({ sender: state.sender, receiver: state.receiver }) : "";
+  const detailKey = state.sender ? conversationKey({ sender: state.sender }) : "";
   if (detailKey && detailKey !== state.renderedDetailKey && !reducedMotion()) {
     detail.classList.remove("detail-enter");
     void detail.offsetWidth;
@@ -1183,11 +1277,12 @@ function renderDetail() {
   }, "back"));
 
   const contact = state.contacts[state.sender] || state.messages.at(-1)?.contact || "";
+  const receiverCount = new Set(state.messages.map((message) => message.receiver).filter(Boolean)).size;
   const titleBox = el("div", "detail-head-info");
   const infoText = el("div");
   infoText.append(
     el("strong", "", contact || state.sender),
-    el("div", "sub-info", [contact ? state.sender : "", state.receiver ? `接收：${simLabel(state.receiver)}${simLabel(state.receiver) !== state.receiver ? " " + state.receiver : ""}` : ""].filter(Boolean).join(" · ")),
+    el("div", "sub-info", [contact ? state.sender : "", receiverCount ? `来自 ${receiverCount} 个接收号码` : "全部接收号码"].filter(Boolean).join(" · ")),
   );
   titleBox.append(avatar(contact, state.sender, "avatar-detail"), infoText);
   head.append(titleBox);
@@ -1234,10 +1329,10 @@ function renderDetail() {
     for (const msg of cluster.messages) {
       const fresh = isFreshArrival(msg.id, seenId);
       if (fresh) freshCount++;
-      group.append(bubble(msg, fresh));
+      const item = el("div", "message-item");
+      item.append(bubble(msg, fresh), messageStamp(msg));
+      group.append(item);
     }
-    const deviceName = state.devices.find((d) => d.id === cluster.device_id)?.name || "来源设备";
-    group.append(el("div", "cluster-stamp", `${formatClock(cluster.end)} · ${deviceName}`));
     inner.append(group);
   }
   state.seenMessageId = state.messages.reduce((high, msg) => Math.max(high, msg.id), seenId);
@@ -1265,6 +1360,12 @@ function updateJumpButton(announceNew = false) {
   if (!away) jump.classList.remove("has-new");
   jump.classList.toggle("visible", away);
   jump.querySelector(".jump-label").textContent = jump.classList.contains("has-new") ? "新短信" : "最新";
+}
+
+function messageStamp(msg) {
+  const deviceName = state.devices.find((device) => device.id === msg.device_id)?.name || "来源手机";
+  const receiver = msg.receiver ? `${simLabel(msg.receiver)}${simLabel(msg.receiver) === msg.receiver ? "" : " " + msg.receiver}` : "接收号码未知";
+  return el("div", "message-stamp", [formatClock(msg.timestamp), deviceName, receiver, msg.historical ? "历史补齐" : ""].filter(Boolean).join(" · "));
 }
 
 function bubble(msg, fresh) {
@@ -1666,9 +1767,39 @@ async function renderAISettings(group) {
     parent.append(wrapper); fields[key] = input;
     return input;
   }
+  function selectField(key, label, value, options, parent = form) {
+    const select = el("select");
+    for (const [optionValue, optionLabel] of options) {
+      const option = el("option", "", optionLabel);
+      option.value = optionValue;
+      select.append(option);
+    }
+    select.value = options.some(([optionValue]) => optionValue === value) ? value : options[0]?.[0] || "";
+    const wrapper = el("label", "setting-field");
+    wrapper.append(el("span", "setting-label", label), select);
+    parent.append(wrapper); fields[key] = select;
+    return select;
+  }
   field("enabled", "启用 AI 分组", "checkbox", s.enabled);
   field("paused", "暂停队列", "checkbox", s.paused);
-  field("endpoint", "完整 Chat Completions 接口地址", "url", s.endpoint).placeholder = "https://example.com/v1/chat/completions";
+  selectField("protocol", "AI 协议", s.protocol, Object.entries(AI_PROTOCOLS));
+  const endpoint = field("endpoint", "完整 Chat Completions 接口地址", "url", s.endpoint);
+  endpoint.placeholder = s.protocol === "openai_responses"
+    ? "https://example.com/v1/responses"
+    : s.protocol === "anthropic_messages"
+      ? "https://api.anthropic.com/v1/messages"
+      : s.protocol === "gemini_generate_content"
+        ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        : "https://example.com/v1/chat/completions";
+  fields.protocol.onchange = () => {
+    endpoint.placeholder = fields.protocol.value === "openai_responses"
+      ? "https://example.com/v1/responses"
+      : fields.protocol.value === "anthropic_messages"
+        ? "https://api.anthropic.com/v1/messages"
+        : fields.protocol.value === "gemini_generate_content"
+          ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+          : "https://example.com/v1/chat/completions";
+  };
   field("model", "模型", "text", s.model);
   const key = field("api_key", s.key_set ? "API 密钥（已设置；留空保留）" : "API 密钥（本地无鉴权服务可留空）", "password", "");
   key.autocomplete = "new-password";
@@ -1755,7 +1886,7 @@ function disconnect() {
   state.sims = [];
   state.contacts = {};
   state.ai = null; state.counts = {}; state.group = "all";
-  state.sender = state.receiver = state.q = state.sim = state.device = "";
+  state.sender = state.q = state.sim = state.device = "";
   state.cursor = state.epoch = 0;
   state.conversationsLoaded = state.conversationsHasMore = state.loadingMore = false;
   state.renderedDetailKey = "";

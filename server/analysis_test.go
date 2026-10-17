@@ -104,7 +104,9 @@ func TestAnalysisUpgradeBackfillAndRollback(t *testing.T) {
 				}
 			}
 		}
-		if _, e = db.Exec("DELETE FROM schema_migrations WHERE version='006_message_analysis.up.sql'"); e != nil {
+		// 008 alters ai_settings, so rolling back 006 also rewinds its dependent
+		// migration record; otherwise a fresh 006 table would miss protocol.
+		if _, e = db.Exec("DELETE FROM schema_migrations WHERE version IN ('006_message_analysis.up.sql','008_ai_protocol.up.sql')"); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -235,6 +237,40 @@ func TestClassifierContract(t *testing.T) {
 	_, code, _ = classifySMS(context.Background(), AISettings{Endpoint: strings.Replace(server.URL, "http:", "https:", 1), Model: "synthetic", Timeout: 2}, "synthetic")
 	if code == "" {
 		t.Fatal("private destination accepted")
+	}
+}
+
+func TestClassifierProtocolAdapters(t *testing.T) {
+	protocols := []struct {
+		name string
+		body map[string]any
+	}{
+		{aiProtocolResponses, map[string]any{"output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": `{"category":"notification"}`}}}}}},
+		{aiProtocolAnthropic, map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"category":"notification"}`}}}},
+		{aiProtocolGemini, map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": `{"category":"notification"}`}}}}}}},
+	}
+	for _, protocol := range protocols {
+		t.Run(protocol.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
+					t.Error("invalid request envelope")
+				}
+				if protocol.name == aiProtocolAnthropic && r.Header.Get("anthropic-version") == "" {
+					t.Error("missing Anthropic version")
+				}
+				if protocol.name == aiProtocolGemini && r.Header.Get("x-goog-api-key") != "" {
+					t.Error("unexpected empty Gemini key header")
+				}
+				_ = json.NewEncoder(w).Encode(protocol.body)
+			}))
+			defer server.Close()
+			u, _ := url.Parse(server.URL)
+			t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", u.Hostname())
+			got, code, pause := classifySMS(context.Background(), AISettings{Protocol: protocol.name, Endpoint: server.URL, Model: "synthetic", Timeout: 2}, "synthetic")
+			if got != "notification" || code != "" || pause {
+				t.Fatalf("got=%q code=%q pause=%v", got, code, pause)
+			}
+		})
 	}
 }
 

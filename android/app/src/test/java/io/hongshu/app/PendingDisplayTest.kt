@@ -117,6 +117,21 @@ class PendingDisplayTest {
     }
 
     @Test
+    fun oneSenderConversationContainsMessagesFromMultipleReceivingPhones() = withStore { store ->
+        val secondPhone = "+8613900000000"
+        store.applySync(
+            JSONArray()
+                .put(remote(1, "10086", 1000))
+                .put(remote(2, "10086", 2000).put("receiver", secondPhone)),
+            2,
+        )
+        val heads = store.messagesWithLocal()
+        assertEquals(listOf("10086"), heads.map { it.sender })
+        val thread = store.messagesWithLocal(sender = "10086")
+        assertEquals(setOf(phone, secondPhone), thread.map { it.receiver }.toSet())
+    }
+
+    @Test
     fun nameTitledNotificationWaitsForTheNumberBeforeUpload() = withStore { store ->
         val now = 10_000_000L
         assertTrue(store.queueNotification(SmsRecord(phone, "妈妈", "synthetic", now, 7)))

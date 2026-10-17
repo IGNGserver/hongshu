@@ -225,8 +225,16 @@ func TestIntegrationWorkflow(t *testing.T) {
 	otherSIM.Timestamp += 20000
 	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{otherSIM}}, 200)
 	split := c.call("GET", "/api/conversations?sender=10086", token, nil, 200)
-	if len(split["conversations"].([]any)) != 2 {
-		t.Fatal("same sender on two SIMs collapsed into one conversation")
+	if len(split["conversations"].([]any)) != 1 {
+		t.Fatal("same sender on two SIMs was not collapsed into one conversation")
+	}
+	thread := c.call("GET", "/api/messages?sender=10086&limit=200", token, nil, 200)["messages"].([]any)
+	receivers := map[string]bool{}
+	for _, item := range thread {
+		receivers[item.(map[string]any)["receiver"].(string)] = true
+	}
+	if !receivers["+8613800000000"] || !receivers["+8613900000000"] {
+		t.Fatal("sender conversation did not include messages from both receiving phones")
 	}
 	c.call("GET", "/api/messages?sender=10086&before=14&limit=1", token, nil, 200)
 	c.call("DELETE", "/api/devices/"+id, "", nil, 200)

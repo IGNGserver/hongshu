@@ -106,7 +106,7 @@ func reconcileConversationHeads(ctx context.Context, db interface {
 		if _, err = tx.ExecContext(ctx, "DELETE FROM conversation_heads"); err != nil {
 			return fmt.Errorf("conversation index reset failed")
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO conversation_heads (sender,receiver,message_id,timestamp) SELECT sender,receiver,id,timestamp FROM (SELECT sender,receiver,id,timestamp,ROW_NUMBER() OVER (PARTITION BY sender,receiver ORDER BY timestamp DESC,id DESC) rn FROM messages) ranked WHERE rn=1"); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO conversation_heads (sender,message_id,timestamp) SELECT sender,id,timestamp FROM (SELECT sender,id,timestamp,ROW_NUMBER() OVER (PARTITION BY sender ORDER BY timestamp DESC,id DESC) rn FROM messages) ranked WHERE rn=1"); err != nil {
 			return fmt.Errorf("conversation index rebuild failed")
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE conversation_heads_state SET seq=? WHERE id=1", head); err != nil {

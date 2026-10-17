@@ -8,7 +8,7 @@ function runtime() {
   vm.runInContext(readFileSync(new URL('../app.js',import.meta.url),'utf8').replace(/^export /gm,''),ctx);
   vm.runInContext(`document={querySelector:()=>null};setBusy=()=>{};renderDetail=()=>{};
     state.me={cursor:200,epoch:1};state.cursor=200;state.epoch=1;state.epochSeen=true;
-    state.sender='synthetic';state.receiver='+123456789';
+     state.sender='synthetic';
     state.messages=Array.from({length:200},(_,i)=>({id:i+1,timestamp:i+1}));`,ctx);
   return ctx;
 }

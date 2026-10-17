@@ -123,7 +123,7 @@ class UiScreenshotTest {
             setup = setupProgress(facts, simsConfigured, dismissed = false),
         )
 
-    private val actions = HomeActions({}, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {})
+    private val actions = HomeActions({}, {}, {}, { _ -> }, {}, {}, {}, {}, {}, {})
 
     @Test
     fun homeFirstRun() =
@@ -172,7 +172,7 @@ class UiScreenshotTest {
         val facts = SetupFacts(connected = true)
         shot("conversation") {
             MainSurface(
-                AppDestination.Conversation("95588", "+8613800138000"),
+                AppDestination.Conversation("95588"),
                 model(sample, facts, true),
                 actions,
                 twoPane = false,

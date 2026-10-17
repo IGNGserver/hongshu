@@ -144,8 +144,8 @@ Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=
 生产镜像使用非 root / 只读根文件系统。数据库和备份未做端到端加密，请启用宿主磁盘与备份加密。
 ## 可选 AI 短信分类配置
 
-升级不会自动启用 AI。Web 管理员在设置中填写完整 OpenAI-compatible Chat Completions
-接口地址、模型及可选 API 密钥，并明确勾选历史与新增短信分析说明后开启。
+升级不会自动启用 AI。Web 管理员在设置中选择 AI 协议，并填写对应的完整接口地址、模型及可选 API 密钥，
+再明确勾选历史与新增短信分析说明后开启。
 无需 AI 的部署不需要增加任何密钥，验证码规则提取始终可用。
 
 保存 API 密钥前，在未跟踪的部署 `.env` 中设置 `HONGSHU_AI_SECRET`：用

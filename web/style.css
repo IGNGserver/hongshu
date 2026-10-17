@@ -317,14 +317,29 @@ input.search::-webkit-search-cancel-button { display: none; }
 .search-clear { position: absolute; right: .375rem; display: none; }
 .search-clear.visible { display: inline-grid; }
 
-/* One horizontally scrolling row: group chips, then the filter menu */
+/* The filter stays pinned while the group tabs use explicit mouse-friendly controls. */
 .chip-row {
   display: flex; gap: .5rem; align-items: center;
-  overflow-x: auto; scrollbar-width: none;
   padding: .25rem 1rem .625rem;
 }
-.chip-row::-webkit-scrollbar { display: none; }
-.group-chips { display: flex; gap: .5rem; flex: 0 0 auto; }
+.chip-rail { display: flex; align-items: center; gap: .125rem; min-width: 0; flex: 1 1 auto; }
+.chip-scroller {
+  min-width: 0; flex: 1 1 auto; overflow-x: auto; scrollbar-width: none;
+  overscroll-behavior-inline: contain; scroll-behavior: smooth; cursor: grab; touch-action: pan-y;
+}
+.chip-rail.is-dragging .chip-scroller { cursor: grabbing; user-select: none; scroll-behavior: auto; }
+.chip-scroller::-webkit-scrollbar { display: none; }
+.group-chips { display: flex; gap: .5rem; width: max-content; }
+.chip-rail-button {
+  display: none; flex: 0 0 32px; width: 32px; height: 32px; min-width: 32px;
+  padding: 0; border-radius: 50%; color: var(--md-sys-color-on-surface-variant);
+  background: transparent;
+}
+.chip-rail-button:hover:not(:disabled) { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+.chip-rail-button:disabled { opacity: .35; cursor: default; }
+.chip-rail-button svg { width: 20px; height: 20px; fill: currentColor; }
+.chip-rail.is-overflowing .chip-rail-button { display: grid; place-items: center; }
+.chip-rail-button[hidden] { display: none; }
 .filter-slot { display: flex; flex: 0 0 auto; }
 .filter-slot:empty { display: none; }
 
@@ -475,7 +490,8 @@ input.search::-webkit-search-cancel-button { display: none; }
 }
 
 /* A cluster is one sender's run of messages from the same device within five minutes. */
-.bubble-group { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; max-width: 78%; }
+.bubble-group { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 78%; }
+.message-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .bubble {
   position: relative;
   background: var(--hs-bubble); color: var(--hs-on-bubble);
@@ -485,11 +501,11 @@ input.search::-webkit-search-cancel-button { display: none; }
   white-space: pre-wrap; overflow-wrap: anywhere;
   user-select: text;
 }
-.bubble-group .bubble:first-child { border-top-left-radius: var(--hs-shape-bubble); }
+.bubble-group .message-item:first-child .bubble { border-top-left-radius: var(--hs-shape-bubble); }
 .bubble-new { animation: m3e-bubble-enter var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-emphasized-decelerate); }
 @keyframes m3e-bubble-enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .bubble a { color: var(--md-sys-color-primary); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
-.cluster-stamp {
+.message-stamp {
   display: flex; flex-wrap: wrap; gap: .375rem; align-items: center;
   padding: .25rem .375rem 0;
   font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant);
