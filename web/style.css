@@ -398,7 +398,16 @@ input.search::-webkit-search-cancel-button { display: none; }
   padding: 1px 6px; border-radius: 6px;
   background: var(--md-sys-color-tertiary-container); color: var(--md-sys-color-on-tertiary-container);
 }
-.list-pager { display: flex; gap: .75rem; justify-content: center; padding: 1rem; }
+.list-more { padding: .75rem; text-align: center; font: var(--md-sys-typescale-label-medium); color: var(--md-sys-color-on-surface-variant); }
+.list-more[hidden] { display: none; }
+
+/* First load: static skeleton rows, no shimmer */
+.list-skeleton { display: grid; gap: 2px; }
+.conversation-skeleton { display: flex; align-items: center; gap: .875rem; min-height: 72px; padding: .625rem .75rem; }
+.skeleton-avatar { width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%; background: var(--md-sys-color-surface-container-high); }
+.skeleton-lines { flex: 1; height: 36px; border-radius: 8px; background:
+  linear-gradient(var(--md-sys-color-surface-container-high), var(--md-sys-color-surface-container-high)) 0 2px / 45% 14px no-repeat,
+  linear-gradient(var(--md-sys-color-surface-container), var(--md-sys-color-surface-container)) 0 22px / 85% 12px no-repeat; }
 
 .conversation-new {
   animation:
@@ -692,6 +701,35 @@ button.settings-item:hover { background: color-mix(in srgb, var(--md-sys-color-o
 }
 #toast.visible { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
 
+/* ---------------------------------------------------------------- Motion */
+/* "↓ 最新": appears once the reader scrolls away from the newest message */
+.jump-latest {
+  position: absolute; right: 1.25rem; bottom: 1.25rem; z-index: 10;
+  min-height: 40px; padding: 0 1rem 0 .75rem; gap: .375rem;
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-level2);
+  font-weight: 600;
+  visibility: hidden; opacity: 0; transform: scale(.8);
+  transition: opacity var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+    transform var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized-decelerate),
+    visibility 0s linear var(--md-sys-motion-duration-short4),
+    background-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+.jump-latest.visible { visibility: visible; opacity: 1; transform: none; transition-delay: 0s; }
+.jump-latest.has-new { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.jump-latest:hover { filter: brightness(.97); }
+
+/* Fade through when another conversation replaces the open one */
+@keyframes detail-fade { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes layout-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes page-return { from { opacity: 0; transform: translateX(-30px); } to { opacity: 1; transform: none; } }
+@media (min-width: 600px) {
+  .detail.detail-enter > * { animation: detail-fade 210ms var(--md-sys-motion-easing-emphasized-decelerate); }
+  .settings-container { animation: layout-fade 210ms var(--md-sys-motion-easing-standard); }
+}
+.layout.returning { animation: layout-fade 210ms var(--md-sys-motion-easing-standard); }
+
 /* ---------------------------------------------------------------- Breakpoints */
 @media (min-width: 1440px) {
   .inbox { width: 380px; flex-basis: 380px; }
@@ -724,6 +762,11 @@ button.settings-item:hover { background: color-mix(in srgb, var(--md-sys-color-o
   .settings-item { padding: .75rem 1rem; }
 }
 @keyframes page-enter { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: none; } }
+@media (max-width: 599px) {
+  .settings-container { animation: page-enter var(--md-sys-motion-duration-medium2) var(--md-sys-motion-easing-emphasized-decelerate); }
+  .layout.returning, .layout.returning-list .inbox { animation: page-return var(--md-sys-motion-duration-medium2) var(--md-sys-motion-easing-emphasized-decelerate); }
+  .jump-latest { right: 1rem; bottom: 1rem; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
