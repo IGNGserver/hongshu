@@ -109,8 +109,7 @@ async function request(path, token, method = "GET", body) {
     await page.getByRole("button", { name: "登录", exact: true }).click();
     await page.getByRole("heading", { name: "短信收件箱" }).waitFor();
     await page.getByText("实时连接", { exact: true }).waitFor({ timeout: 15000 });
-    await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
-    await page.getByRole("button", { name: "展开侧边栏", exact: true }).click();
+    assert.equal(await page.locator(".rail").count(), 0, "navigation rail was removed");
     const phone = await request("/login", null, "POST", {
       password,
       name: "Synthetic Phone",
@@ -123,6 +122,12 @@ async function request(path, token, method = "GET", body) {
       phone: "+8613800000000",
       label: "Synthetic SIM",
       subscription_id: 1,
+    });
+    // A second SIM makes the combined SIM / device filter appear.
+    await request("/sims", token, "PUT", {
+      phone: "+8613900000000",
+      label: "Synthetic SIM 2",
+      subscription_id: 2,
     });
     const body = 'Synthetic SMS <img src=x onerror="window.injected=true">';
     await request("/messages", token, "POST", {
@@ -157,15 +162,15 @@ async function request(path, token, method = "GET", body) {
     await page.locator(".conversation").first().waitFor();
     await page.setViewportSize({ width: 1280, height: 900 });
     assert.equal(await page.locator("select").count(), 0);
-    await page.getByRole("button", { name: "所有 SIM", exact: true }).click();
-    assert.ok(await page.getByRole("listbox", { name: "所有 SIM" }).isVisible());
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    assert.ok(await page.getByRole("listbox", { name: "筛选" }).isVisible());
+    assert.ok(await page.getByRole("option", { name: "Synthetic SIM 2" }).isVisible());
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "设备", exact: true }).click();
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
     await page.getByText("Synthetic Phone", { exact: true }).waitFor();
     assert.equal(await page.getByText("Web browser", { exact: true }).count(), 0);
     assert.equal(await page.locator(".device-card button").count(), 0);
-    await page.getByRole("button", { name: "设置", exact: true }).click();
-    await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
     await page.getByRole("switch", { name: "浏览器通知", exact: true }).waitFor();
     await page.getByText("通知已关闭", { exact: true }).waitFor();
     assert.equal(await page.getByText("中枢名称", { exact: true }).count(), 0);
@@ -193,7 +198,7 @@ async function request(path, token, method = "GET", body) {
     await page.getByLabel("我了解开启后会自动分析历史与新增非验证码短信").check();
     await page.getByRole("button", {name:"保存 AI 设置",exact:true}).click();
     await page.getByText("AI 设置已保存", {exact:true}).waitFor();
-    await page.getByRole("button", {name:"收件箱",exact:true}).click();
+    await page.getByRole("button", {name:"返回收件箱",exact:true}).click();
     await page.getByLabel("搜索短信").fill("");
     await page.getByRole("button", {name:"个人 1",exact:true}).waitFor({timeout:20000});
     await page.getByRole("button", {name:"推广 1",exact:true}).waitFor({timeout:20000});
@@ -205,7 +210,7 @@ async function request(path, token, method = "GET", body) {
     assert.equal(await page.locator(".otp-code").count(), 1);
     await page.getByRole("button", {name:"个人 1",exact:true}).click();
     await page.locator(".conversation").filter({hasText:"fixture-personal"}).click();
-    await page.getByText("调整分类", {exact:true}).click();
+    await page.getByTitle("调整分类", {exact:true}).click();
     await page.locator(".category-actions").getByRole("button", {name:"垃圾",exact:true}).click();
     await page.getByRole("button", {name:"垃圾 2",exact:true}).waitFor();
     await page.getByRole("button", {name:"待分析 1",exact:true}).click();
@@ -215,7 +220,7 @@ async function request(path, token, method = "GET", body) {
     await page.getByLabel("启用 AI 分组", {exact:true}).uncheck();
     await page.getByRole("button", {name:"保存 AI 设置",exact:true}).click();
     await page.getByText("AI 设置已保存", {exact:true}).waitFor();
-    await page.getByRole("button", {name:"收件箱",exact:true}).click();
+    await page.getByRole("button", {name:"返回收件箱",exact:true}).click();
     await page.getByRole("button", {name:"其他短信 5",exact:true}).waitFor();
     assert.equal(await page.locator(".group-chips button").count(), 3);
     assert.deepEqual(errors, []);

@@ -61,3 +61,43 @@ test("manifest keeps any and maskable icons separate and the shell caches them",
   }
   assert.ok(read("index.html").includes('rel="apple-touch-icon" href="/apple-touch-icon.png"'));
 });
+
+test("avatar initials match Android avatarInitial", async () => {
+  const { avatarInitial } = await import("../app.js");
+  assert.equal(avatarInitial("张三", "13912345678"), "张");
+  assert.equal(avatarInitial("", "【京东】"), "京");
+  assert.equal(avatarInitial("alice", "+8613300001111"), "A");
+  assert.equal(avatarInitial("", "13912345678"), null, "plain numbers get the person icon");
+  assert.equal(avatarInitial("", "+8613912345678"), null);
+  assert.equal(avatarInitial("😀 Bob", "1"), "😀", "surrogate pairs stay whole");
+});
+
+test("service numbers match Android isServiceNumber", async () => {
+  const { isServiceNumber } = await import("../app.js");
+  for (const sender of ["10086", "95588", "106903", "1069012345678", "+8610086"]) assert.equal(isServiceNumber(sender), true, sender);
+  for (const sender of ["13912345678", "12", "+8613912345678", "abc"]) assert.equal(isServiceNumber(sender), false, sender);
+});
+
+test("avatar colour is a stable Java hashCode pick from the Android palette", async () => {
+  const { avatarColor, AVATAR_COLORS } = await import("../app.js");
+  assert.equal(avatarColor(""), AVATAR_COLORS[0]);
+  assert.equal(avatarColor("a"), AVATAR_COLORS[97 % 8]);
+  assert.equal(avatarColor("ab"), AVATAR_COLORS[(97 * 31 + 98) % 8]);
+  assert.equal(avatarColor("10086"), avatarColor("10086"));
+  assert.ok(AVATAR_COLORS.includes(avatarColor("13912345678")));
+});
+
+test("messages cluster by device, five-minute gap and day", async () => {
+  const { clusterMessages, CLUSTER_GAP_MS } = await import("../app.js");
+  const base = new Date(2026, 9, 17, 12, 0).getTime();
+  const m = (id, t, device_id = 1) => ({ id, timestamp: base + t, device_id });
+  const clusters = clusterMessages([
+    m(1, 0), m(2, 60e3), m(3, 60e3 + CLUSTER_GAP_MS), // within the gap → one cluster
+    m(4, 60e3 + CLUSTER_GAP_MS + 1, 2),             // another device
+    m(5, 60e3 + 2 * CLUSTER_GAP_MS + 2, 2),         // more than five minutes later
+    m(6, 24 * 3600e3),                              // next day
+  ]);
+  assert.deepEqual(clusters.map((c) => c.messages.map((x) => x.id)), [[1, 2, 3], [4], [5], [6]]);
+  assert.equal(clusters[0].end, base + 60e3 + CLUSTER_GAP_MS);
+  assert.deepEqual(clusterMessages([]), []);
+});

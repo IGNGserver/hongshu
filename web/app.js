@@ -72,6 +72,45 @@ export function freshConversationKeys(previous, conversations) {
   return fresh;
 }
 
+// Avatar rules shared with Android (MessageFormat.kt avatarInitial / isServiceNumber and
+// Theme.kt avatarColorFor), so a sender looks the same on every device.
+export function avatarInitial(contact, sender) {
+  const name = String(contact || sender || "").trim().replace(/^[【\[(（]+/, "");
+  const first = [...name][0];
+  if (!first || /[0-9+]/.test(first)) return null;
+  return first.toUpperCase();
+}
+export function isServiceNumber(sender) {
+  const digits = String(sender || "").replace(/^\+86/, "");
+  return /^\d+$/.test(digits) && ((digits.length >= 3 && digits.length <= 6) || (digits.startsWith("106") && digits.length > 6));
+}
+export const AVATAR_COLORS = ["#E08D3C", "#34A853", "#E91E63", "#1A73E8", "#9C27B0", "#00ACC1", "#F25C54", "#5C6BC0"];
+export function avatarColor(identifier) {
+  if (!identifier) return AVATAR_COLORS[0];
+  let hash = 0; // java.lang.String.hashCode over UTF-16 code units
+  for (let i = 0; i < identifier.length; i++) hash = (Math.imul(31, hash) + identifier.charCodeAt(i)) | 0;
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+// Consecutive messages from the same device on the same day, at most five minutes apart,
+// share one cluster so time and source are shown once.
+export const CLUSTER_GAP_MS = 5 * 60 * 1000;
+const localDay = (t) => new Date(t).toDateString();
+export function clusterMessages(messages) {
+  const clusters = [];
+  let current = null;
+  for (const message of messages) {
+    if (!current || message.device_id !== current.device_id ||
+        message.timestamp - current.end > CLUSTER_GAP_MS || localDay(message.timestamp) !== localDay(current.end)) {
+      current = { device_id: message.device_id, start: message.timestamp, end: message.timestamp, messages: [] };
+      clusters.push(current);
+    }
+    current.messages.push(message);
+    current.end = message.timestamp;
+  }
+  return clusters;
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -98,7 +137,6 @@ const state = {
   busy: false,
   contacts: {},
   inboxDirty: false,
-  railExpanded: true,
   historyHasMore: true,
   historyLoading: false,
   group: "all",
@@ -142,6 +180,9 @@ const ICONS = {
   close: `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
   contentCopy: `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`,
   warning: `<svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
+  sms: `<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM9 11H7V9h2v2zm4 0h-2V9h2v2zm4 0h-2V9h2v2z"/></svg>`,
+  label: `<svg viewBox="0 0 24 24"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>`,
+  autoAwesome: `<svg viewBox="0 0 24 24"><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/></svg>`,
   emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
     <rect x="42" y="46" width="76" height="58" rx="16" fill="currentColor" fill-opacity="0.3"/>
@@ -151,36 +192,33 @@ const ICONS = {
   </svg>`,
 };
 
-// Deterministic Expressive Avatar Color Generator
-const AVATAR_PALETTES = [
-  { bg: "#E8DEF8", color: "#1D192B" },
-  { bg: "#D0E4FF", color: "#001D36" },
-  { bg: "#CBE6FF", color: "#001E30" },
-  { bg: "#C2E7FF", color: "#001D35" },
-  { bg: "#D4E7E4", color: "#0D2825" },
-  { bg: "#FFD8E4", color: "#31111D" },
-  { bg: "#FFDCC2", color: "#2E1500" },
-  { bg: "#EADDFF", color: "#21005D" },
-];
-
-function getAvatarStyle(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  const idx = Math.abs(hash) % AVATAR_PALETTES.length;
-  const p = AVATAR_PALETTES[idx];
-  return `background-color: ${p.bg}; color: ${p.color};`;
+function avatar(contact, sender, extraClass = "") {
+  const service = !contact && isServiceNumber(sender);
+  const initial = avatarInitial(contact, sender);
+  const node = el("span", ["avatar", service ? "avatar-service" : "", extraClass].filter(Boolean).join(" "));
+  node.style.backgroundColor = avatarColor(sender);
+  if (initial) node.textContent = initial;
+  else node.innerHTML = service ? ICONS.sms : ICONS.person;
+  node.setAttribute("role", "img");
+  node.setAttribute("aria-label", `${contact || sender}头像`);
+  return node;
 }
 
-function defaultAvatar(label, extraClass = "") {
-  const avatar = el("span", `avatar ${extraClass}`.trim());
-  avatar.innerHTML = ICONS.person;
-  avatar.setAttribute("role", "img");
-  avatar.setAttribute("aria-label", `${label}默认头像`);
-  avatar.setAttribute("style", getAvatarStyle(label));
-  return avatar;
+function simLabel(phone) {
+  const sim = state.sims.find((s) => s.phone === phone);
+  return sim?.label || phone;
+}
+
+function formatClock(t) {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(t));
+}
+
+function emptyState(icon, title, text) {
+  const empty = el("div", "empty-state");
+  const blob = el("div", "empty-blob");
+  blob.innerHTML = icon;
+  empty.append(blob, el("h3", "", title), el("p", "", text));
+  return empty;
 }
 
 // Attach Material 3 Ripple effect to interactive DOM elements
@@ -432,87 +470,32 @@ function authView() {
 }
 
 // -------------------------------------------------------------
-// App Shell Structure (M3 Expressive Navigation Rail + Canvas)
+// App Shell: Messages-style layout, no navigation rail.
+// Settings is a full page reached from the gear in the list header.
 // -------------------------------------------------------------
+const SETTINGS_HISTORY = "hongshuSettings";
+async function openSettings() {
+  state.page = "settings";
+  history.pushState({ [SETTINGS_HISTORY]: true }, "");
+  await reloadMetadata();
+  shell();
+}
+function closeSettings() {
+  if (history.state?.[SETTINGS_HISTORY]) { history.back(); return; }
+  state.page = "inbox";
+  shell();
+}
+
 function shell() {
   const root = $("#app");
   root.replaceChildren();
 
-  // Wavy Indeterminate Progress Indicator (Google Messages Top Bar)
   const progContainer = el("div", "progress-container");
   progContainer.id = "global-progress";
   progContainer.style.display = state.busy ? "block" : "none";
   progContainer.append(el("div", "progress-bar-wavy"));
 
   const container = el("div", "shell");
-
-  const rail = el("aside", `rail${state.railExpanded ? " expanded" : " collapsed"}`);
-  rail.dataset.expanded = String(state.railExpanded);
-  rail.setAttribute("aria-label", "主导航");
-
-  const railHeader = el("div", "rail-header");
-  const brand = el("div", "brand");
-  const brandLogo = el("img", "brand-logo");
-  brandLogo.src = "/icon.svg";
-  brandLogo.alt = "鸿枢";
-  const brandTitle = el("strong", "brand-title", "鸿枢");
-  brand.append(brandLogo, brandTitle);
-  railHeader.append(brand);
-
-  const railToggle = el("button", "icon-button rail-toggle");
-  railToggle.type = "button";
-  railToggle.innerHTML = state.railExpanded ? ICONS.chevronLeft : ICONS.chevronRight;
-  railToggle.setAttribute(
-    "aria-label",
-    state.railExpanded ? "收起侧边栏" : "展开侧边栏",
-  );
-  railToggle.title = railToggle.getAttribute("aria-label");
-  railToggle.setAttribute("aria-expanded", String(state.railExpanded));
-  attachRipple(railToggle);
-  railToggle.onclick = () => {
-    state.railExpanded = !state.railExpanded;
-    shell();
-  };
-  railHeader.append(railToggle);
-  rail.append(railHeader);
-
-  const nav = el("nav");
-  for (const [p, t, icon] of [
-    ["inbox", "收件箱", ICONS.chat],
-    ["devices", "设备", ICONS.devices],
-    ["settings", "设置", ICONS.settings],
-  ]) {
-    const item = el(
-      "button",
-      "rail-item" + (state.page === p ? " active" : ""),
-    );
-    item.type = "button";
-    item.setAttribute("aria-label", t);
-    if (state.page === p) item.setAttribute("aria-current", "page");
-    attachRipple(item);
-
-    const iconWrapper = el("div", "rail-icon-wrapper");
-    iconWrapper.innerHTML = icon;
-    const label = el("span", "rail-label", t);
-    item.append(iconWrapper, label);
-
-    item.onclick = async () => {
-      state.page = p;
-      await reloadMetadata();
-      shell();
-    };
-    nav.append(item);
-  }
-  rail.append(nav);
-
-  const foot = el("div", "foot");
-  const statusEl = el("div", "status");
-  statusEl.title = "已建立长连接实时通信";
-  const dot = el("span", "status-dot");
-  statusEl.append(dot, el("span", "status-copy"));
-  foot.append(statusEl);
-  rail.append(foot);
-
   const main = el("main", "main");
   main.append(progContainer);
 
@@ -529,12 +512,11 @@ function shell() {
     main.append(banner);
   }
 
-  container.append(rail, main);
+  container.append(main);
   root.append(container);
 
-  if (state.page === "inbox") inboxView();
-  if (state.page === "devices") devicesView();
   if (state.page === "settings") settingsView();
+  else inboxView();
   document.body.dataset.detail = String(state.page === "inbox" && Boolean(state.sender));
 
   setStatus(
@@ -543,55 +525,52 @@ function shell() {
   );
 }
 
+let lastOnline = null;
 function setStatus(text, online) {
   const n = $(".status");
-  if (n) {
-    n.title = text;
-    const dot = n.querySelector(".status-dot") || el("span", "status-dot");
-    const copy = el("span", "status-copy");
-    copy.append(
-      el("strong", "status-label", online ? "实时连接" : "自动补齐"),
-      el("small", "status-state", online ? "已连接" : "等待连接"),
-    );
-    n.replaceChildren(dot, copy);
-    n.className = "status" + (online ? " online" : "");
-  }
+  if (!n) { lastOnline = online; return; }
+  const label = online ? "实时连接" : "自动补齐";
+  n.title = online ? "已建立长连接，新短信实时到达" : `${text}：每 30 秒自动补齐`;
+  n.replaceChildren(el("span", "status-dot"), el("span", "status-label", label));
+  n.className = "status" + (online ? " online" : "");
+  // Pulse once when the connection comes back, never continuously.
+  if (online && lastOnline === false) n.classList.add("reconnected");
+  lastOnline = online;
 }
 
 // -------------------------------------------------------------
-// Inbox View: Pill Search + M3 Chips + Stream Layout
+// Inbox column: brand header, pill search, one row of chips, list
 // -------------------------------------------------------------
 function inboxView() {
   const main = $(".main");
 
-  // Keep hidden h1 for screen reader / test locator compatibility
-  const srTitle = el("h1", "", "短信收件箱");
-  srTitle.style.position = "absolute";
-  srTitle.style.width = "1px";
-  srTitle.style.height = "1px";
-  srTitle.style.padding = "0";
-  srTitle.style.margin = "-1px";
-  srTitle.style.overflow = "hidden";
-  srTitle.style.clip = "rect(0, 0, 0, 0)";
-  srTitle.style.border = "0";
-  main.append(srTitle);
+  // Visually hidden page heading for screen readers and the browser smoke test
+  main.append(el("h1", "sr-only", "短信收件箱"));
 
   const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
   const inbox = el("div", "inbox");
 
-  // Google Messages Top Search & Filters Bar
-  const topbar = el("div", "inbox-topbar");
+  const header = el("header", "inbox-header");
+  const logo = el("img", "brand-logo");
+  logo.src = "/icon.svg";
+  logo.alt = "";
+  const status = el("span", "status");
+  status.setAttribute("role", "status");
+  header.append(
+    logo,
+    el("strong", "brand-title", "鸿枢"),
+    status,
+    el("span", "spacer"),
+    iconButton(ICONS.settings, "设置", openSettings),
+  );
 
-  // Pill Search Box
   const searchContainer = el("div", "search-container");
   searchContainer.innerHTML = `<span class="search-icon">${ICONS.search}</span>`;
-
   const search = el("input", "search");
   search.type = "search";
-  search.placeholder = "搜索联系人、号码或短信";
+  search.placeholder = "搜索短信、号码或联系人";
   search.setAttribute("aria-label", "搜索短信");
   search.value = state.q;
-
   const clearBtn = iconButton(
     ICONS.close,
     "清空搜索",
@@ -600,11 +579,11 @@ function inboxView() {
       state.q = "";
       clearBtn.classList.remove("visible");
       state.offset = 0;
+      search.focus();
       return refreshInbox();
     },
     "search-clear" + (state.q ? " visible" : ""),
   );
-
   let timer;
   search.oninput = () => {
     clearBtn.classList.toggle("visible", Boolean(search.value));
@@ -615,40 +594,25 @@ function inboxView() {
       refreshInbox().catch((e) => toast(e.message));
     }, 250);
   };
-
   searchContainer.append(search, clearBtn);
-  topbar.append(searchContainer);
 
-  // M3 Filter Chips
-  const filterRow = el("div", "filter-chips");
-  const phones = [
-    ...new Map(
-      state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
-    ).values(),
-  ];
-  filterRow.append(
-    createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
-    createFilterChip(
-      "所有设备",
-      state.devices
-        .filter((d) => d.kind === "android" && !d.revoked)
-        .map((d) => [d.id, d.name]),
-      state.device,
-      (v) => (state.device = v),
-    ),
-  );
-  topbar.append(filterRow);
-  topbar.append(el("div", "group-chips"), el("p", "analysis-status muted"));
+  const chipRow = el("div", "chip-row");
+  // The filter comes first so it stays in view while the group chips scroll.
+  chipRow.append(el("div", "filter-slot"), el("div", "group-chips"));
 
-  inbox.append(topbar, el("div", "list"));
+  inbox.append(header, searchContainer, chipRow, el("p", "analysis-status"), el("div", "list"));
   layout.append(inbox, el("article", "detail"));
   main.append(layout);
 
+  renderGroupBar();
+  renderFilterMenu();
   renderConversations();
   renderDetail();
   void refreshInbox().catch((e) => toast(e.message));
 }
 
+// SIM and device filters share one chip and one menu; it only appears when there is
+// something to choose between, or a filter is already applied.
 let activeFilterMenu = null;
 let filterMenuEventsInstalled = false;
 
@@ -656,50 +620,73 @@ function installFilterMenuEvents() {
   if (filterMenuEventsInstalled || typeof document === "undefined") return;
   filterMenuEventsInstalled = true;
   document.addEventListener("click", (event) => {
-    if (activeFilterMenu && !activeFilterMenu.wrapper.contains(event.target)) {
-      activeFilterMenu.close();
-    }
+    if (activeFilterMenu && !activeFilterMenu.wrapper.contains(event.target)) activeFilterMenu.close();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && activeFilterMenu) {
-      activeFilterMenu.close(true);
-    }
+    if (event.key === "Escape" && activeFilterMenu) activeFilterMenu.close(true);
   });
+  window.addEventListener("resize", () => activeFilterMenu?.close());
 }
 
-function createFilterChip(label, items, value, change) {
+function filterSections() {
+  const sims = [...new Map(state.sims.map((s) => [s.phone, s.label || s.phone])).entries()];
+  const phones = state.devices.filter((d) => d.kind === "android" && !d.revoked).map((d) => [d.id, d.name]);
+  return [
+    { key: "sim", title: "接收号码", all: "所有 SIM", items: sims },
+    { key: "device", title: "采集设备", all: "所有设备", items: phones },
+  ];
+}
+
+function renderFilterMenu() {
+  const slot = $(".filter-slot");
+  if (!slot) return;
   installFilterMenuEvents();
+  if (activeFilterMenu) activeFilterMenu.close();
+  slot.replaceChildren();
+  const sections = filterSections();
+  const worthShowing = sections.some((s) => s.items.length > 1) || state.sim || state.device;
+  if (!worthShowing) return;
+
   const wrapper = el("div", "filter-chip-wrapper");
-  const trigger = el("button", "filter-chip" + (value ? " active" : ""));
+  const active = Boolean(state.sim || state.device);
+  const trigger = el("button", "filter-chip" + (active ? " active" : ""));
   trigger.type = "button";
-  trigger.setAttribute("aria-label", label);
+  trigger.setAttribute("aria-label", "筛选");
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
-
-  const selected = items.find(([v]) => v === value);
-  const triggerLabel = el("span", "filter-chip-label", selected?.[1] || label);
+  const chosen = sections
+    .map((s) => s.items.find(([v]) => String(v) === String(state[s.key]))?.[1])
+    .filter(Boolean);
+  const check = el("span", "chip-check");
+  check.innerHTML = ICONS.check;
   const arrow = el("span", "filter-chip-arrow");
   arrow.innerHTML = ICONS.arrowDropDown;
-  trigger.append(triggerLabel, arrow);
+  trigger.append(check, el("span", "filter-chip-label", chosen.join(" · ") || "筛选"), arrow);
 
   const menu = el("div", "filter-menu-popup");
   menu.hidden = true;
   menu.setAttribute("role", "listbox");
-  menu.setAttribute("aria-label", label);
-
-  const options = [["", label], ...items];
-  const optionButtons = [];
-  let selectedIndex = Math.max(0, options.findIndex(([v]) => v === value));
-
-  function updateSelected(nextValue) {
-    selectedIndex = Math.max(0, options.findIndex(([v]) => v === nextValue));
-    triggerLabel.textContent = options[selectedIndex][1];
-    trigger.classList.toggle("active", Boolean(nextValue));
-    optionButtons.forEach((option, index) => {
-      const selected = index === selectedIndex;
-      option.classList.toggle("selected", selected);
+  menu.setAttribute("aria-label", "筛选");
+  const options = [];
+  for (const section of sections) {
+    if (!section.items.length && !state[section.key]) continue;
+    const heading = el("div", "filter-menu-heading", section.title);
+    heading.setAttribute("role", "presentation");
+    menu.append(heading);
+    for (const [value, label] of [["", section.all], ...section.items]) {
+      const selected = String(state[section.key] || "") === String(value);
+      const option = el("button", "filter-menu-option" + (selected ? " selected" : ""));
+      option.type = "button";
+      option.tabIndex = -1;
+      option.setAttribute("role", "option");
       option.setAttribute("aria-selected", String(selected));
-    });
+      const mark = el("span", "filter-menu-check");
+      mark.innerHTML = ICONS.check;
+      option.append(mark, el("span", "filter-menu-option-label", label));
+      option.onclick = (event) => { event.stopPropagation(); choose(section.key, value); };
+      options.push(option);
+      menu.append(option);
+    }
   }
 
   function close(focus = false) {
@@ -708,73 +695,46 @@ function createFilterChip(label, items, value, change) {
     if (activeFilterMenu?.wrapper === wrapper) activeFilterMenu = null;
     if (focus) trigger.focus();
   }
-
   function open() {
-    if (activeFilterMenu && activeFilterMenu.wrapper !== wrapper) {
-      activeFilterMenu.close();
-    }
+    if (activeFilterMenu && activeFilterMenu.wrapper !== wrapper) activeFilterMenu.close();
     activeFilterMenu = { wrapper, close };
+    // The chip row scrolls horizontally, so the menu is positioned against the viewport.
+    const rect = trigger.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + 6}px`;
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 232))}px`;
     menu.hidden = false;
     trigger.setAttribute("aria-expanded", "true");
-    optionButtons[selectedIndex]?.focus();
+    (options.find((o) => o.classList.contains("selected")) || options[0])?.focus();
   }
-
-  function choose(nextValue) {
-    updateSelected(nextValue);
+  function choose(key, value) {
     close(true);
-    change(nextValue);
+    state[key] = value;
     state.offset = 0;
+    renderFilterMenu();
     void refreshInbox().catch((e) => toast(e.message));
   }
 
-  options.forEach(([optionValue, optionLabel], index) => {
-    const option = el("button", "filter-menu-option");
-    option.type = "button";
-    option.setAttribute("role", "option");
-    option.setAttribute("aria-selected", String(index === selectedIndex));
-    option.classList.toggle("selected", index === selectedIndex);
-    option.tabIndex = -1;
-    const check = el("span", "filter-menu-check");
-    check.innerHTML = ICONS.check;
-    option.append(check, el("span", "filter-menu-option-label", optionLabel));
-    option.onclick = (event) => {
-      event.stopPropagation();
-      choose(optionValue);
-    };
-    optionButtons.push(option);
-    menu.append(option);
-  });
-
   trigger.onclick = (event) => {
     event.stopPropagation();
-    if (menu.hidden) open();
-    else close();
+    if (menu.hidden) open(); else close();
   };
   trigger.onkeydown = (event) => {
-    if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
-      event.preventDefault();
-      open();
-    }
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); open(); }
   };
   menu.onkeydown = (event) => {
-    const current = optionButtons.indexOf(document.activeElement);
+    const current = options.indexOf(document.activeElement);
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      const next = (current + direction + optionButtons.length) % optionButtons.length;
-      optionButtons[next]?.focus();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      options[(current + step + options.length) % options.length]?.focus();
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      optionButtons[event.key === "Home" ? 0 : optionButtons.length - 1]?.focus();
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      const option = optionButtons[current];
-      if (option) choose(options[current][0]);
+      options[event.key === "Home" ? 0 : options.length - 1]?.focus();
     }
   };
 
   wrapper.append(trigger, menu);
-  return wrapper;
+  slot.append(wrapper);
 }
 
 let inboxAbortController = null;
@@ -793,25 +753,7 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
     if (metadata) await reloadMetadata();
     if (signal.aborted) return;
 
-    const filterRow = $(".filter-chips");
-    if (filterRow && gen === refreshGeneration) {
-      const phones = [
-        ...new Map(
-          state.sims.map((s) => [s.phone, [s.phone, s.label || s.phone]]),
-        ).values(),
-      ];
-      filterRow.replaceChildren(
-        createFilterChip("所有 SIM", phones, state.sim, (v) => (state.sim = v)),
-        createFilterChip(
-          "所有设备",
-          state.devices
-            .filter((d) => d.kind === "android" && !d.revoked)
-            .map((d) => [d.id, d.name]),
-          state.device,
-          (v) => (state.device = v),
-        ),
-      );
-    }
+    if (gen === refreshGeneration) renderFilterMenu();
     const args = {
       group: state.group,
       q: state.q,
@@ -843,18 +785,37 @@ function renderGroupBar() {
   if (!bar) return;
   bar.replaceChildren();
   for (const group of visibleGroups(state.me?.ai_enabled)) {
-    const b = button(`${GROUP_LABELS[group]} ${state.counts[group] || 0}`, async () => {
+    const selected = state.group === group;
+    const chip = el("button", "filter-chip" + (selected ? " active" : ""));
+    chip.type = "button";
+    const check = el("span", "chip-check");
+    check.innerHTML = ICONS.check;
+    // " 12" keeps the accessible name as "全部短信 12".
+    chip.append(check, document.createTextNode(GROUP_LABELS[group]), el("span", "chip-count", ` ${state.counts[group] || 0}`));
+    chip.setAttribute("aria-pressed", String(selected));
+    attachRipple(chip);
+    chip.onclick = async () => {
       state.group = group; state.offset = 0;
       closeDetail(); leaveDetailHistory();
-      await refreshInbox();
-    }, "filter-chip" + (state.group === group ? " active" : ""));
-    b.setAttribute("aria-pressed", String(state.group === group));
-    bar.append(b);
+      renderGroupBar();
+      setBusy(true);
+      try { await refreshInbox(); } catch (e) { toast(e.message); } finally { setBusy(false); }
+    };
+    bar.append(chip);
   }
   const status = $(".analysis-status");
-  if (status) status.textContent = state.me?.ai_enabled
-    ? `AI ${state.ai?.paused ? "已暂停" : "已开启"} · 待分析 ${state.counts.pending || 0} 条${state.ai?.usage_count >= state.ai?.daily_limit ? " · 今日额度已用尽，UTC 零点恢复" : ""}${state.ai?.last_error ? " · 服务异常，请在设置中处理" : ""}`
-    : "验证码由规则提取，其他短信不分类";
+  if (status) {
+    status.replaceChildren();
+    if (state.me?.ai_enabled) {
+      const icon = el("span");
+      icon.innerHTML = ICONS.autoAwesome;
+      status.append(icon.firstElementChild, document.createTextNode(
+        `AI ${state.ai?.paused ? "已暂停" : "已开启"} · 待分析 ${state.counts.pending || 0} 条` +
+        (state.ai?.usage_count >= state.ai?.daily_limit ? " · 今日额度已用尽，UTC 零点恢复" : "") +
+        (state.ai?.last_error ? " · 服务异常，请在设置中处理" : ""),
+      ));
+    }
+  }
 }
 
 function renderConversations({ arrivals = false } = {}) {
@@ -864,27 +825,21 @@ function renderConversations({ arrivals = false } = {}) {
 
   if (!state.conversations.length) {
     state.renderedRows = new Map();
-    const empty = el("div", "empty-state");
-    empty.innerHTML = ICONS.emptyMessages;
-    empty.append(
-      el("h3", "", "暂无短信"),
-      el("p", "", "暂无短信。请配置 Android 采集设备及 SIM 号码。"),
-    );
-    list.append(empty);
+    list.append(emptyState(ICONS.sms, "暂无短信", "暂无短信。请配置 Android 采集设备及 SIM 号码。"));
     return;
   }
 
   const fresh = arrivals ? freshConversationKeys(state.renderedRows, state.conversations) : new Set();
   state.renderedRows = new Map(state.conversations.map((m) => [conversationKey(m), m.timestamp]));
   state.conversations.forEach((m) => {
-    const isSelected =
-      state.sender === m.sender && state.receiver === m.receiver;
+    const isSelected = state.sender === m.sender && state.receiver === m.receiver;
     const b = el(
       "button",
       "conversation" + (isSelected ? " selected" : "") +
         (fresh.has(conversationKey(m)) ? " conversation-new" : ""),
     );
     b.type = "button";
+    if (isSelected) b.setAttribute("aria-current", "true");
     attachRipple(b);
 
     b.onclick = async () => {
@@ -894,52 +849,46 @@ function renderConversations({ arrivals = false } = {}) {
         state.messages = [];
         state.seenMessageId = 0;
         state.historyHasMore = true;
-        state.historyLoading = false;
+        // Shown as loading until the first page arrives, instead of a momentary empty state.
+        state.historyLoading = true;
       }
       setDetailOpen(true);
       enterDetailHistory();
       renderConversations();
+      renderDetail();
       await loadHistory(false);
     };
 
-    const titleText = m.contact || m.sender;
-    const avatar = defaultAvatar(titleText);
-
+    const contact = state.contacts[m.sender] || m.contact || "";
     const preview = el("div", "preview");
-    const previewTop = el("div", "preview-top");
-    previewTop.append(
-      el("strong", "", titleText),
-      el("time", "", formatRelativeTime(m.timestamp)),
+    const top = el("div", "preview-top");
+    top.append(
+      el("strong", "", contact || m.sender),
+      el("time", "", `${simLabel(m.receiver)} · ${formatRelativeTime(m.timestamp)}`),
     );
+    const bottom = el("div", "preview-bottom");
+    if (m.analysis?.otp) bottom.append(el("span", "otp-tag", "验证码"));
+    bottom.append(el("p", "", m.body));
+    preview.append(top, bottom);
 
-    const snippet = el("p", "", [m.receiver, m.body].filter(Boolean).join(" · "));
-    preview.append(previewTop, snippet);
-
-    b.append(avatar, preview);
+    b.append(avatar(contact, m.sender), preview);
     list.append(b);
   });
 
-  const controls = el("div", "row");
-  controls.style.padding = "1rem";
+  const controls = el("div", "list-pager");
   if (state.offset > 0) {
-    controls.append(
-      button("上一页", () => {
-        state.offset = Math.max(0, state.offset - 100);
-        return refreshInbox();
-      }),
-    );
+    controls.append(button("上一页", () => {
+      state.offset = Math.max(0, state.offset - 100);
+      return refreshInbox();
+    }, "text-button"));
   }
   if (state.conversations.length === 100) {
-    controls.append(
-      button("下一页", () => {
-        state.offset += 100;
-        return refreshInbox();
-      }),
-    );
+    controls.append(button("下一页", () => {
+      state.offset += 100;
+      return refreshInbox();
+    }, "text-button"));
   }
-  if (controls.children.length > 0) {
-    list.append(controls);
-  }
+  if (controls.children.length > 0) list.append(controls);
 }
 
 // -------------------------------------------------------------
@@ -1068,146 +1017,181 @@ function renderDetail() {
   detail.replaceChildren();
 
   if (!state.sender) {
-    const empty = el("div", "empty-state");
-    empty.innerHTML = ICONS.emptyMessages;
-    empty.append(
-      el("h3", "", "开启跨设备短信"),
-      el("p", "", "选择一个会话，查看完整历史"),
-    );
-    detail.append(empty);
+    const devices = state.devices.filter((d) => d.kind === "android" && !d.revoked).length;
+    const sims = new Set(state.sims.map((s) => s.phone)).size;
+    detail.append(emptyState(ICONS.chat, "选择一个会话", devices
+      ? `短信来自 ${devices} 台手机、${sims} 张 SIM 卡`
+      : "连接 Android 手机后，短信会出现在这里"));
     return;
   }
 
-  // Top App Bar
   const head = el("header", "detail-head");
-  const backBtn = iconButton(
-    ICONS.arrowBack,
-    "返回",
-    () => {
-      // popstate closes the conversation when it owns a history entry.
-      if (history.state?.[DETAIL_HISTORY]) history.back();
-      else closeDetail();
-    },
-    "back",
-  );
-  head.append(backBtn);
+  head.append(iconButton(ICONS.arrowBack, "返回", () => {
+    // popstate closes the conversation when it owns a history entry.
+    if (history.state?.[DETAIL_HISTORY]) history.back();
+    else closeDetail();
+  }, "back"));
 
-  const contactTitle = state.messages.at(-1)?.contact || state.sender;
-  const avatar = defaultAvatar(contactTitle, "avatar-detail");
-
+  const contact = state.contacts[state.sender] || state.messages.at(-1)?.contact || "";
   const titleBox = el("div", "detail-head-info");
   const infoText = el("div");
   infoText.append(
-    el("strong", "", contactTitle),
-    el(
-      "div",
-      "sub-info",
-      [state.sender, state.receiver].filter(Boolean).join(" · "),
-    ),
+    el("strong", "", contact || state.sender),
+    el("div", "sub-info", [contact ? state.sender : "", state.receiver ? `接收：${simLabel(state.receiver)}${simLabel(state.receiver) !== state.receiver ? " " + state.receiver : ""}` : ""].filter(Boolean).join(" · ")),
   );
-  titleBox.append(avatar, infoText);
+  titleBox.append(avatar(contact, state.sender, "avatar-detail"), infoText);
   head.append(titleBox);
 
   const headActions = el("div", "detail-head-actions");
-  headActions.append(
-    iconButton(ICONS.contentCopy, "复制号码", () => {
-      navigator.clipboard?.writeText(state.sender);
-      toast("已复制号码: " + state.sender);
-    }),
-  );
+  headActions.append(iconButton(ICONS.contentCopy, "复制号码", async () => {
+    await copyText(state.sender);
+    toast("已复制号码 " + state.sender);
+  }));
   head.append(headActions);
   detail.append(head);
 
-  // Message Stream
   const messages = el("div", "messages");
+  const inner = el("div", "messages-inner");
   const historyStatus = el("div", "history-status");
   historyStatus.setAttribute("role", "status");
   historyStatus.setAttribute("aria-live", "polite");
-  messages.append(historyStatus);
+  inner.append(historyStatus);
+  messages.append(inner);
   messages.addEventListener("scroll", () => {
-    if (
-      messages.scrollTop <= 80 &&
-      state.historyHasMore &&
-      !state.historyLoading
-    ) {
+    if (messages.scrollTop <= 80 && state.historyHasMore && !state.historyLoading) {
       void loadHistory(true).catch((error) => toast(error.message));
     }
   });
   updateHistoryStatus();
 
-  if (!state.messages.length) {
-    messages.append(el("p", "empty", "没有符合筛选条件的消息"));
+  if (!state.messages.length && !state.historyLoading) {
+    inner.append(el("p", "empty", "没有符合筛选条件的消息"));
   }
 
-  let lastDay = "";
-  let currentGroup = null;
   const seenId = state.seenMessageId;
-
-  state.messages.forEach((msg) => {
-    const dayStr = dateDay(msg.timestamp);
+  let lastDay = "";
+  for (const cluster of clusterMessages(state.messages)) {
+    const dayStr = dateDay(cluster.start);
     if (dayStr !== lastDay) {
       const divider = el("div", "date-divider");
       divider.append(el("span", "", dayStr));
-      messages.append(divider);
+      inner.append(divider);
       lastDay = dayStr;
-      currentGroup = null;
     }
-
-    if (!currentGroup) {
-      currentGroup = el("div", "bubble-group");
-      messages.append(currentGroup);
-    }
-
-    const b = el("div", "bubble" + (isFreshArrival(msg.id, seenId) ? " bubble-new" : ""));
-    if (msg.analysis?.otp) {
-      const card = el("div", "otp-card");
-      card.append(el("strong", "otp-code", msg.analysis.otp));
-      card.append(button("复制验证码", async () => {
-        if (!navigator.clipboard) throw new Error("复制需要 HTTPS 或浏览器剪贴板权限");
-        await navigator.clipboard.writeText(msg.analysis.otp); toast("验证码已复制");
-      }));
-      const expires = msg.analysis.expires_at;
-      if (expires) card.append(el("small", "", expires <= Date.now() ? "按短信标注的有效期，可能已过期" : `短信标注有效至 ${new Date(expires).toLocaleTimeString()}`));
-      b.append(card);
-    }
-    b.append(linkedText(msg.body));
-    if (state.me?.ai_enabled && !msg.analysis?.otp) {
-      b.append(el("small", "analysis-message-state", `${GROUP_LABELS[msg.analysis?.category] || "待分析"} · ${analysisLabel(msg.analysis)}`));
-      const correction = el("details", "category-actions");
-      correction.append(el("summary", "", "调整分类"));
-      for (const category of ["personal", "notification", "promotion", "spam", "auto", ...(msg.analysis?.state === "failed" ? ["retry"] : [])]) {
-        correction.append(button(GROUP_LABELS[category] || (category === "auto" ? "恢复自动分类" : "重试分析"), async () => {
-          await api(`/messages/${msg.id}/category`, "PATCH", {category});
-          await refreshInbox({preserveHistory:true, revalidateHistory:true});
-        }));
-      }
-      b.append(correction);
-    }
-
-    const name =
-      state.devices.find((d) => d.id === msg.device_id)?.name || "来源设备";
-    b.append(
-      el(
-        "div",
-        "metadata",
-        formatRelativeTime(msg.timestamp) + " · " + msg.receiver + " · " + name,
-      ),
-    );
-
-    // Hover Copy Quick Action
-    const actions = el("div", "bubble-actions");
-    const copyBtn = iconButton(ICONS.contentCopy, "复制短信", () => {
-      navigator.clipboard?.writeText(msg.body);
-      toast("已复制短信正文");
-    });
-    actions.append(copyBtn);
-    b.append(actions);
-
-    currentGroup.append(b);
-  });
+    const group = el("div", "bubble-group");
+    for (const msg of cluster.messages) group.append(bubble(msg, isFreshArrival(msg.id, seenId)));
+    const deviceName = state.devices.find((d) => d.id === cluster.device_id)?.name || "来源设备";
+    group.append(el("div", "cluster-stamp", `${formatClock(cluster.end)} · ${deviceName}`));
+    inner.append(group);
+  }
   state.seenMessageId = state.messages.reduce((high, msg) => Math.max(high, msg.id), seenId);
 
   detail.append(messages);
+}
+
+function bubble(msg, fresh) {
+  const b = el("div", "bubble" + (fresh ? " bubble-new" : ""));
+  const otp = msg.analysis?.otp;
+  if (otp) b.append(otpCard(msg));
+  b.append(linkedText(msg.body));
+
+  if (state.me?.ai_enabled && !otp) {
+    const a = msg.analysis;
+    // A plain automatic result needs no label; pending, failed and manual states do.
+    if (!a || a.state !== "complete" || a.manual) {
+      b.append(el("small", "analysis-message-state", `${GROUP_LABELS[a?.category] || "待分析"} · ${analysisLabel(a)}`));
+    }
+  }
+
+  const actions = el("div", "bubble-actions");
+  actions.append(iconButton(ICONS.contentCopy, "复制短信", async () => {
+    await copyText(msg.body);
+    toast("已复制短信");
+  }));
+  if (state.me?.ai_enabled && !otp) {
+    const correction = el("details", "category-actions");
+    const summary = el("summary");
+    summary.innerHTML = ICONS.label;
+    summary.append(el("span", "sr-only", "调整分类"));
+    summary.title = "调整分类";
+    const menu = el("div", "category-menu");
+    for (const category of ["personal", "notification", "promotion", "spam", "auto", ...(msg.analysis?.state === "failed" ? ["retry"] : [])]) {
+      menu.append(button(GROUP_LABELS[category] || (category === "auto" ? "恢复自动分类" : "重试分析"), async () => {
+        correction.open = false;
+        await api(`/messages/${msg.id}/category`, "PATCH", { category });
+        await refreshInbox({ preserveHistory: true, revalidateHistory: true });
+      }));
+    }
+    correction.append(summary, menu);
+    actions.append(correction);
+  }
+  b.append(actions);
+  return b;
+}
+
+function otpCard(msg) {
+  const code = msg.analysis.otp;
+  const card = el("div", "otp-card");
+  const label = el("div", "otp-label");
+  const validity = el("span");
+  label.append(el("span", "", "验证码"), validity);
+  const row = el("div", "otp-row");
+  const copy = el("button", "otp-copy");
+  copy.type = "button";
+  const icon = el("span", "otp-copy-icon");
+  icon.innerHTML = ICONS.contentCopy + ICONS.check;
+  const copyLabel = el("span", "", "复制");
+  copy.append(icon, copyLabel);
+  copy.setAttribute("aria-label", "复制验证码");
+  attachRipple(copy);
+  copy.onclick = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("复制需要 HTTPS 或浏览器剪贴板权限");
+      await navigator.clipboard.writeText(code);
+      copy.classList.add("copied");
+      copyLabel.textContent = "已复制";
+      toast("验证码已复制");
+      setTimeout(() => { copy.classList.remove("copied"); copyLabel.textContent = "复制"; }, 1600);
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+  row.append(el("strong", "otp-code", code), copy);
+  card.append(label, row);
+
+  const expires = msg.analysis.expires_at;
+  if (expires) {
+    // The bar shrinks over the remaining validity stated in the SMS; this is the only
+    // continuous animation on the page because it shows time passing.
+    const ttl = el("div", "otp-ttl");
+    const bar = el("i");
+    ttl.append(bar);
+    card.append(ttl);
+    const total = Math.max(expires - msg.timestamp, 1);
+    const remaining = expires - Date.now();
+    if (remaining <= 0) {
+      card.classList.add("expired");
+      validity.textContent = "按短信标注的有效期，可能已过期";
+    } else {
+      validity.textContent = `有效至 ${formatClock(expires)}`;
+      bar.style.width = `${Math.min(100, (remaining / total) * 100)}%`;
+      requestAnimationFrame(() => {
+        bar.style.transition = `width ${remaining}ms linear`;
+        bar.style.width = "0%";
+      });
+      setTimeout(() => {
+        if (!card.isConnected) return;
+        card.classList.add("expired");
+        validity.textContent = "按短信标注的有效期，可能已过期";
+      }, remaining);
+    }
+  }
+  return card;
+}
+
+async function copyText(text) {
+  if (!navigator.clipboard) throw new Error("复制需要 HTTPS 或浏览器剪贴板权限");
+  await navigator.clipboard.writeText(text);
 }
 
 function linkedText(text) {
@@ -1227,60 +1211,39 @@ function linkedText(text) {
 }
 
 // -------------------------------------------------------------
-// Devices View (read-only Android phone inventory)
+// Devices & SIMs: read-only phone inventory, shown inside Settings
 // -------------------------------------------------------------
-function devicesView() {
-  const main = $(".main");
-  const container = el("div", "page-container");
-
-  const head = el("header", "page-head");
-  head.append(el("h1", "", "设备"));
-  container.append(head);
-
-  const phones = state.devices.filter((device) =>
-    device.kind === "android" && !device.revoked,
-  );
-  const grid = el("div", "cards");
+function devicesSection() {
+  const section = el("section", "devices-section");
+  section.append(el("h2", "section-title", "设备与 SIM"));
+  const phones = state.devices.filter((device) => device.kind === "android" && !device.revoked);
+  if (!phones.length) {
+    section.append(emptyState(ICONS.phoneAndroid, "暂无已连接手机", "连接 Android 手机后，设备信息会显示在这里。"));
+    section.lastElementChild.classList.add("device-empty");
+    return section;
+  }
+  const list = el("div", "cards");
   for (const d of phones) {
-    const c = el("section", "card stack device-card");
-    const cardHead = el("div", "row spread");
+    const c = el("section", "device-card");
     const title = el("div", "device-title");
     const phoneIcon = el("span", "device-icon");
     phoneIcon.innerHTML = ICONS.phoneAndroid;
-    title.append(phoneIcon, el("h2", "", d.name));
-    cardHead.append(
-      title,
-      el("span", "badge", "Android 手机"),
-    );
-    c.append(cardHead);
-
+    title.append(phoneIcon, el("h2", "", d.name), el("span", "badge", "Android 手机"));
+    c.append(title);
     const sims = state.sims.filter((s) => s.device_id === d.id);
     if (sims.length) {
       for (const s of sims) {
         const sim = el("div", "device-sim");
-        sim.append(
-          el("span", "device-sim-label", s.label || "SIM"),
-          el("span", "device-sim-phone", s.phone),
-        );
+        sim.append(el("span", "device-sim-label", s.label || "SIM"), el("span", "device-sim-phone", s.phone));
         c.append(sim);
       }
     } else {
       c.append(el("p", "muted device-empty-sim", "暂无 SIM 信息"));
     }
-    grid.append(c);
+    list.append(c);
   }
-  if (!phones.length) {
-    const empty = el("div", "empty-state device-empty");
-    empty.innerHTML = ICONS.phoneAndroid;
-    empty.append(
-      el("h3", "", "暂无已连接手机"),
-      el("p", "", "连接 Android 手机后，设备信息会显示在这里。"),
-    );
-    container.append(empty);
-  } else {
-    container.append(grid);
-  }
-  main.append(container);
+  section.append(list);
+  return section;
 }
 
 function createSwitch(checked, onChange) {
@@ -1355,11 +1318,14 @@ async function logout() {
 function settingsView() {
   const main = $(".main");
   const container = el("div", "page-container settings-container");
+  const inner = el("div", "page-inner");
+  container.append(inner);
 
   const head = el("header", "page-head");
-  head.append(el("h1", "", "设置"));
-  container.append(head);
+  head.append(iconButton(ICONS.arrowBack, "返回收件箱", closeSettings), el("h1", "", "设置"));
+  inner.append(head);
 
+  inner.append(el("h2", "section-title", "本浏览器"));
   const card = el("section", "card notification-card");
   const copy = el("div", "settings-copy");
   copy.append(el("h2", "", "浏览器通知"));
@@ -1383,19 +1349,23 @@ function settingsView() {
     }
   });
   toggle.setDisabled(!pushCapability());
-  card.append(el("div", "settings-row"));
-  card.querySelector(".settings-row").append(copy, toggle);
-  container.append(card);
+  const row = el("div", "settings-row");
+  row.append(copy, toggle);
+  card.append(row);
+  inner.append(card);
 
+  inner.append(el("h2", "section-title", "中枢 AI 分组"));
   const aiCard = el("section", "card stack ai-settings");
   aiCard.append(el("h2", "", "AI 短信分组"));
   aiCard.append(el("p", "muted", "开启后，历史及新增非验证码短信会自动发送到配置的 AI 服务分析。验证码仅用规则提取；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。"));
-  container.append(aiCard);
+  inner.append(aiCard);
   void renderAISettings(aiCard).catch((e) => { if (aiCard.isConnected) aiCard.append(el("p", "", e.message)); });
+
+  inner.append(devicesSection());
 
   const footer = el("footer", "settings-footer");
   footer.append(button("退出登录", logout, "logout-button"));
-  container.append(footer);
+  inner.append(footer);
   main.append(container);
 
   void browserPushEnabled().then((enabled) => {
@@ -1526,6 +1496,7 @@ function disconnect() {
   state.offset = state.cursor = state.epoch = 0;
   state.epochSeen = false;
   state.inboxDirty = false;
+  state.page = "inbox";
   state.arrivalsPending = false;
   state.renderedRows = new Map();
   state.seenMessageId = 0;
@@ -1621,6 +1592,11 @@ if (typeof document !== "undefined") {
     }
   }, 30000);
   window.addEventListener("popstate", (event) => {
+    if (state.page === "settings" && !event.state?.[SETTINGS_HISTORY]) {
+      state.page = "inbox";
+      shell();
+      return;
+    }
     if (!event.state?.[DETAIL_HISTORY] && state.sender) closeDetail();
   });
   document.addEventListener("visibilitychange", () => {
