@@ -101,3 +101,23 @@ test("messages cluster by device, five-minute gap and day", async () => {
   assert.equal(clusters[0].end, base + 60e3 + CLUSTER_GAP_MS);
   assert.deepEqual(clusterMessages([]), []);
 });
+
+test("theme choice falls back to system and picks the matching theme-color", async () => {
+  const { normalizeTheme, themeColorFor, THEME_COLORS } = await import("../app.js");
+  assert.equal(normalizeTheme("dark"), "dark");
+  assert.equal(normalizeTheme("light"), "light");
+  for (const bad of [null, undefined, "", "blue", "DARK"]) assert.equal(normalizeTheme(bad), "system");
+  assert.equal(themeColorFor("system", "(prefers-color-scheme: dark)"), THEME_COLORS.dark);
+  assert.equal(themeColorFor("system", "(prefers-color-scheme: light)"), THEME_COLORS.light);
+  assert.equal(themeColorFor("dark", "(prefers-color-scheme: light)"), THEME_COLORS.dark, "a forced theme wins over the media query");
+  assert.equal(themeColorFor("light", "(prefers-color-scheme: dark)"), THEME_COLORS.light);
+});
+
+test("theme-color values match the app background tokens in style.css", () => {
+  const css = read("style.css");
+  assert.ok(/--md-sys-color-surface-container-low: #F3F3FA;/.test(css), "light app background");
+  assert.ok(/--md-sys-color-background: #111318;/.test(css), "dark app background");
+  const html = read("index.html");
+  assert.ok(html.includes('content="#F3F3FA" media="(prefers-color-scheme: light)"'));
+  assert.ok(html.includes('content="#111318" media="(prefers-color-scheme: dark)"'));
+});

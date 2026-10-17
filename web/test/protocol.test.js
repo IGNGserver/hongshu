@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import { epochReset, mergeMessages, query, pushKey, restoreScrollPosition } from "../app.js";
 test("history import cannot replace chronological latest",()=>assert.deepEqual(mergeMessages([{id:1,timestamp:200}],[{id:2,timestamp:100}]),[{id:2,timestamp:100},{id:1,timestamp:200}]));
 test("incremental merge is idempotent and ordered", () =>
@@ -37,6 +39,29 @@ test("service worker never caches API or displays push body", async () => {
 });
 test("no credential or SMS persistence in browser source", async () => {
   const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
-  assert.ok(!source.includes("localStorage"));
   assert.ok(!source.includes("indexedDB"));
+  assert.ok(!source.includes("sessionStorage"));
+  assert.ok(!source.includes("document.cookie"));
+  // The theme preference is the single exception: localStorage may only be read or
+  // written through THEME_KEY, which must be "hongshu-theme".
+  assert.match(source, /const THEME_KEY = "hongshu-theme";/);
+  const mentions = source.match(/localStorage/g) || [];
+  const allowed = [...source.matchAll(/localStorage\.(getItem|setItem)\(THEME_KEY[,)]/g)];
+  assert.ok(allowed.length > 0);
+  assert.equal(mentions.length, allowed.length, "localStorage used outside the theme preference");
+});
+
+test("theme preference stores only system, light or dark", () => {
+  const store = new Map();
+  const ctx = vm.createContext({ URLSearchParams, Uint8Array, AbortController, DOMException, console });
+  vm.runInContext(readFileSync(new URL("../app.js", import.meta.url), "utf8").replace(/^export /gm, ""), ctx);
+  ctx.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  ctx.document = { documentElement: { dataset: {} }, querySelectorAll: () => [] };
+  for (const [input, stored] of [["dark", "dark"], ["light", "light"], ["system", "system"], ["<img onerror=x>", "system"], [{ toString: () => "dark" }, "system"]]) {
+    vm.runInContext("saveTheme(input)", Object.assign(ctx, { input }));
+    assert.equal(store.get("hongshu-theme"), stored);
+  }
+  assert.deepEqual([...store.keys()], ["hongshu-theme"]);
+  store.set("hongshu-theme", "anything-else");
+  assert.equal(vm.runInContext("readTheme()", ctx), "system");
 });

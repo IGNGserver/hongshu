@@ -111,6 +111,18 @@ export function clusterMessages(messages) {
   return clusters;
 }
 
+// Theme preference is per browser: follow the system, or force light or dark.
+export const THEME_CHOICES = ["system", "light", "dark"];
+export function normalizeTheme(value) {
+  return THEME_CHOICES.includes(value) ? value : "system";
+}
+// Matches --hs-app in style.css for each scheme.
+export const THEME_COLORS = { light: "#F3F3FA", dark: "#111318" };
+export function themeColorFor(choice, mediaQuery) {
+  const scheme = choice === "system" ? (/dark/.test(mediaQuery) ? "dark" : "light") : choice;
+  return THEME_COLORS[scheme];
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -183,6 +195,12 @@ const ICONS = {
   sms: `<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM9 11H7V9h2v2zm4 0h-2V9h2v2zm4 0h-2V9h2v2z"/></svg>`,
   label: `<svg viewBox="0 0 24 24"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>`,
   autoAwesome: `<svg viewBox="0 0 24 24"><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/></svg>`,
+  notifications: `<svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`,
+  palette: `<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>`,
+  logout: `<svg viewBox="0 0 24 24"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>`,
+  info: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`,
+  visibility: `<svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
+  visibilityOff: `<svg viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>`,
   emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
     <rect x="42" y="46" width="76" height="58" rx="16" fill="currentColor" fill-opacity="0.3"/>
@@ -258,6 +276,26 @@ function toast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove("visible"), 4000);
 }
+
+const THEME_KEY = "hongshu-theme";
+function readTheme() {
+  try { return normalizeTheme(localStorage.getItem(THEME_KEY)); } catch { return "system"; }
+}
+function applyTheme(choice) {
+  const root = document.documentElement;
+  if (choice === "system") delete root.dataset.theme;
+  else root.dataset.theme = choice;
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.content = themeColorFor(choice, meta.media);
+  }
+}
+// The only value this page ever stores in the browser: "system", "light" or "dark".
+function saveTheme(choice) {
+  const theme = normalizeTheme(choice);
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* private mode: applies to this page only */ }
+  applyTheme(theme);
+}
+
 
 // The open conversation is one browser history entry, so the system back gesture
 // returns to the list on phones instead of leaving the app.
@@ -417,18 +455,21 @@ function authView() {
   root.replaceChildren();
   document.body.dataset.detail = "false";
   const card = el("main", "auth");
+  const logo = el("img", "auth-logo");
+  logo.src = "/icon.svg";
+  logo.alt = "";
   card.append(
-    el("h1", "", "鸿枢 Hongshu"),
-    el("p", "muted", "所有手机的短信，在自己的中枢相遇。"),
+    logo,
+    el("h1", "", "鸿枢"),
+    el("p", "auth-subtitle", "所有手机的短信，在自己的中枢相遇。"),
   );
   if (remoteHTTP()) {
-    card.append(
-      el(
-        "p",
-        "security-warning",
-        "警告：当前使用明文 HTTP。密码、短信和登录凭据未加密，可能被窃听或篡改；请优先使用 HTTPS 或 VPN。",
-      ),
-    );
+    const warning = el("div", "security-warning");
+    warning.setAttribute("role", "alert");
+    const icon = el("span");
+    icon.innerHTML = ICONS.warning;
+    warning.append(icon.firstElementChild, el("span", "", "当前使用明文 HTTP。密码、短信和登录凭据未加密，可能被窃听或篡改；请优先使用 HTTPS 或 VPN。"));
+    card.append(warning);
   }
   const form = el("form");
   const password = el("input");
@@ -436,8 +477,25 @@ function authView() {
   password.type = "password";
   password.maxLength = 1024;
   password.autocomplete = "current-password";
-  const label = el("label", "", "中枢密码");
-  label.append(password);
+  const label = el("label", "auth-label");
+  const field = el("div", "password-field");
+  // The toggle sits after the input inside the label, so the label still names the input.
+  const reveal = el("button", "icon-button password-toggle");
+  reveal.type = "button";
+  const setReveal = (shown) => {
+    password.type = shown ? "text" : "password";
+    reveal.innerHTML = shown ? ICONS.visibilityOff : ICONS.visibility;
+    reveal.setAttribute("aria-label", shown ? "隐藏密码" : "显示密码");
+    reveal.setAttribute("aria-pressed", String(shown));
+  };
+  reveal.onclick = (event) => {
+    event.preventDefault();
+    setReveal(password.type === "password");
+    password.focus();
+  };
+  setReveal(false);
+  field.append(password, reveal);
+  label.append(el("span", "", "中枢密码"), field);
   form.append(label);
   const submit = el("button", "primary", "登录");
   submit.type = "submit";
@@ -450,6 +508,7 @@ function authView() {
     try {
       await api("/login", "POST", { password: password.value });
       password.value = "";
+      setReveal(false);
       await start();
     } catch (err) {
       toast(err.message);
@@ -467,6 +526,7 @@ function authView() {
     ),
   );
   root.append(card);
+  password.focus();
 }
 
 // -------------------------------------------------------------
@@ -1210,42 +1270,6 @@ function linkedText(text) {
   return fragment;
 }
 
-// -------------------------------------------------------------
-// Devices & SIMs: read-only phone inventory, shown inside Settings
-// -------------------------------------------------------------
-function devicesSection() {
-  const section = el("section", "devices-section");
-  section.append(el("h2", "section-title", "设备与 SIM"));
-  const phones = state.devices.filter((device) => device.kind === "android" && !device.revoked);
-  if (!phones.length) {
-    section.append(emptyState(ICONS.phoneAndroid, "暂无已连接手机", "连接 Android 手机后，设备信息会显示在这里。"));
-    section.lastElementChild.classList.add("device-empty");
-    return section;
-  }
-  const list = el("div", "cards");
-  for (const d of phones) {
-    const c = el("section", "device-card");
-    const title = el("div", "device-title");
-    const phoneIcon = el("span", "device-icon");
-    phoneIcon.innerHTML = ICONS.phoneAndroid;
-    title.append(phoneIcon, el("h2", "", d.name), el("span", "badge", "Android 手机"));
-    c.append(title);
-    const sims = state.sims.filter((s) => s.device_id === d.id);
-    if (sims.length) {
-      for (const s of sims) {
-        const sim = el("div", "device-sim");
-        sim.append(el("span", "device-sim-label", s.label || "SIM"), el("span", "device-sim-phone", s.phone));
-        c.append(sim);
-      }
-    } else {
-      c.append(el("p", "muted device-empty-sim", "暂无 SIM 信息"));
-    }
-    list.append(c);
-  }
-  section.append(list);
-  return section;
-}
-
 function createSwitch(checked, onChange) {
   let value = Boolean(checked);
   const control = el("button", "m3-switch");
@@ -1313,6 +1337,106 @@ async function logout() {
 }
 
 // -------------------------------------------------------------
+// Settings building blocks: segmented groups as on Android (settingsGroup /
+// SettingsItem): rounded group ends, tight corners between rows.
+// -------------------------------------------------------------
+function settingsGroup(title, rows = []) {
+  const section = el("section", "settings-section");
+  section.append(el("h2", "section-title", title));
+  const group = el("div", "settings-group");
+  group.append(...rows);
+  section.append(group);
+  return { section, group };
+}
+
+function settingsRow({ icon, title, summary, summaryNode, trailing, tag = "div", cls = "" }) {
+  const row = el(tag, `settings-item ${cls}`.trim());
+  if (icon) {
+    const badge = el("span", "settings-icon");
+    badge.innerHTML = icon;
+    row.append(badge);
+  }
+  const text = el("div", "settings-text");
+  text.append(el("strong", "settings-title", title));
+  if (summaryNode) text.append(summaryNode);
+  else if (summary) text.append(el("span", "settings-summary", summary));
+  row.append(text);
+  if (trailing) row.append(trailing);
+  return row;
+}
+
+function themeControl() {
+  const current = readTheme();
+  const box = el("div", "segmented");
+  box.setAttribute("role", "radiogroup");
+  box.setAttribute("aria-label", "主题");
+  const options = [["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]].map(([value, label]) => {
+    const option = el("button", "segmented-option", label);
+    option.type = "button";
+    option.setAttribute("role", "radio");
+    option.dataset.value = value;
+    return option;
+  });
+  function select(option, focus = false) {
+    for (const o of options) {
+      const on = o === option;
+      o.setAttribute("aria-checked", String(on));
+      o.tabIndex = on ? 0 : -1;
+    }
+    if (focus) option.focus();
+    saveTheme(option.dataset.value);
+  }
+  for (const option of options) {
+    const on = option.dataset.value === current;
+    option.setAttribute("aria-checked", String(on));
+    option.tabIndex = on ? 0 : -1;
+    option.onclick = () => select(option);
+  }
+  box.onkeydown = (event) => {
+    const index = options.indexOf(document.activeElement);
+    if (index < 0) return;
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    select(options[(index + step + options.length) % options.length], true);
+  };
+  box.append(...options);
+  return box;
+}
+
+function queueChips(s) {
+  const q = s?.queue || {};
+  const box = el("div", "queue-chips ai-queue-status");
+  box.setAttribute("aria-label", aiQueueLabel(s));
+  for (const [label, n] of [["等待", q.pending], ["处理中", q.processing], ["失败/待确认", q.failed], ["已完成", q.complete], ["规则待回填", q.backfill]]) {
+    const chip = el("span", "queue-chip");
+    chip.append(document.createTextNode(`${label} `), el("b", "", String(n || 0)));
+    box.append(chip);
+  }
+  return box;
+}
+
+// -------------------------------------------------------------
+// Devices & SIMs: read-only phone inventory, shown inside Settings
+// -------------------------------------------------------------
+function deviceRows() {
+  const phones = state.devices.filter((device) => device.kind === "android" && !device.revoked);
+  if (!phones.length) {
+    return [settingsRow({ icon: ICONS.phoneAndroid, title: "暂无已连接手机", summary: "连接 Android 手机后，设备信息会显示在这里。" })];
+  }
+  return phones.map((d) => {
+    const sims = state.sims.filter((s) => s.device_id === d.id);
+    return settingsRow({
+      icon: ICONS.phoneAndroid,
+      title: d.name,
+      summary: sims.length ? sims.map((s) => `${s.label || "SIM"} ${s.phone}`).join(" · ") : "暂无 SIM 信息",
+      trailing: el("span", "badge", "Android 手机"),
+      cls: "device-card",
+    });
+  });
+}
+
+// -------------------------------------------------------------
 // Settings View
 // -------------------------------------------------------------
 function settingsView() {
@@ -1325,14 +1449,8 @@ function settingsView() {
   head.append(iconButton(ICONS.arrowBack, "返回收件箱", closeSettings), el("h1", "", "设置"));
   inner.append(head);
 
-  inner.append(el("h2", "section-title", "本浏览器"));
-  const card = el("section", "card notification-card");
-  const copy = el("div", "settings-copy");
-  copy.append(el("h2", "", "浏览器通知"));
-  const status = el("p", "notification-state", "正在读取通知状态…");
+  const status = el("p", "settings-summary notification-state", "正在读取通知状态…");
   status.setAttribute("aria-live", "polite");
-  copy.append(status);
-
   const toggle = createSwitch(false, async (next) => {
     toggle.setDisabled(true);
     setBusy(true);
@@ -1349,23 +1467,28 @@ function settingsView() {
     }
   });
   toggle.setDisabled(!pushCapability());
-  const row = el("div", "settings-row");
-  row.append(copy, toggle);
-  card.append(row);
-  inner.append(card);
+  inner.append(settingsGroup("本浏览器", [
+    settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: status, trailing: toggle }),
+    settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
+  ]).section);
 
-  inner.append(el("h2", "section-title", "中枢 AI 分组"));
-  const aiCard = el("section", "card stack ai-settings");
-  aiCard.append(el("h2", "", "AI 短信分组"));
-  aiCard.append(el("p", "muted", "开启后，历史及新增非验证码短信会自动发送到配置的 AI 服务分析。验证码仅用规则提取；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。"));
-  inner.append(aiCard);
-  void renderAISettings(aiCard).catch((e) => { if (aiCard.isConnected) aiCard.append(el("p", "", e.message)); });
+  const ai = settingsGroup("中枢 AI 分组");
+  inner.append(ai.section);
+  void renderAISettings(ai.group).catch((e) => {
+    if (ai.group.isConnected) ai.group.append(settingsRow({ icon: ICONS.warning, title: "无法读取 AI 设置", summary: e.message }));
+  });
 
-  inner.append(devicesSection());
+  inner.append(settingsGroup("设备与 SIM", deviceRows()).section);
 
-  const footer = el("footer", "settings-footer");
-  footer.append(button("退出登录", logout, "logout-button"));
-  inner.append(footer);
+  const logoutRow = settingsRow({ tag: "button", icon: ICONS.logout, title: "退出登录", summary: "这台浏览器不保存任何短信", cls: "settings-danger" });
+  logoutRow.type = "button";
+  logoutRow.setAttribute("aria-label", "退出登录");
+  attachRipple(logoutRow);
+  logoutRow.onclick = () => {
+    setBusy(true);
+    Promise.resolve(logout()).catch((e) => toast(e.message)).finally(() => setBusy(false));
+  };
+  inner.append(settingsGroup("账户", [logoutRow]).section);
   main.append(container);
 
   void browserPushEnabled().then((enabled) => {
@@ -1376,12 +1499,24 @@ function settingsView() {
   });
 }
 
-async function renderAISettings(card) {
+async function renderAISettings(group) {
   const s = await api("/analysis/settings");
-  if (!card.isConnected) return;
-  card.append(el("p", "ai-summary", `${s.enabled ? "已开启" : "已关闭"}${s.paused ? " · 已暂停" : ""} · 今日已调用 ${s.usage_count}/${s.daily_limit}${s.last_error ? " · " + s.last_error : ""}`));
-  card.append(el("p", "ai-queue-status", aiQueueLabel(s)));
-  if (!state.me?.device?.admin) { card.append(el("p", "", "请由管理员在 Web 设置配置中枢 AI")); return; }
+  if (!group.isConnected) return;
+  const label = s.enabled ? (s.paused ? "已暂停" : "已开启") : "已关闭";
+  group.append(settingsRow({
+    icon: ICONS.autoAwesome,
+    title: "AI 短信分组",
+    summary: "开启后，历史及新增非验证码短信会自动发送到配置的 AI 服务分析。验证码仅用规则提取；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。",
+    trailing: el("span", "badge" + (s.enabled && !s.paused ? " badge-on" : ""), label),
+  }));
+  const usage = el("div", "settings-summary");
+  usage.append(queueChips(s));
+  if (s.last_error) usage.append(el("p", "settings-error", s.last_error));
+  group.append(settingsRow({ icon: ICONS.label, title: `队列 · 今日已调用 ${s.usage_count}/${s.daily_limit}`, summaryNode: usage }));
+  if (!state.me?.device?.admin) {
+    group.append(settingsRow({ icon: ICONS.info, title: "中枢 AI 配置", summary: "请由管理员在 Web 设置配置中枢 AI" }));
+    return;
+  }
   const form = el("form", "ai-form");
   const fields = {};
   // Booleans render as M3 switches on native checkboxes, so labels, keyboard use and
@@ -1428,7 +1563,9 @@ async function renderAISettings(card) {
   actions.append(button("测试连接（仅合成文本）", async () => { await api("/analysis/test", "POST", {}); toast("连接及分类测试通过"); }, "tonal"));
   actions.append(button("恢复队列并重试失败项（每批100条）", async () => { const result = await api("/analysis/retry", "POST", {}); toast(`已重新排队 ${result.retried} 条`); await catchUp(); shell(); }, "text-button"));
   form.append(actions);
-  card.append(form);
+  const formRow = el("div", "settings-item settings-form");
+  formRow.append(form);
+  group.append(formRow);
 }
 
 // -------------------------------------------------------------
@@ -1469,8 +1606,7 @@ async function reloadMetadata() {
   state.ai = ai;
   state.me.ai_enabled = ai.enabled;
   if (!visibleGroups(ai.enabled).includes(state.group)) state.group = "all";
-  const queueStatus = $(".ai-queue-status");
-  if (queueStatus) queueStatus.textContent = aiQueueLabel(ai);
+  $(".ai-queue-status")?.replaceWith(queueChips(ai));
 }
 
 function disconnect() {
@@ -1586,6 +1722,7 @@ async function start() {
 }
 
 if (typeof document !== "undefined") {
+  applyTheme(readTheme());
   setInterval(() => {
     if (state.me && document.visibilityState === "visible") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));
