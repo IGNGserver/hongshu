@@ -5,6 +5,7 @@
 
 package io.hongshu.app
 
+import android.app.NotificationManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -320,6 +321,20 @@ fun HongshuUI(activity: MainActivity) {
                 action {
                     identityMutex.withLock { repo.api.request("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
                     if (syncAndWait(activity)) "分类已更新" else "分类已保存，等待同步到本机"
+                }
+            },
+            onMarkAllRead = {
+                action {
+                    withContext(Dispatchers.IO) {
+                        repo.store.markRead(all = true)
+                        try {
+                            activity.getSystemService(NotificationManager::class.java).cancel(2)
+                            identityMutex.withLock {
+                                repo.api.request("/messages/read", "POST", JSONObject().put("all", true))
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    "已全部标记为已读"
                 }
             },
         )

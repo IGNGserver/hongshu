@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { linkSegments, isFreshArrival, freshConversationKeys, conversationKey } from "../app.js";
+import { linkSegments, isFreshArrival, freshConversationKeys, conversationKey, updateAppBadge } from "../app.js";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -141,4 +141,27 @@ test("a realtime refresh keeps scrolled-in pages without duplicates or gaps", as
   assert.deepEqual(merged.map((r) => r.sender), ["c", "a", "b", "d"]);
   assert.equal(new Set(merged.map(conversationKey)).size, merged.length);
   assert.equal(merged[0].timestamp, 300, "the fresh copy wins");
+});
+
+test("updateAppBadge updates document title and calls navigator badge API if present", () => {
+  let badgeVal = null;
+  globalThis.navigator.setAppBadge = async (val) => { badgeVal = val; };
+  globalThis.navigator.clearAppBadge = async () => { badgeVal = 0; };
+  const originalTitle = globalThis.document?.title;
+  if (!globalThis.document) globalThis.document = {};
+  globalThis.document.title = "";
+
+  try {
+    updateAppBadge(5);
+    assert.equal(badgeVal, 5);
+    assert.equal(globalThis.document.title, "(5) 鸿枢 · 短信中枢");
+
+    updateAppBadge(0);
+    assert.equal(badgeVal, 0);
+    assert.equal(globalThis.document.title, "鸿枢 · 短信中枢");
+  } finally {
+    delete globalThis.navigator.setAppBadge;
+    delete globalThis.navigator.clearAppBadge;
+    if (originalTitle !== undefined) globalThis.document.title = originalTitle;
+  }
 });

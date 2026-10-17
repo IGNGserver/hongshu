@@ -18,6 +18,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
 | POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；按请求顺序返回等长 `{id,duplicate,error?,fingerprint}`。fingerprint 为既有幂等指纹（receiver、sender、timestamp、body 以 NUL 分隔的 UTF-8 SHA-256），每条成功/失败均回传，旧客户端可忽略新增字段。格式错误整批拒绝；已存在的相同 fingerprint 优先返回 duplicate，即使当前 SIM 注册后来丢失；其他未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端先验证整组 ACK，再按指纹关联；旧中枢无此字段时按请求顺序关联，不能检测重排。异常响应保留队列；整批 invalid_message 可二分隔离，单条失败只阻塞该条。历史导入设 historical=true，不生成新短信通知 |
+| POST /api/messages/read | `{sender?, message_id?, all?}` 标记已读；all=true 推进全局已读水位线为最新消息，消除全部未读；指定 sender 则推进该会话已读游标；返回 `{ok, global_watermark_id, unread_count}` |
 | GET /api/sync?after=N&limit=L | `{messages, cursor, more, epoch}`，按 ID 升序；不得跨过未处理页面。epoch 与客户端已记录的值不同表示数据库已回档，必须丢弃已同步缓存并从 0 重拉；未上传队列保留。`after` 大于当前 sequence 返回 `epoch_changed`，旧客户端不得把空页当成已经同步完成 |
 | GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按发件人分组、每个发件人只返回最新消息并按时间降序；搜索发件人/名称/正文；offset 分页。返回消息中的 receiver 仅表示该会话最新消息的接收号码 |
 | GET /api/messages?sender=&q=&sim=&device=&before=&limit= | 按短信时间、ID 降序；before 指向上一页最早消息的 ID，服务端按该消息的时间/ID 二元游标分页 |
@@ -43,6 +44,6 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
 - `POST /api/analysis/retry`：管理员恢复全局失败任务；单条使用消息分类接口 retry。
 - `PATCH /api/messages/{id}/category`：授权设备设置 category=personal/notification/promotion/spam；category=auto 恢复自动分类；category=retry 重试失败项。
 - `GET /api/analysis?after=N&limit=200`：独立元数据增量，返回 items、cursor、more、epoch；游标超过修订头返回 409 analysis_cursor_changed。客户端将结果和游标同事务保存。
-- `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other。
+- `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other。`GET /api/conversations` 返回项包含 `unread_count` 会话未读数。
 - `GET /api/analysis/counts`：接受 q/sim/device/sender 筛选，返回消息数 counts（不是会话数）。
-- `/api/me` 新增 ai_enabled、analysis_revision。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；原消息 ID 与 /sync 不因分类更新而改变。
+- `/api/me` 新增 ai_enabled、analysis_revision、global_watermark_id、unread_count。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；原消息 ID 与 /sync 不因分类更新而改变。

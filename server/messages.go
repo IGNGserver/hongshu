@@ -22,6 +22,11 @@ type Message struct {
 	Historical     bool     `json:"historical"`
 	Analysis       Analysis `json:"analysis"`
 }
+
+type ConversationItem struct {
+	Message
+	UnreadCount int64 `json:"unread_count"`
+}
 type Incoming struct {
 	Receiver       string `json:"receiver"`
 	Sender         string `json:"sender"`
@@ -301,5 +306,10 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"conversations": ms})
+	items, e := a.attachUnreadCounts(r, ms)
+	if e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"conversations": items})
 }

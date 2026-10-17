@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Person
@@ -148,6 +149,7 @@ class HomeActions(
     val onMessage: (String) -> Unit,
     val onGroupChange: (String) -> Unit = {},
     val onChangeCategory: (Long, String) -> Unit = { _, _ -> },
+    val onMarkAllRead: () -> Unit = {},
 )
 
 private fun formatClock(timestamp: Long): String =
@@ -232,6 +234,7 @@ private fun ConversationListPane(
             onSearchActiveChange = actions.onSearchActiveChange,
             attention = f.connected && attentionItems(f).isNotEmpty(),
             onOpenSettings = { actions.onOpenSettings(SettingsPage.Overview) },
+            onMarkAllRead = actions.onMarkAllRead,
         )
         AnimatedVisibility(
             visible = !searching && model.setup.visible,
@@ -316,6 +319,7 @@ private fun SearchHeader(
     onSearchActiveChange: (Boolean) -> Unit,
     attention: Boolean,
     onOpenSettings: () -> Unit,
+    onMarkAllRead: () -> Unit = {},
 ) {
     Surface(
         onClick = { if (!searching) onSearchActiveChange(true) },
@@ -383,6 +387,9 @@ private fun SearchHeader(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
+                    IconButton(onClick = onMarkAllRead) {
+                        Icon(Icons.Default.DoneAll, contentDescription = "全部标记为已读")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         BadgedBox(badge = { if (attention) Badge() }) {
                             Icon(Icons.Default.Settings, contentDescription = if (attention) "设置，有需要处理的问题" else "设置")
@@ -619,7 +626,16 @@ private fun ConversationRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                if (message.unreadCount > 0) {
+                    Badge(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ) {
+                        Text(if (message.unreadCount > 99) "99+" else message.unreadCount.toString())
+                    }
+                }
             }
         }
     }
@@ -643,9 +659,16 @@ private fun ConversationPane(
         messages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
-                    messagesWithLocal(sender, "", limit = messageLimit, group = model.group)
+                    val res = messagesWithLocal(sender, "", limit = messageLimit, group = model.group)
+                    markRead(sender)
+                    res
                 }
             }
+        withContext(Dispatchers.IO) {
+            try {
+                repo.api.request("/messages/read", "POST", org.json.JSONObject().put("sender", sender))
+            } catch (_: Exception) {}
+        }
     }
     val deviceId = repo.config.deviceId
     val loaded = messages.orEmpty()
