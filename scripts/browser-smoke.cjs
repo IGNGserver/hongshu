@@ -101,9 +101,6 @@ async function request(path, token, method = "GET", body) {
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
-    page.on("request", (request) => {
-      if (request.url().includes("/api/conversations?")) console.error("conversations request:", request.url());
-    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(origin);
@@ -212,14 +209,7 @@ async function request(path, token, method = "GET", body) {
     await page.getByText("482913", {exact:true}).waitFor();
     assert.equal(await page.locator(".otp-code").count(), 1);
     await page.getByRole("button", {name:"个人 1",exact:true}).click();
-    const personal = page.locator(".conversation").filter({hasText:"fixture-personal"});
-    try {
-      await personal.click();
-    } catch (error) {
-      console.error("personal conversations API:", JSON.stringify(await request("/conversations?group=personal", token)));
-      console.error("personal conversations UI:", JSON.stringify(await page.locator(".conversation").allTextContents()));
-      throw error;
-    }
+    await page.locator(".conversation").filter({hasText:"fixture-personal"}).click();
     await page.getByTitle("调整分类", {exact:true}).click();
     await page.locator(".category-actions").getByRole("button", {name:"垃圾",exact:true}).click();
     await page.getByRole("button", {name:"垃圾 2",exact:true}).waitFor();
