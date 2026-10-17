@@ -15,6 +15,10 @@ func TestReadWatermarksAndUnreadCounts(t *testing.T) {
 	// Login android
 	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Phone", "kind": "android"}, 200)
 	androidToken := paired["token"].(string)
+	id := paired["device"].(map[string]any)["id"].(string)
+
+	// Enable upload
+	c.call("PATCH", "/api/devices/"+id, androidToken, map[string]bool{"upload": true}, 200)
 
 	// Register SIM
 	c.call("PUT", "/api/sims", androidToken, map[string]any{"phone": "+8613800000000", "label": "SIM1", "subscription_id": 1}, 200)
