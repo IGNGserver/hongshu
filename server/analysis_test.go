@@ -104,7 +104,9 @@ func TestAnalysisUpgradeBackfillAndRollback(t *testing.T) {
 				}
 			}
 		}
-		if _, e = db.Exec("DELETE FROM schema_migrations WHERE version='006_message_analysis.up.sql'"); e != nil {
+		// 008 alters ai_settings, so rolling back 006 also rewinds its dependent
+		// migration record; otherwise a fresh 006 table would miss protocol.
+		if _, e = db.Exec("DELETE FROM schema_migrations WHERE version IN ('006_message_analysis.up.sql','008_ai_protocol.up.sql')"); e != nil {
 			t.Fatal(e)
 		}
 	}
