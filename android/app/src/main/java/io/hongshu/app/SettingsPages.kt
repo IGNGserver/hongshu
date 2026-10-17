@@ -725,6 +725,26 @@ fun NotificationsPage(host: SettingsHost) {
             )
         }
         settingsGroup(
+            "options",
+            "通知增强",
+            listOf(
+                SettingsRow("otp_island") {
+                    SettingsSwitchItem(
+                        title = "验证码实时胶囊 / 灵动岛",
+                        summary =
+                            if (c.liveOtpIsland) "其他手机收到验证码时，在状态栏胶囊或高优先级通知常驻显示，支持快捷复制与关闭"
+                            else "已关闭验证码专属实时通知",
+                        icon = Icons.Default.Key,
+                        checked = c.liveOtpIsland,
+                        enabled = !host.busy,
+                        onCheckedChange = { checked ->
+                            c.liveOtpIsland = checked
+                        },
+                    )
+                }
+            ),
+        )
+        settingsGroup(
             "status",
             "状态",
             listOf(

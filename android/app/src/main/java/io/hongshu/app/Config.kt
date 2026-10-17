@@ -192,6 +192,12 @@ class Config(context: Context) {
             prefs.edit().putBoolean("keep_alive", value).commit()
         }
 
+    var liveOtpIsland: Boolean
+        get() = prefs.getBoolean("live_otp_island", true)
+        set(value) {
+            prefs.edit().putBoolean("live_otp_island", value).commit()
+        }
+
     var hideFromRecents: Boolean
         get() = prefs.getBoolean("hide_from_recents", false)
         set(value) {
