@@ -767,7 +767,6 @@ function installChipRail(rail, scroller, previous, next) {
   scroller.addEventListener("pointerdown", (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     pointerStart = { id: event.pointerId, x: event.clientX, scrollLeft: scroller.scrollLeft, moved: false };
-    scroller.setPointerCapture?.(event.pointerId);
   });
   scroller.addEventListener("pointermove", (event) => {
     if (!pointerStart || pointerStart.id !== event.pointerId) return;
@@ -775,13 +774,14 @@ function installChipRail(rail, scroller, previous, next) {
     if (!pointerStart.moved && Math.abs(distance) < 4) return;
     pointerStart.moved = true;
     suppressClick = true;
+    scroller.setPointerCapture?.(event.pointerId);
     rail.classList.add("is-dragging");
     scroller.scrollLeft = pointerStart.scrollLeft - distance;
     event.preventDefault();
   });
   const endPointer = (event) => {
     if (!pointerStart || pointerStart.id !== event.pointerId) return;
-    scroller.releasePointerCapture?.(event.pointerId);
+    if (scroller.hasPointerCapture?.(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
     pointerStart = null;
     rail.classList.remove("is-dragging");
     if (suppressClick) requestAnimationFrame(() => { suppressClick = false; });
