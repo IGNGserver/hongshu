@@ -1783,7 +1783,7 @@ async function renderAISettings(group) {
   field("enabled", "启用 AI 分组", "checkbox", s.enabled);
   field("paused", "暂停队列", "checkbox", s.paused);
   selectField("protocol", "AI 协议", s.protocol, Object.entries(AI_PROTOCOLS));
-  const endpoint = field("endpoint", "完整接口地址", "url", s.endpoint);
+  const endpoint = field("endpoint", "完整 Chat Completions 接口地址", "url", s.endpoint);
   endpoint.placeholder = s.protocol === "openai_responses"
     ? "https://example.com/v1/responses"
     : s.protocol === "anthropic_messages"
