@@ -118,7 +118,7 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		_, e = tx.ExecContext(r.Context(), "INSERT INTO conversation_heads (sender,receiver,message_id,timestamp) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE message_id=IF(VALUES(timestamp)>timestamp OR (VALUES(timestamp)=timestamp AND VALUES(message_id)>message_id),VALUES(message_id),message_id),timestamp=GREATEST(timestamp,VALUES(timestamp))", m.Sender, m.Receiver, seq, m.Timestamp)
+		_, e = tx.ExecContext(r.Context(), "INSERT INTO conversation_heads (sender,message_id,timestamp) VALUES (?,?,?) ON DUPLICATE KEY UPDATE message_id=IF(VALUES(timestamp)>timestamp OR (VALUES(timestamp)=timestamp AND VALUES(message_id)>message_id),VALUES(message_id),message_id),timestamp=GREATEST(timestamp,VALUES(timestamp))", m.Sender, seq, m.Timestamp)
 		if e != nil {
 			fail(w, 503, "database_unavailable")
 			return
@@ -286,8 +286,8 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 	}
 	where, args := filters(r)
 	args = append(args, limit, offset)
-	query := "SELECT " + messageColumns + " FROM messages m" + messageJoins + " JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender,m.receiver ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m" + messageJoins + where + ") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?"
-	if r.URL.Query().Get("q") == "" && r.URL.Query().Get("device") == "" && (r.URL.Query().Get("group") == "" || r.URL.Query().Get("group") == "all") {
+	query := "SELECT " + messageColumns + " FROM messages m" + messageJoins + " JOIN (SELECT m.id,ROW_NUMBER() OVER (PARTITION BY m.sender ORDER BY m.timestamp DESC,m.id DESC) rn FROM messages m" + messageJoins + where + ") t ON t.id=m.id AND t.rn=1 ORDER BY m.timestamp DESC,m.id DESC LIMIT ? OFFSET ?"
+	if r.URL.Query().Get("q") == "" && r.URL.Query().Get("device") == "" && r.URL.Query().Get("sim") == "" && (r.URL.Query().Get("group") == "" || r.URL.Query().Get("group") == "all") {
 		query = "SELECT " + messageColumns + " FROM conversation_heads h JOIN messages m ON m.id=h.message_id" + messageJoins + where + " ORDER BY h.timestamp DESC,h.message_id DESC LIMIT ? OFFSET ?"
 	}
 	rows, e := a.db.QueryContext(r.Context(), query, args...)

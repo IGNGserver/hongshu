@@ -1547,7 +1547,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             if (sender.isNotEmpty())
                 " SELECT $columns FROM enriched WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
             else
-                ", matched AS (SELECT * FROM enriched WHERE $where), latest AS (SELECT sender,receiver,MAX(timestamp) event_time FROM matched GROUP BY sender,receiver), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.receiver=l.receiver AND m.timestamp=l.event_time GROUP BY m.sender,m.receiver) SELECT $columns FROM enriched WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
+                ", matched AS (SELECT * FROM enriched WHERE $where), latest AS (SELECT sender,MAX(timestamp) event_time FROM matched GROUP BY sender), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.timestamp=l.event_time GROUP BY m.sender) SELECT $columns FROM enriched WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
         args.add(limit.coerceAtLeast(1).toString())
         return readableDatabase.rawQuery(sql, args.toTypedArray()).use { c ->
             buildList {
@@ -1626,9 +1626,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (local.isEmpty()) return remote
         val newest = compareByDescending<CachedMessage> { it.timestamp }.thenByDescending { it.id }
         if (sender.isNotEmpty()) return (remote + local).sortedWith(newest).take(limit)
-        // Conversation list: one head per sender and receiver, whichever copy is newer.
+        // Conversation list: one head per sender, whichever receiving phone is newer.
         return (remote + local)
-            .groupBy { it.sender to it.receiver }
+            .groupBy { it.sender }
             .values
             .map { it.sortedWith(newest).first() }
             .sortedWith(newest)

@@ -23,8 +23,8 @@ class NavigationTest {
     @Test
     fun selectingAnotherConversationReplacesTheCurrentConversation() {
         val home = listOf<AppDestination>(AppDestination.Home)
-        val first = AppDestination.Conversation("100", "200")
-        val second = AppDestination.Conversation("300", "400")
+        val first = AppDestination.Conversation("100")
+        val second = AppDestination.Conversation("300")
 
         val stack = replaceTopDestination(pushDestination(home, first), second)
 
@@ -34,7 +34,7 @@ class NavigationTest {
     @Test
     fun closingSettingsKeepsTheDestinationThatOpenedIt() {
         var stack = listOf<AppDestination>(AppDestination.Home)
-        stack = pushDestination(stack, AppDestination.Conversation("100", "200"))
+        stack = pushDestination(stack, AppDestination.Conversation("100"))
         stack = pushDestination(stack, AppDestination.Settings(SettingsPage.Overview))
         stack = pushDestination(stack, AppDestination.Settings(SettingsPage.Capture))
         stack = pushDestination(stack, AppDestination.Settings(SettingsPage.Pending))
@@ -44,7 +44,7 @@ class NavigationTest {
         assertEquals(
             listOf<AppDestination>(
                 AppDestination.Home,
-                AppDestination.Conversation("100", "200"),
+                AppDestination.Conversation("100"),
             ),
             stack,
         )
@@ -52,7 +52,7 @@ class NavigationTest {
 
     @Test
     fun searchAndTwoPaneConversationsShareTheMainScreen() {
-        val conversation = AppDestination.Conversation("100", "200")
+        val conversation = AppDestination.Conversation("100")
 
         assertEquals(AppDestination.Home.screenKey(false), AppDestination.Search.screenKey(false))
         assertEquals(AppDestination.Home.screenKey(true), conversation.screenKey(true))

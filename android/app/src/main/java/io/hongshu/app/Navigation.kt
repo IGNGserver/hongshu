@@ -41,7 +41,7 @@ sealed interface AppDestination {
 
     data object Search : AppDestination
 
-    data class Conversation(val sender: String, val receiver: String) : AppDestination
+    data class Conversation(val sender: String) : AppDestination
 
     data class Settings(val page: SettingsPage) : AppDestination
 }
@@ -90,7 +90,7 @@ internal fun AppDestination.screenKey(twoPane: Boolean): String =
     when (this) {
         AppDestination.Home,
         AppDestination.Search -> "main"
-        is AppDestination.Conversation -> if (twoPane) "main" else "conversation:$sender:$receiver"
+        is AppDestination.Conversation -> if (twoPane) "main" else "conversation:$sender"
         is AppDestination.Settings -> "settings:${page.name}"
     }
 

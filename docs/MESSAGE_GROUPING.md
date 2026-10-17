@@ -5,7 +5,7 @@
 AI 默认关闭：全部、验证码、其他。开启后：全部、验证码、个人、通知、推广、垃圾、待分析。
 按消息分类而非号码分类；全部始终包含垃圾。原文、时间、上传指纹与通知语义不变。
 验证码由版本化规则识别，歧义不提取，有效期仅采用原文明示值；不自动复制或删除。
-不做商户来源认证、头像、摘要、系统拦截或自动退订。
+不做商户来源认证、摘要、系统拦截或自动退订；头像由客户端按发件人稳定生成。
 
 ## 数据与队列
 
@@ -22,7 +22,8 @@ AI 开启即处理所有未完成的非验证码消息；新到消息优先，�
 
 ## 安全和调用边界
 
-管理员在 Web 配置 OpenAI-compatible chat completions 地址与模型；本地模型用同一协议。
+管理员在 Web 配置 AI 协议、地址与模型。支持 OpenAI Responses API、旧版 OpenAI-compatible Chat Completions、Anthropic Messages 和 Google Gemini Generate Content；本地模型仍可通过允许主机名单使用兼容协议。
+Responses API 是新配置的推荐协议，已有配置默认保留 Chat Completions，避免升级后改变现有端点语义。
 密钥以 HONGSHU_AI_SECRET（base64 的 32 字节部署密钥）AES-GCM 加密保存，响应仅返回是否已设置。
 密钥不下发 Android、不写日志；备份需同时保留部署密钥。更换密钥前先解密并重新保存配置。
 默认仅允许公网 HTTPS；私网/本地模型须部署者显式设置 HONGSHU_AI_ALLOWED_HOSTS（精确主机名，逗号分隔），

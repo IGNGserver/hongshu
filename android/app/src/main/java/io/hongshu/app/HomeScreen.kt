@@ -139,7 +139,7 @@ class HomeActions(
     val onSearchQueryChange: (String) -> Unit,
     val onSearchActiveChange: (Boolean) -> Unit,
     val onSimFilterChange: (String) -> Unit,
-    val onSelectConversation: (String, String) -> Unit,
+    val onSelectConversation: (String) -> Unit,
     val onBack: () -> Unit,
     val onLoadMore: () -> Unit,
     val onOpenSettings: (SettingsPage) -> Unit,
@@ -170,7 +170,7 @@ fun MainSurface(destination: AppDestination, model: HomeModel, actions: HomeActi
                     AnimatedContent(
                         targetState = conversation,
                         transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
-                        contentKey = { it?.let { c -> "${c.sender}:${c.receiver}" } },
+                        contentKey = { it?.let { c -> c.sender } },
                         label = "detail pane",
                     ) { selected ->
                         if (selected == null) DetailPlaceholder()
@@ -459,8 +459,8 @@ private fun ConversationList(
                         message = msg,
                         receiverLabel = if (showSims) simLabel(msg.receiver, model.sims) else null,
                         isSelected =
-                            selected?.sender == msg.sender && selected.receiver == msg.receiver,
-                        onClick = { actions.onSelectConversation(msg.sender, msg.receiver) },
+                            selected?.sender == msg.sender,
+                        onClick = { actions.onSelectConversation(msg.sender) },
                         modifier = Modifier.animateItem(),
                     )
                 }
@@ -643,7 +643,7 @@ private fun ConversationPane(
         messages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
-                    messagesWithLocal(sender, "", conversation.receiver, limit = messageLimit, group = model.group)
+                    messagesWithLocal(sender, "", limit = messageLimit, group = model.group)
                 }
             }
     }
@@ -651,10 +651,11 @@ private fun ConversationPane(
     val loaded = messages.orEmpty()
     val contactName = loaded.firstOrNull()?.contact.orEmpty()
     val displayName = contactName.ifEmpty { sender }
+    val receiverCount = loaded.map { it.receiver }.filter { it.isNotEmpty() }.distinct().size
     val subtitle =
         listOfNotNull(
                 sender.takeIf { contactName.isNotEmpty() },
-                "接收：${simLabel(conversation.receiver, model.sims)}",
+                if (receiverCount > 0) "来自 $receiverCount 个接收号码" else "全部接收号码",
             )
             .joinToString(" · ")
     val listState = rememberLazyListState()
@@ -726,15 +727,16 @@ private fun ConversationPane(
                 // Newest first because the layout is reversed; a day header follows the oldest
                 // message of each day so it renders above that day's bubbles.
                 loaded.forEachIndexed { index, msg ->
-                    item(key = msg.id) {
-                        MessageBubble(
-                            msg = msg,
-                            isOutgoing = msg.deviceId == deviceId && msg.sender != sender,
-                            onCopyCode = ::copyCode,
-                            aiEnabled = model.aiEnabled,
-                            onChangeCategory = { category -> actions.onChangeCategory(msg.id, category) },
-                            modifier = Modifier.animateItem(),
-                        )
+                        item(key = msg.id) {
+                            MessageBubble(
+                                msg = msg,
+                                isOutgoing = msg.deviceId == deviceId && msg.sender != sender,
+                                sourceDevice = if (msg.deviceId == deviceId) repo.config.deviceName.ifEmpty { "本机" } else "来源手机",
+                                onCopyCode = ::copyCode,
+                                aiEnabled = model.aiEnabled,
+                                onChangeCategory = { category -> actions.onChangeCategory(msg.id, category) },
+                                modifier = Modifier.animateItem(),
+                            )
                     }
                     val older = loaded.getOrNull(index + 1)
                     if (older == null || !sameDay(older.timestamp, msg.timestamp)) {
@@ -782,6 +784,7 @@ private fun DayHeader(label: String, modifier: Modifier = Modifier) {
 private fun MessageBubble(
     msg: CachedMessage,
     isOutgoing: Boolean,
+    sourceDevice: String,
     onCopyCode: (String) -> Unit,
     modifier: Modifier = Modifier,
     aiEnabled: Boolean = false,
@@ -843,6 +846,9 @@ private fun MessageBubble(
         Text(
             buildString {
                 append(formatClock(msg.timestamp))
+                append(" · ")
+                append(sourceDevice)
+                if (msg.receiver.isNotEmpty()) append(" · 接收号码 ${msg.receiver}")
                 if (msg.historical) append(" · 历史补齐")
                 if (msg.local) append(" · 未上传到中枢")
             },

@@ -262,8 +262,8 @@ fun HongshuUI(activity: MainActivity) {
         navigationStack = pushDestination(navigationStack, destination)
     }
 
-    fun navigateConversation(sender: String, receiver: String) {
-        val destination = AppDestination.Conversation(sender, receiver)
+    fun navigateConversation(sender: String) {
+        val destination = AppDestination.Conversation(sender)
         navigationStack =
             if (navigationStack.lastOrNull() is AppDestination.Conversation) {
                 replaceTopDestination(navigationStack, destination)

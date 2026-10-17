@@ -55,7 +55,7 @@ func TestIntegrationConversationIndexBackfillsAndRepairsLegacyWriter(t *testing.
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range []string{"DROP TABLE conversation_heads", "DROP TABLE conversation_heads_state", "DELETE FROM schema_migrations WHERE version='005_conversation_heads.up.sql'"} {
+	for _, stmt := range []string{"DROP TABLE conversation_heads", "DROP TABLE conversation_heads_state", "DELETE FROM schema_migrations WHERE version IN ('005_conversation_heads.up.sql','007_sender_conversation_heads.up.sql')"} {
 		if _, err = db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
