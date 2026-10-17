@@ -55,7 +55,7 @@ func (a *app) routes(web string) http.Handler {
 			name = "index.html"
 		}
 		switch name {
-		case "index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png":
+		case "index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png":
 		default:
 			http.NotFound(w, r)
 			return
