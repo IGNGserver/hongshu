@@ -38,6 +38,40 @@ export function aiQueueLabel(s) {
   return `队列：等待 ${s?.queue?.pending || 0} · 处理中 ${s?.queue?.processing || 0} · 失败/待确认 ${s?.queue?.failed || 0} · 已完成 ${s?.queue?.complete || 0} · 规则待回填 ${s?.queue?.backfill || 0}`;
 }
 
+// Splits SMS text into plain and http(s) link segments. Only the matched URL ever
+// becomes an href; trailing punctuation that ends the sentence stays as text.
+const LINK_PATTERN = /https?:\/\/[^\s<>"'，。！？；：、（）【】「」『』《》]+/gi;
+export function linkSegments(text) {
+  const segments = [];
+  let last = 0;
+  for (const match of String(text).matchAll(LINK_PATTERN)) {
+    const url = match[0].replace(/[.,;:!?)\]}'"]+$/, "");
+    if (!url.match(/^https?:\/\/[^/?#\s]+/i)) continue;
+    if (match.index > last) segments.push({ text: text.slice(last, match.index) });
+    segments.push({ url });
+    last = match.index + url.length;
+  }
+  if (last < text.length) segments.push({ text: text.slice(last) });
+  return segments;
+}
+
+// Rows and bubbles animate only when they carry something newer than what this
+// page has already shown; filtering, polling and re-renders must not replay them.
+export function isFreshArrival(value, seenHigh) {
+  return seenHigh > 0 && value > seenHigh;
+}
+export const conversationKey = (c) => `${c.sender}\u0000${c.receiver}`;
+// After a realtime arrival, the rows that are new or moved forward since the last render.
+export function freshConversationKeys(previous, conversations) {
+  const fresh = new Set();
+  if (!previous?.size) return fresh;
+  for (const c of conversations) {
+    const before = previous.get(conversationKey(c));
+    if (before === undefined || c.timestamp > before) fresh.add(conversationKey(c));
+  }
+  return fresh;
+}
+
 // -------------------------------------------------------------
 // UI State & Configuration
 // -------------------------------------------------------------
@@ -70,6 +104,9 @@ const state = {
   group: "all",
   counts: {},
   ai: null,
+  renderedRows: new Map(),
+  seenMessageId: 0,
+  arrivalsPending: false,
 };
 
 const errors = {
@@ -182,6 +219,30 @@ function toast(text) {
   t.classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove("visible"), 4000);
+}
+
+// The open conversation is one browser history entry, so the system back gesture
+// returns to the list on phones instead of leaving the app.
+const DETAIL_HISTORY = "hongshuDetail";
+function setDetailOpen(open) {
+  $(".layout")?.classList.toggle("has-detail", open);
+  document.body.dataset.detail = String(open);
+}
+function enterDetailHistory() {
+  if (history.state?.[DETAIL_HISTORY]) history.replaceState({ [DETAIL_HISTORY]: true }, "");
+  else history.pushState({ [DETAIL_HISTORY]: true }, "");
+}
+function leaveDetailHistory() {
+  if (history.state?.[DETAIL_HISTORY]) history.back();
+}
+function closeDetail() {
+  state.sender = "";
+  state.receiver = "";
+  state.messages = [];
+  state.seenMessageId = 0;
+  setDetailOpen(false);
+  renderConversations();
+  renderDetail();
 }
 
 function setBusy(b) {
@@ -316,6 +377,7 @@ function dateDay(t) {
 function authView() {
   const root = $("#app");
   root.replaceChildren();
+  document.body.dataset.detail = "false";
   const card = el("main", "auth");
   card.append(
     el("h1", "", "鸿枢 Hongshu"),
@@ -473,6 +535,7 @@ function shell() {
   if (state.page === "inbox") inboxView();
   if (state.page === "devices") devicesView();
   if (state.page === "settings") settingsView();
+  document.body.dataset.detail = String(state.page === "inbox" && Boolean(state.sender));
 
   setStatus(
     state.ws?.readyState === 1 ? "实时连接" : "自动补齐",
@@ -716,7 +779,7 @@ function createFilterChip(label, items, value, change) {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false } = {}) {
+async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false, arrivals = false } = {}) {
   if (!state.me) return;
   if (inboxAbortController) {
     inboxAbortController.abort();
@@ -765,7 +828,7 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
     state.conversations = d.conversations;
     state.counts = counts.counts;
     renderGroupBar();
-    renderConversations();
+    renderConversations({ arrivals });
     if (state.sender) await loadHistory(false, { preserve: preserveHistory, revalidate: revalidateHistory });
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return;
@@ -781,8 +844,8 @@ function renderGroupBar() {
   bar.replaceChildren();
   for (const group of visibleGroups(state.me?.ai_enabled)) {
     const b = button(`${GROUP_LABELS[group]} ${state.counts[group] || 0}`, async () => {
-      state.group = group; state.offset = 0; state.sender = state.receiver = ""; state.messages = [];
-      $(".layout")?.classList.remove("has-detail"); renderDetail();
+      state.group = group; state.offset = 0;
+      closeDetail(); leaveDetailHistory();
       await refreshInbox();
     }, "filter-chip" + (state.group === group ? " active" : ""));
     b.setAttribute("aria-pressed", String(state.group === group));
@@ -794,12 +857,13 @@ function renderGroupBar() {
     : "验证码由规则提取，其他短信不分类";
 }
 
-function renderConversations() {
+function renderConversations({ arrivals = false } = {}) {
   const list = $(".list");
   if (!list) return;
   list.replaceChildren();
 
   if (!state.conversations.length) {
+    state.renderedRows = new Map();
     const empty = el("div", "empty-state");
     empty.innerHTML = ICONS.emptyMessages;
     empty.append(
@@ -810,24 +874,30 @@ function renderConversations() {
     return;
   }
 
-  state.conversations.forEach((m, idx) => {
+  const fresh = arrivals ? freshConversationKeys(state.renderedRows, state.conversations) : new Set();
+  state.renderedRows = new Map(state.conversations.map((m) => [conversationKey(m), m.timestamp]));
+  state.conversations.forEach((m) => {
     const isSelected =
       state.sender === m.sender && state.receiver === m.receiver;
     const b = el(
       "button",
-      "conversation" + (isSelected ? " selected" : "") + " conversation-enter",
+      "conversation" + (isSelected ? " selected" : "") +
+        (fresh.has(conversationKey(m)) ? " conversation-new" : ""),
     );
     b.type = "button";
-    b.style.animationDelay = `${Math.min(idx * 25, 250)}ms`;
     attachRipple(b);
 
     b.onclick = async () => {
-      state.sender = m.sender;
-      state.receiver = m.receiver;
-      state.messages = [];
-      state.historyHasMore = true;
-      state.historyLoading = false;
-      $(".layout")?.classList.add("has-detail");
+      if (!isSelected) {
+        state.sender = m.sender;
+        state.receiver = m.receiver;
+        state.messages = [];
+        state.seenMessageId = 0;
+        state.historyHasMore = true;
+        state.historyLoading = false;
+      }
+      setDetailOpen(true);
+      enterDetailHistory();
       renderConversations();
       await loadHistory(false);
     };
@@ -1014,10 +1084,9 @@ function renderDetail() {
     ICONS.arrowBack,
     "返回",
     () => {
-      state.sender = "";
-      state.receiver = "";
-      $(".layout")?.classList.remove("has-detail");
-      renderDetail();
+      // popstate closes the conversation when it owns a history entry.
+      if (history.state?.[DETAIL_HISTORY]) history.back();
+      else closeDetail();
     },
     "back",
   );
@@ -1072,8 +1141,9 @@ function renderDetail() {
 
   let lastDay = "";
   let currentGroup = null;
+  const seenId = state.seenMessageId;
 
-  state.messages.forEach((msg, idx) => {
+  state.messages.forEach((msg) => {
     const dayStr = dateDay(msg.timestamp);
     if (dayStr !== lastDay) {
       const divider = el("div", "date-divider");
@@ -1088,7 +1158,7 @@ function renderDetail() {
       messages.append(currentGroup);
     }
 
-    const b = el("div", "bubble");
+    const b = el("div", "bubble" + (isFreshArrival(msg.id, seenId) ? " bubble-new" : ""));
     if (msg.analysis?.otp) {
       const card = el("div", "otp-card");
       card.append(el("strong", "otp-code", msg.analysis.otp));
@@ -1100,7 +1170,7 @@ function renderDetail() {
       if (expires) card.append(el("small", "", expires <= Date.now() ? "按短信标注的有效期，可能已过期" : `短信标注有效至 ${new Date(expires).toLocaleTimeString()}`));
       b.append(card);
     }
-    b.append(document.createTextNode(msg.body));
+    b.append(linkedText(msg.body));
     if (state.me?.ai_enabled && !msg.analysis?.otp) {
       b.append(el("small", "analysis-message-state", `${GROUP_LABELS[msg.analysis?.category] || "待分析"} · ${analysisLabel(msg.analysis)}`));
       const correction = el("details", "category-actions");
@@ -1135,8 +1205,25 @@ function renderDetail() {
 
     currentGroup.append(b);
   });
+  state.seenMessageId = state.messages.reduce((high, msg) => Math.max(high, msg.id), seenId);
 
   detail.append(messages);
+}
+
+function linkedText(text) {
+  const fragment = document.createDocumentFragment();
+  for (const part of linkSegments(text)) {
+    if (part.text !== undefined) {
+      fragment.append(document.createTextNode(part.text));
+      continue;
+    }
+    const link = el("a", "", part.url);
+    link.href = part.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    fragment.append(link);
+  }
+  return fragment;
 }
 
 // -------------------------------------------------------------
@@ -1322,15 +1409,29 @@ function settingsView() {
 async function renderAISettings(card) {
   const s = await api("/analysis/settings");
   if (!card.isConnected) return;
-  card.append(el("p", "", `${s.enabled ? "已开启" : "已关闭"}${s.paused ? " · 已暂停" : ""} · 今日已调用 ${s.usage_count}/${s.daily_limit}${s.last_error ? " · " + s.last_error : ""}`));
+  card.append(el("p", "ai-summary", `${s.enabled ? "已开启" : "已关闭"}${s.paused ? " · 已暂停" : ""} · 今日已调用 ${s.usage_count}/${s.daily_limit}${s.last_error ? " · " + s.last_error : ""}`));
   card.append(el("p", "ai-queue-status", aiQueueLabel(s)));
   if (!state.me?.device?.admin) { card.append(el("p", "", "请由管理员在 Web 设置配置中枢 AI")); return; }
-  const form = el("form", "stack");
+  const form = el("form", "ai-form");
   const fields = {};
-  function field(key, label, type, value) {
+  // Booleans render as M3 switches on native checkboxes, so labels, keyboard use and
+  // form values keep working; the consent stays a plain checkbox because it is an acknowledgement.
+  function field(key, label, type, value, parent = form) {
     const input = el("input"); input.type = type;
-    if (type === "checkbox") input.checked = Boolean(value); else input.value = value ?? "";
-    const wrapper = el("label", "", label); wrapper.append(input); form.append(wrapper); fields[key] = input;
+    let wrapper;
+    if (type === "checkbox") {
+      input.checked = Boolean(value);
+      const asSwitch = key !== "consent";
+      if (asSwitch) { input.setAttribute("role", "switch"); input.className = "m3-switch-input"; }
+      wrapper = el("label", asSwitch ? "setting-switch" : "setting-check");
+      const text = el("span", "setting-label", label);
+      if (asSwitch) wrapper.append(text, input); else wrapper.append(input, text);
+    } else {
+      input.value = value ?? "";
+      wrapper = el("label", "setting-field");
+      wrapper.append(el("span", "setting-label", label), input);
+    }
+    parent.append(wrapper); fields[key] = input;
     return input;
   }
   field("enabled", "启用 AI 分组", "checkbox", s.enabled);
@@ -1340,19 +1441,23 @@ async function renderAISettings(card) {
   const key = field("api_key", s.key_set ? "API 密钥（已设置；留空保留）" : "API 密钥（本地无鉴权服务可留空）", "password", "");
   key.autocomplete = "new-password";
   field("clear_key", "清除已保存密钥", "checkbox", false);
+  const numbers = el("div", "setting-numbers");
+  form.append(numbers);
   for (const [name,label,min,max] of [["timeout_seconds","超时（秒）",2,60],["requests_per_minute","每分钟调用上限",1,60],["daily_limit","每日调用上限（含失败与连接测试）",1,10000]]) {
-    const input = field(name,label,"number",s[name]); input.min = min; input.max = max; input.required = true;
+    const input = field(name,label,"number",s[name],numbers); input.min = min; input.max = max; input.required = true; input.inputMode = "numeric";
   }
   field("redact", "遮蔽长数字、邮箱和链接", "checkbox", s.redact);
   field("consent", "我了解开启后会自动分析历史与新增非验证码短信", "checkbox", false);
-  form.append(button("保存 AI 设置", async () => {
+  const actions = el("div", "setting-actions");
+  actions.append(button("保存 AI 设置", async () => {
     if (!form.reportValidity()) return;
     const body = Object.fromEntries(Object.entries(fields).map(([name,input]) => [name,input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value]));
     await api("/analysis/settings", "PUT", body); key.value = "";
     await catchUp(); shell(); toast("AI 设置已保存");
   }, "primary"));
-  form.append(button("测试连接（仅合成文本）", async () => { await api("/analysis/test", "POST", {}); toast("连接及分类测试通过"); }));
-  form.append(button("恢复队列并重试失败项（每批100条）", async () => { const result = await api("/analysis/retry", "POST", {}); toast(`已重新排队 ${result.retried} 条`); await catchUp(); shell(); }));
+  actions.append(button("测试连接（仅合成文本）", async () => { await api("/analysis/test", "POST", {}); toast("连接及分类测试通过"); }, "tonal"));
+  actions.append(button("恢复队列并重试失败项（每批100条）", async () => { const result = await api("/analysis/retry", "POST", {}); toast(`已重新排队 ${result.retried} 条`); await catchUp(); shell(); }, "text-button"));
+  form.append(actions);
   card.append(form);
 }
 
@@ -1421,6 +1526,9 @@ function disconnect() {
   state.offset = state.cursor = state.epoch = 0;
   state.epochSeen = false;
   state.inboxDirty = false;
+  state.arrivalsPending = false;
+  state.renderedRows = new Map();
+  state.seenMessageId = 0;
 }
 
 function realtime() {
@@ -1455,6 +1563,7 @@ async function catchUp() {
     const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled;
     const changed = analysisChanged || me.cursor !== state.cursor || epochReset(state.epochSeen, state.epoch, me.epoch);
     const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
+    state.arrivalsPending ||= me.cursor > state.cursor && !epochReset(state.epochSeen, state.epoch, me.epoch);
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
       state.messages = [];
       state.conversations = [];
@@ -1471,8 +1580,9 @@ async function catchUp() {
     const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
     state.inboxDirty ||= changed || metadataChanged;
     if (state.page === "inbox" && state.inboxDirty) {
-      await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: analysisChanged });
+      await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: analysisChanged, arrivals: state.arrivalsPending });
       state.inboxDirty = false;
+      state.arrivalsPending = false;
     }
   } finally {
     if (syncingGeneration === generation) {
@@ -1510,6 +1620,9 @@ if (typeof document !== "undefined") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));
     }
   }, 30000);
+  window.addEventListener("popstate", (event) => {
+    if (!event.state?.[DETAIL_HISTORY] && state.sender) closeDetail();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.me) {
       void catchUp().catch(() => {});

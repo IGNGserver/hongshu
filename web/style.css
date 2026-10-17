@@ -341,8 +341,8 @@ button.text-button:hover {
   color: var(--md-sys-color-on-surface);
 }
 
-/* Form Inputs */
-input {
+/* Form Inputs (text-like only; checkboxes and radios keep their own box) */
+input:where(:not([type="checkbox"], [type="radio"])) {
   font: var(--md-sys-typescale-body-large);
   border: 1px solid var(--md-sys-color-outline-variant);
   background: var(--md-sys-color-surface-container-lowest);
@@ -355,7 +355,7 @@ input {
   transition: border-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
 }
 
-input:focus {
+input:where(:not([type="checkbox"], [type="radio"])):focus {
   border-color: var(--md-sys-color-primary);
 }
 
@@ -1021,20 +1021,21 @@ input::placeholder {
   color: var(--md-sys-color-on-surface);
 }
 
-/* Stagger List Animation */
-.conversation-enter {
-  animation: conversation-fade-in var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-emphasized-decelerate) backwards;
+/* A conversation that just received a realtime SMS fades in and briefly keeps a tint,
+   so it is clear which row changed. Ordinary refreshes render without animation. */
+.conversation-new {
+  animation:
+    conversation-arrive var(--md-sys-motion-duration-medium2) var(--md-sys-motion-easing-emphasized-decelerate),
+    conversation-highlight 1600ms var(--md-sys-motion-easing-standard);
 }
 
-@keyframes conversation-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+@keyframes conversation-arrive {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes conversation-highlight {
+  from { background-color: color-mix(in srgb, var(--md-sys-color-primary) 16%, transparent); }
 }
 
 /* Detail Pane (Google Messages Conversation Stream) */
@@ -1152,7 +1153,18 @@ input::placeholder {
   border-radius: 20px 20px 20px 20px;
   box-shadow: var(--md-sys-elevation-level1);
   transition: transform var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard);
-  animation: m3e-bubble-enter 240ms var(--md-sys-motion-easing-expressive-spatial);
+}
+
+/* Only a message that arrived while the conversation is open animates in. */
+.bubble-new {
+  animation: m3e-bubble-enter var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-emphasized-decelerate);
+}
+
+.bubble a {
+  color: var(--md-sys-color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* Consecutive bubble corners */
@@ -1571,6 +1583,23 @@ input::placeholder {
     height: calc(100dvh - 64px);
   }
 
+  /* An open conversation takes the whole screen; back returns to the list and the bar. */
+  body[data-detail="true"] .rail {
+    display: none;
+  }
+
+  body[data-detail="true"] .main {
+    height: 100dvh;
+  }
+
+  #toast {
+    bottom: calc(64px + 1rem);
+  }
+
+  body[data-detail="true"] #toast {
+    bottom: 1rem;
+  }
+
   .layout {
     width: 100%;
     position: relative;
@@ -1647,3 +1676,52 @@ input::placeholder {
 .category-actions { margin-top: .5rem; }
 .category-actions button { margin: .25rem; }
 .ai-settings input:not([type=checkbox]) { width: 100%; }
+
+/* AI settings form */
+.ai-summary, .ai-queue-status { margin: 0; font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); }
+.ai-form { display: grid; gap: 1rem; margin-top: .5rem; }
+.setting-label { font: var(--md-sys-typescale-body-large); color: var(--md-sys-color-on-surface); }
+.setting-field { display: grid; gap: .375rem; }
+.setting-field .setting-label { font: var(--md-sys-typescale-label-large); color: var(--md-sys-color-on-surface-variant); }
+.setting-switch { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 48px; cursor: pointer; }
+.setting-check { display: flex; align-items: flex-start; gap: .75rem; cursor: pointer; }
+.setting-check .setting-label { font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); }
+.setting-check input { width: 18px; height: 18px; margin: 2px 0 0; flex: 0 0 18px; accent-color: var(--md-sys-color-primary); }
+.setting-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; align-items: end; }
+.setting-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding-top: .25rem; }
+button.tonal { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+button.tonal:hover { filter: brightness(0.97); }
+
+/* M3 switch drawn on a native checkbox */
+.m3-switch-input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 32px;
+  margin: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: 2px solid var(--md-sys-color-outline);
+  background: var(--md-sys-color-surface-container-highest);
+  cursor: pointer;
+  transition: background-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard),
+    border-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+.m3-switch-input::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--md-sys-color-outline);
+  transition: all var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized-decelerate);
+}
+.m3-switch-input:checked { background: var(--md-sys-color-primary); border-color: var(--md-sys-color-primary); }
+.m3-switch-input:checked::before { top: 2px; left: 22px; width: 24px; height: 24px; background: var(--md-sys-color-on-primary); }
+.m3-switch-input:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+@media (max-width: 768px) {
+  .setting-numbers { grid-template-columns: 1fr; }
+}

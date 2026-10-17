@@ -23,6 +23,8 @@ const assets = [
   "icon.svg",
   "icon-192.png",
   "icon-512.png",
+  "icon-maskable-512.png",
+  "apple-touch-icon.png",
 ];
 const hash = createHash("sha256");
 for (const file of assets) hash.update(file).update(await readFile(resolve(root, file)));
