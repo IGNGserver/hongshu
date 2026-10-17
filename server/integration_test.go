@@ -115,6 +115,14 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if retry["acks"].([]any)[0].(map[string]any)["duplicate"] != true {
 		t.Fatal("retry was not idempotent")
 	}
+	if _, e := db.Exec("DELETE FROM sims WHERE device_id=? AND phone=?", id, message.Receiver); e != nil {
+		t.Fatal(e)
+	}
+	afterSimRemoval := c.call("POST", "/api/messages", token, batch, 200)
+	if afterSimRemoval["acks"].([]any)[0].(map[string]any)["duplicate"] != true {
+		t.Fatal("an already committed message was blocked after SIM removal")
+	}
+	c.call("PUT", "/api/sims", token, map[string]any{"phone": message.Receiver, "label": "SIM 1", "subscription_id": 1}, 200)
 	for _, response := range []map[string]any{first, retry} {
 		if response["acks"].([]any)[0].(map[string]any)["fingerprint"] != fingerprint(message) {
 			t.Fatal("ACK did not correlate the accepted/duplicate message")

@@ -55,6 +55,7 @@ fun saveSimSelection(context: Context, automatic: Boolean, mappings: List<SimMap
         synchronized(identityLock) {
             Store(context).use { store ->
                 store.updateSimMappings(mappings, automatic)
+                store.reconcileNotificationCaptures()
                 store.reconcileUnknownSimCaptures()
             }
             config.automaticSim = automatic

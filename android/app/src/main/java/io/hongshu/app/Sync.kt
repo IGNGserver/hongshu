@@ -140,6 +140,7 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             }
             try {
                 Store(applicationContext).use {
+                    it.reconcileNotificationCaptures()
                     it.reconcileUnknownSimCaptures()
                     it.resolvePendingFallback()
                 }

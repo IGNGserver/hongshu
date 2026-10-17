@@ -187,6 +187,50 @@ class NotificationCaptureTest {
     }
 
     @Test
+    fun brandNotificationPairsWithNumericSmsWhenBodyNamesTheBrand() = store { context, name ->
+        Store(context, name).use { s ->
+            val body = "Google 验证码为 123456"
+            assertTrue(s.queueNotification(SmsRecord("", "Google", body, t, -1)))
+            assertFalse(
+                s.queue(
+                    SmsRecord(
+                        "+8613800000000",
+                        "106812345678",
+                        body,
+                        t + 30_000,
+                        7,
+                    )
+                )
+            )
+            assertEquals(1, s.pendingCount())
+            assertEquals("106812345678", s.localPending().single().sender)
+            assertEquals("+8613800000000", s.localPending().single().receiver)
+        }
+    }
+
+    @Test
+    fun brandNotificationDoesNotGuessBetweenTwoCompatibleCandidates() = store { context, name ->
+        Store(context, name).use { s ->
+            val body = "Google 验证码为 654321"
+            assertTrue(s.queue(SmsRecord("+8613800000000", "106812345678", body, t, 7)))
+            assertTrue(s.queue(SmsRecord("+8613900000000", "106812345678", body, t, 8)))
+            assertTrue(s.queueNotification(SmsRecord("", "Google", body, t, -1)))
+            assertEquals(3, s.pendingCount())
+            assertEquals(0, s.reconcileNotificationCaptures())
+        }
+    }
+
+    @Test
+    fun differentBrandTitlesWithTheSameBodyRemainIndependent() = store { context, name ->
+        Store(context, name).use { s ->
+            val body = "Google 验证码为 789012"
+            assertTrue(s.queueNotification(SmsRecord("", "Google", body, t, -1)))
+            assertTrue(s.queueNotification(SmsRecord("", "Amazon", body, t + 5_000, -1)))
+            assertEquals(2, s.pendingCount())
+        }
+    }
+
+    @Test
     fun persistenceHonorsSwitchesAndCaptureGeneration() = store { context, name ->
         val config = Config(context)
         val message = listOf(SmsNotification("10086", "合成正文", t))
