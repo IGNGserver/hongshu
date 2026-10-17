@@ -44,6 +44,12 @@ fun channels(context: Context) {
     manager.createNotificationChannel(
         NotificationChannel("connection", "实时同步连接", NotificationManager.IMPORTANCE_LOW)
     )
+    manager.createNotificationChannel(
+        NotificationChannel("otp_island", "验证码实时状态", NotificationManager.IMPORTANCE_HIGH).apply {
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+            description = "跨设备验证码通知，在支持的系统上以灵动岛/状态栏胶囊形式突出显示"
+        }
+    )
 }
 
 private val syncSchedulingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -402,13 +408,39 @@ object SyncEngine {
                             store.initializeSyncHead(repo.api.request("/me").getLong("cursor"))
                             continue
                         }
-                        store.applySync(
+                        val addedMessages = store.applySync(
                             data.getJSONArray("messages"),
                             data.getLong("cursor"),
                             c.deviceId,
                             pairedAt,
                             data.getLong("epoch"),
                         )
+                        if (c.notify && c.liveOtpIsland) {
+                            for (msg in addedMessages) {
+                                if (
+                                    c.deviceId.isNotEmpty() &&
+                                    shouldNotify(
+                                        msg.deviceId,
+                                        c.deviceId,
+                                        msg.historical,
+                                        store.initialComplete(),
+                                        msg.timestamp,
+                                        pairedAt,
+                                    )
+                                ) {
+                                    val otp = extractOtp(msg.body)
+                                    if (!otp.isNullOrEmpty()) {
+                                        OtpNotificationManager.showOtpNotification(
+                                            context = context,
+                                            messageId = msg.id,
+                                            otp = otp,
+                                            sender = msg.sender,
+                                            contact = msg.contact,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         val pendingNotice = store.pendingNotification()
                         if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
                             store.acknowledgeNotification(pendingNotice)

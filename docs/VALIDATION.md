@@ -1,3 +1,20 @@
+# 2026-10-17 Android 验证码实时胶囊 / 灵动岛通知
+
+基线 `2a173f0`（`0.2.0-alpha.4`），分支 `agent/live-otp-island`，版本号保持不变。
+
+- 功能：当其他设备（`deviceId != self`）收到验证码短信并通过中枢同步到本机时，以高优先级通知与实时状态（Live Updates / 灵动岛）展示验证码；
+- 冲突防护：收到验证码的那台手机自身坚决不触发，避免与厂商系统（如小米/HyperOS、OriginOS、ColorOS）自带的验证码提取弹窗冲突；
+- 系统级适配：在 Android 16+（API 36+）设备上支持原生 Live Updates（状态栏胶囊药丸 / Promoted Ongoing），在 Android 15 及以下优雅降级为高优先级普通通知；
+- 快捷操作：通知附带“复制”动作（写入剪贴板并立即关闭通知）与“关闭”动作（点击后立即清理通知），并设置 10 分钟超时自毁；
+- 设置开关：在“通知设置”页新增“验证码实时胶囊 / 灵动岛”开关，默认开启，用户可随时独立控制。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；12 项运维测试 OK |
+| `git diff --check origin/main...HEAD` | 通过；无空白与换行错误 |
+| `cd android && ./gradlew :app:testDebugUnitTest :app:lintDebug` | 通过；新增 `OtpNotificationManagerTest` 3 项测试（构建 ongoing 及 promoted 特征、复制并取消、关闭且不影响剪贴板、本机与远端设备过滤判定），单元测试与 Lint 0 错误 |
+| 真机 / Android 16 实时胶囊 | 模拟器与单元测试通过；Android 16 物理真机药丸动画需在后续真机环境实测验收 |
+
 # 2026-10-16 Android 本地库并发与短信时间（PR-4）
 
 基于 `agent/android-pending-ux`（`c5769ee`），分支 `agent/android-store-robustness`，版本保持 `0.1.0-alpha.21`。本轮只推送任务分支。

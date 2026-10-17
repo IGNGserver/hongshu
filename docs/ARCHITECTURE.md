@@ -105,6 +105,7 @@ setExcludeFromRecents，可随时恢复显示。首页返回退到后台而不�
 UI 定时刷新/轮询仅在页面可见时执行；退后台后由服务和 WorkManager 承载同步，不依赖保留的 Compose 界面。
 关闭实时服务仍有周期补齐（系统调度不保证准点）。用户强制停止后必须重新打开应用。
 不申请无障碍，不假装默认短信应用，不绕过验证码/受限权限政策。
+验证码实时胶囊 / 灵动岛：仅在接收到**其他设备**（`deviceId != self`）同步过来的新验证码短信时触发，本机收到短信不触发以避免与厂商系统自带验证码弹窗冲突；在 Android 16+（API 36+）设备上通过 `POST_PROMOTED_NOTIFICATIONS`、`requestPromotedOngoing` 与 `shortCriticalText` 呈现状态栏胶囊/灵动岛样式，Android 15 及以下优雅降级为高优先级普通通知；通知包含快捷复制（写入剪贴板并清除通知）与关闭动作，超时 10 分钟自动清理。
 
 ### Android UI 导航与系统栏
 
