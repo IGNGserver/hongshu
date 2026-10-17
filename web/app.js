@@ -72,6 +72,16 @@ export function freshConversationKeys(previous, conversations) {
   return fresh;
 }
 
+// A realtime refresh only re-reads the first page. Keep the pages already loaded by
+// scrolling, minus anything the fresh head now covers, so the list does not jump back.
+export const CONVERSATION_PAGE = 100;
+export function mergeConversationPages(head, loaded, headIsFull) {
+  if (!headIsFull) return head;
+  const keys = new Set(head.map(conversationKey));
+  const floor = head.at(-1)?.timestamp ?? Infinity;
+  return head.concat(loaded.filter((c) => !keys.has(conversationKey(c)) && c.timestamp <= floor));
+}
+
 // Avatar rules shared with Android (MessageFormat.kt avatarInitial / isServiceNumber and
 // Theme.kt avatarColorFor), so a sender looks the same on every device.
 export function avatarInitial(contact, sender) {
@@ -139,7 +149,11 @@ const state = {
   device: "",
   conversations: [],
   messages: [],
-  offset: 0,
+  conversationsLoaded: false,
+  conversationsHasMore: false,
+  loadingMore: false,
+  renderedDetailKey: "",
+  returning: false,
   cursor: 0,
   epoch: 0,
   epochSeen: false,
@@ -201,6 +215,7 @@ const ICONS = {
   info: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`,
   visibility: `<svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
   visibilityOff: `<svg viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>`,
+  arrowDownward: `<svg viewBox="0 0 24 24"><path d="M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"/></svg>`,
   emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
     <rect x="42" y="46" width="76" height="58" rx="16" fill="currentColor" fill-opacity="0.3"/>
@@ -312,6 +327,7 @@ function leaveDetailHistory() {
   if (history.state?.[DETAIL_HISTORY]) history.back();
 }
 function closeDetail() {
+  const wasOpen = Boolean(state.sender);
   state.sender = "";
   state.receiver = "";
   state.messages = [];
@@ -319,15 +335,35 @@ function closeDetail() {
   setDetailOpen(false);
   renderConversations();
   renderDetail();
+  if (wasOpen) playReturn($(".layout"), "returning-list");
 }
 
+// Shared-axis "back": the page you return to slides in from the left (fades on wide screens).
+// "returning-list" only animates on phones, where the list was hidden behind the conversation.
+function playReturn(layout, cls = "returning") {
+  state.returning = false;
+  if (!layout || reducedMotion()) return;
+  layout.classList.remove(cls);
+  void layout.offsetWidth;
+  layout.classList.add(cls);
+  setTimeout(() => layout.classList.remove(cls), 400);
+}
+
+// Only waits longer than 300ms show the progress bar, so quick requests do not flash it.
+let busyTimer = null;
 function setBusy(b) {
   state.busy = b;
+  clearTimeout(busyTimer);
   const p = $("#global-progress");
-  if (p) {
-    p.style.display = b ? "block" : "none";
-  }
+  if (!p) return;
+  if (!b) { p.style.display = "none"; return; }
+  busyTimer = setTimeout(() => {
+    const bar = $("#global-progress");
+    if (state.busy && bar) bar.style.display = "block";
+  }, 300);
 }
+
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const sessionRequests = new Set();
 class ApiError extends Error {
@@ -543,6 +579,7 @@ async function openSettings() {
 function closeSettings() {
   if (history.state?.[SETTINGS_HISTORY]) { history.back(); return; }
   state.page = "inbox";
+  state.returning = true;
   shell();
 }
 
@@ -638,7 +675,6 @@ function inboxView() {
       search.value = "";
       state.q = "";
       clearBtn.classList.remove("visible");
-      state.offset = 0;
       search.focus();
       return refreshInbox();
     },
@@ -650,7 +686,6 @@ function inboxView() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       state.q = search.value;
-      state.offset = 0;
       refreshInbox().catch((e) => toast(e.message));
     }, 250);
   };
@@ -660,8 +695,15 @@ function inboxView() {
   // The filter comes first so it stays in view while the group chips scroll.
   chipRow.append(el("div", "filter-slot"), el("div", "group-chips"));
 
-  inbox.append(header, searchContainer, chipRow, el("p", "analysis-status"), el("div", "list"));
+  const list = el("div", "list");
+  list.addEventListener("scroll", () => {
+    if (list.scrollHeight - list.scrollTop - list.clientHeight < 240) {
+      void loadMoreConversations().catch((e) => toast(e.message));
+    }
+  }, { passive: true });
+  inbox.append(header, searchContainer, chipRow, el("p", "analysis-status"), list);
   layout.append(inbox, el("article", "detail"));
+  if (state.returning) playReturn(layout);
   main.append(layout);
 
   renderGroupBar();
@@ -769,7 +811,6 @@ function renderFilterMenu() {
   function choose(key, value) {
     close(true);
     state[key] = value;
-    state.offset = 0;
     renderFilterMenu();
     void refreshInbox().catch((e) => toast(e.message));
   }
@@ -819,15 +860,19 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
       q: state.q,
       sim: state.sim,
       device: state.device,
-      offset: state.offset,
-      limit: 100,
+      offset: 0,
+      limit: CONVERSATION_PAGE,
     };
     const [d, counts] = await Promise.all([
       api("/conversations?" + query(args), "GET", undefined, { signal }),
       api("/analysis/counts?" + query({q:state.q,sim:state.sim,device:state.device}), "GET", undefined, { signal }),
     ]);
     if (signal.aborted || gen !== refreshGeneration) return;
-    state.conversations = d.conversations;
+    const head = d.conversations;
+    const headIsFull = head.length === CONVERSATION_PAGE;
+    state.conversations = preserveHistory ? mergeConversationPages(head, state.conversations, headIsFull) : head;
+    if (!preserveHistory || !headIsFull) state.conversationsHasMore = headIsFull;
+    state.conversationsLoaded = true;
     state.counts = counts.counts;
     renderGroupBar();
     renderConversations({ arrivals });
@@ -838,6 +883,37 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
   } finally {
     setBusy(false);
   }
+}
+
+async function loadMoreConversations() {
+  if (!state.me || state.loadingMore || !state.conversationsHasMore) return;
+  const gen = refreshGeneration;
+  state.loadingMore = true;
+  $(".list-more")?.removeAttribute("hidden");
+  try {
+    const d = await api("/conversations?" + query({
+      group: state.group, q: state.q, sim: state.sim, device: state.device,
+      offset: state.conversations.length, limit: CONVERSATION_PAGE,
+    }));
+    if (gen !== refreshGeneration || !state.me) return;
+    const keys = new Set(state.conversations.map(conversationKey));
+    state.conversations = state.conversations.concat(d.conversations.filter((c) => !keys.has(conversationKey(c))));
+    state.conversationsHasMore = d.conversations.length === CONVERSATION_PAGE;
+  } finally {
+    state.loadingMore = false;
+  }
+  renderConversations();
+}
+
+function skeletonRows() {
+  const box = el("div", "list-skeleton");
+  box.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 6; i++) {
+    const row = el("div", "conversation-skeleton");
+    row.append(el("span", "skeleton-avatar"), el("span", "skeleton-lines"));
+    box.append(row);
+  }
+  return box;
 }
 
 function renderGroupBar() {
@@ -855,7 +931,7 @@ function renderGroupBar() {
     chip.setAttribute("aria-pressed", String(selected));
     attachRipple(chip);
     chip.onclick = async () => {
-      state.group = group; state.offset = 0;
+      state.group = group;
       closeDetail(); leaveDetailHistory();
       renderGroupBar();
       setBusy(true);
@@ -881,10 +957,16 @@ function renderGroupBar() {
 function renderConversations({ arrivals = false } = {}) {
   const list = $(".list");
   if (!list) return;
+  // FLIP: remember where each row was so rows pushed down by an arrival glide into place.
+  const before = arrivals && !reducedMotion()
+    ? new Map([...list.querySelectorAll(".conversation")].map((r) => [r.dataset.key, r.getBoundingClientRect().top]))
+    : null;
   list.replaceChildren();
+  list.setAttribute("aria-busy", String(!state.conversationsLoaded));
 
   if (!state.conversations.length) {
     state.renderedRows = new Map();
+    if (!state.conversationsLoaded) { list.append(skeletonRows()); return; }
     list.append(emptyState(ICONS.sms, "暂无短信", "暂无短信。请配置 Android 采集设备及 SIM 号码。"));
     return;
   }
@@ -899,6 +981,7 @@ function renderConversations({ arrivals = false } = {}) {
         (fresh.has(conversationKey(m)) ? " conversation-new" : ""),
     );
     b.type = "button";
+    b.dataset.key = conversationKey(m);
     if (isSelected) b.setAttribute("aria-current", "true");
     attachRipple(b);
 
@@ -935,20 +1018,18 @@ function renderConversations({ arrivals = false } = {}) {
     list.append(b);
   });
 
-  const controls = el("div", "list-pager");
-  if (state.offset > 0) {
-    controls.append(button("上一页", () => {
-      state.offset = Math.max(0, state.offset - 100);
-      return refreshInbox();
-    }, "text-button"));
+  const more = el("div", "list-more", "正在加载更早的会话…");
+  more.hidden = !state.loadingMore;
+  list.append(more);
+
+  if (before?.size) {
+    for (const row of list.querySelectorAll(".conversation")) {
+      const top = before.get(row.dataset.key);
+      if (top === undefined) continue;
+      const dy = top - row.getBoundingClientRect().top;
+      if (dy) row.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 350, easing: "cubic-bezier(0.05, 0.7, 0.1, 1)" });
+    }
   }
-  if (state.conversations.length === 100) {
-    controls.append(button("下一页", () => {
-      state.offset += 100;
-      return refreshInbox();
-    }, "text-button"));
-  }
-  if (controls.children.length > 0) list.append(controls);
 }
 
 // -------------------------------------------------------------
@@ -1040,7 +1121,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       state.historyHasMore = revalidate ? lastPageLength === MESSAGE_PAGE_SIZE : state.historyHasMore || incoming.length === MESSAGE_PAGE_SIZE;
     }
     state.historyLoading = false;
-    renderDetail();
+    const freshCount = renderDetail();
 
     const nextStream = $(".messages");
     if (nextStream) {
@@ -1057,6 +1138,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       } else {
         nextStream.scrollTop = nextStream.scrollHeight;
       }
+      updateJumpButton(freshCount > 0);
     }
   } catch (err) {
     if (err.name === "AbortError" || signal?.aborted) return;
@@ -1073,8 +1155,16 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
 
 function renderDetail() {
   const detail = $(".detail");
-  if (!detail) return;
+  if (!detail) return 0;
   detail.replaceChildren();
+  // Fade through when a different conversation replaces the current one.
+  const detailKey = state.sender ? conversationKey({ sender: state.sender, receiver: state.receiver }) : "";
+  if (detailKey && detailKey !== state.renderedDetailKey && !reducedMotion()) {
+    detail.classList.remove("detail-enter");
+    void detail.offsetWidth;
+    detail.classList.add("detail-enter");
+  }
+  state.renderedDetailKey = detailKey;
 
   if (!state.sender) {
     const devices = state.devices.filter((d) => d.kind === "android" && !d.revoked).length;
@@ -1082,7 +1172,7 @@ function renderDetail() {
     detail.append(emptyState(ICONS.chat, "选择一个会话", devices
       ? `短信来自 ${devices} 台手机、${sims} 张 SIM 卡`
       : "连接 Android 手机后，短信会出现在这里"));
-    return;
+    return 0;
   }
 
   const head = el("header", "detail-head");
@@ -1121,7 +1211,8 @@ function renderDetail() {
     if (messages.scrollTop <= 80 && state.historyHasMore && !state.historyLoading) {
       void loadHistory(true).catch((error) => toast(error.message));
     }
-  });
+    updateJumpButton();
+  }, { passive: true });
   updateHistoryStatus();
 
   if (!state.messages.length && !state.historyLoading) {
@@ -1129,6 +1220,7 @@ function renderDetail() {
   }
 
   const seenId = state.seenMessageId;
+  let freshCount = 0;
   let lastDay = "";
   for (const cluster of clusterMessages(state.messages)) {
     const dayStr = dateDay(cluster.start);
@@ -1139,14 +1231,40 @@ function renderDetail() {
       lastDay = dayStr;
     }
     const group = el("div", "bubble-group");
-    for (const msg of cluster.messages) group.append(bubble(msg, isFreshArrival(msg.id, seenId)));
+    for (const msg of cluster.messages) {
+      const fresh = isFreshArrival(msg.id, seenId);
+      if (fresh) freshCount++;
+      group.append(bubble(msg, fresh));
+    }
     const deviceName = state.devices.find((d) => d.id === cluster.device_id)?.name || "来源设备";
     group.append(el("div", "cluster-stamp", `${formatClock(cluster.end)} · ${deviceName}`));
     inner.append(group);
   }
   state.seenMessageId = state.messages.reduce((high, msg) => Math.max(high, msg.id), seenId);
 
-  detail.append(messages);
+  const jump = el("button", "jump-latest");
+  jump.type = "button";
+  jump.setAttribute("aria-label", "跳到最新短信");
+  jump.innerHTML = ICONS.arrowDownward;
+  jump.append(el("span", "jump-label", "最新"));
+  jump.onclick = () => {
+    messages.scrollTo({ top: messages.scrollHeight, behavior: reducedMotion() ? "auto" : "smooth" });
+  };
+  detail.append(messages, jump);
+  return freshCount;
+}
+
+// Shown when the reader has scrolled away from the newest message. A message that
+// arrives meanwhile changes the label instead of yanking the scroll position.
+function updateJumpButton(announceNew = false) {
+  const stream = $(".messages");
+  const jump = $(".jump-latest");
+  if (!stream || !jump) return;
+  const away = stream.scrollHeight - stream.scrollTop - stream.clientHeight > 160;
+  if (announceNew && away) jump.classList.add("has-new");
+  if (!away) jump.classList.remove("has-new");
+  jump.classList.toggle("visible", away);
+  jump.querySelector(".jump-label").textContent = jump.classList.contains("has-new") ? "新短信" : "最新";
 }
 
 function bubble(msg, fresh) {
@@ -1234,11 +1352,20 @@ function otpCard(msg) {
       validity.textContent = "按短信标注的有效期，可能已过期";
     } else {
       validity.textContent = `有效至 ${formatClock(expires)}`;
-      bar.style.width = `${Math.min(100, (remaining / total) * 100)}%`;
-      requestAnimationFrame(() => {
-        bar.style.transition = `width ${remaining}ms linear`;
-        bar.style.width = "0%";
-      });
+      const share = () => `${Math.max(0, Math.min(100, ((expires - Date.now()) / total) * 100))}%`;
+      bar.style.width = share();
+      if (reducedMotion()) {
+        // No continuous motion: step the bar every few seconds so it still shows the time left.
+        const timer = setInterval(() => {
+          if (!card.isConnected || Date.now() >= expires) clearInterval(timer);
+          else bar.style.width = share();
+        }, 5000);
+      } else {
+        requestAnimationFrame(() => {
+          bar.style.transition = `width ${remaining}ms linear`;
+          bar.style.width = "0%";
+        });
+      }
       setTimeout(() => {
         if (!card.isConnected) return;
         card.classList.add("expired");
@@ -1629,7 +1756,9 @@ function disconnect() {
   state.contacts = {};
   state.ai = null; state.counts = {}; state.group = "all";
   state.sender = state.receiver = state.q = state.sim = state.device = "";
-  state.offset = state.cursor = state.epoch = 0;
+  state.cursor = state.epoch = 0;
+  state.conversationsLoaded = state.conversationsHasMore = state.loadingMore = false;
+  state.renderedDetailKey = "";
   state.epochSeen = false;
   state.inboxDirty = false;
   state.page = "inbox";
@@ -1731,6 +1860,7 @@ if (typeof document !== "undefined") {
   window.addEventListener("popstate", (event) => {
     if (state.page === "settings" && !event.state?.[SETTINGS_HISTORY]) {
       state.page = "inbox";
+      state.returning = true;
       shell();
       return;
     }

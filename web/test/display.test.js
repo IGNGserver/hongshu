@@ -121,3 +121,17 @@ test("theme-color values match the app background tokens in style.css", () => {
   assert.ok(html.includes('content="#F3F3FA" media="(prefers-color-scheme: light)"'));
   assert.ok(html.includes('content="#111318" media="(prefers-color-scheme: dark)"'));
 });
+
+test("a realtime refresh keeps scrolled-in pages without duplicates or gaps", async () => {
+  const { mergeConversationPages, conversationKey } = await import("../app.js");
+  const c = (sender, timestamp) => ({ sender, receiver: "+861", timestamp });
+  const loaded = [c("a", 100), c("b", 90), c("c", 80), c("d", 70)];
+  // Head page not full: it is the whole list, nothing else to keep.
+  assert.deepEqual(mergeConversationPages([c("x", 200), c("a", 100)], loaded, false).map((r) => r.sender), ["x", "a"]);
+  // Full head: "c" moved to the top, so its older copy is dropped; rows below the head's floor are kept.
+  const head = [c("c", 300), c("a", 100)];
+  const merged = mergeConversationPages(head, loaded, true);
+  assert.deepEqual(merged.map((r) => r.sender), ["c", "a", "b", "d"]);
+  assert.equal(new Set(merged.map(conversationKey)).size, merged.length);
+  assert.equal(merged[0].timestamp, 300, "the fresh copy wins");
+});
