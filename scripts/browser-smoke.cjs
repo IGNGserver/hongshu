@@ -101,6 +101,9 @@ async function request(path, token, method = "GET", body) {
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
+    page.on("request", (request) => {
+      if (request.url().includes("/api/conversations?")) console.error("conversations request:", request.url());
+    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(origin);
