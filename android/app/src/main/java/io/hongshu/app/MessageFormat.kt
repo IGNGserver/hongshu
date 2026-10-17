@@ -4,15 +4,15 @@ import java.util.Calendar
 
 private val OtpKeywords =
     Regex(
-        "验证码|校验码|动态码|动态密码|确认码|安全码|认证码|登录码|verification(?: code)?|passcode|one[- ]time(?: password| code)?|\\bcode\\b|\\botp\\b",
+        "验证码|校验码|动态码|动态密码|动态口令|确认码|安全码|认证码|登录码|verification(?: code)?|passcode|one[- ]time(?: password| code)?|\\bcode\\b|\\botp\\b",
         RegexOption.IGNORE_CASE,
     )
-private val OtpCandidate = Regex("[A-Za-z0-9]+")
-private val OtpAfterKeyword = Regex("(?:为|是|为您|is|:|：|\\s|\\(|（|\\)|）|=|-)*", RegexOption.IGNORE_CASE)
-private val OtpBeforeKeyword = Regex("(?:是|为|is|your|的|您|本次|:|：|\\s|\\(|（|\\)|）|=|-)*", RegexOption.IGNORE_CASE)
+private val OtpCandidate = Regex("[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?")
+private val OtpAfterKeyword = Regex("(?:为|是|为您|is|:|：|\\s|\\(|（|\\)|）|\\[|\\]|【|】|=|'|\"|-)*", RegexOption.IGNORE_CASE)
+private val OtpBeforeKeyword = Regex("(?:是|为|is|as|your|for|的|您|本次|账号|账户|[\\u4e00-\\u9fa5A-Za-z0-9]+|:|：|\\s|\\(|（|\\)|）|\\[|\\]|【|】|=|'|\"|-)*", RegexOption.IGNORE_CASE)
 private val NonOtpCode = Regex("discount|coupon|promo|order (?:number|code|id)|tracking (?:number|code)|优惠码|邀请码|取件码", RegexOption.IGNORE_CASE)
-private val StrongOtpKeyword = Regex("验证码|校验码|动态码|动态密码|确认码|安全码|认证码|登录码|verification|passcode|one[- ]time|\\botp\\b", RegexOption.IGNORE_CASE)
-private val OtpAlternative = Regex("^\\s*(?:或者|或|or|and|与|和|、|/)\\s*[A-Za-z0-9]{4,8}(?:[^A-Za-z0-9]|$)", RegexOption.IGNORE_CASE)
+private val StrongOtpKeyword = Regex("验证码|校验码|动态码|动态密码|动态口令|确认码|安全码|认证码|登录码|verification|passcode|one[- ]time|\\botp\\b", RegexOption.IGNORE_CASE)
+private val OtpAlternative = Regex("^\\s*(?:或者|或|or|and|与|和|、|/)\\s*[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?(?:[^A-Za-z0-9]|$)", RegexOption.IGNORE_CASE)
 
 /**
  * The one-time code in a verification SMS, or null. Only messages that say they carry a code
@@ -24,24 +24,25 @@ fun extractOtp(body: String): String? {
     val tokens = OtpCandidate.findAll(body).toList()
     var first = 0
     for (keyword in OtpKeywords.findAll(body)) {
-        while (first < tokens.size && tokens[first].range.last < keyword.range.first - 24) first++
+        while (first < tokens.size && tokens[first].range.last < keyword.range.first - 32) first++
         for (index in first until tokens.size) {
             val token = tokens[index]
-            if (token.range.first > keyword.range.last + 1 + 24) break
+            if (token.range.first > keyword.range.last + 1 + 32) break
             if (token.value.length !in 4..8 || token.value.none { it in '0'..'9' }) continue
             val start = token.range.first
             val end = token.range.last + 1
             val ks = keyword.range.first
             val ke = keyword.range.last + 1
             val adjacent =
-                (start >= ke && start - ke <= 24 && OtpAfterKeyword.matches(body.substring(ke, start))) ||
-                    (end <= ks && ks - end <= 24 && OtpBeforeKeyword.matches(body.substring(end, ks)))
+                (start >= ke && start - ke <= 32 && OtpAfterKeyword.matches(body.substring(ke, start))) ||
+                    (end <= ks && ks - end <= 32 && OtpBeforeKeyword.matches(body.substring(end, ks)))
             if (!adjacent) continue
             val before = body.substring(0, start)
             val after = body.substring(end)
             if (before.endsWith(".") || (after.startsWith(".") && after.getOrNull(1)?.isDigit() == true)) continue
             if (OtpAlternative.containsMatchIn(after.trimStart())) continue
-            if (listOf("元", "年", "月", "-", "/").any { after.trimStart().startsWith(it) }) continue
+            val tail = after.trimStart()
+            if (listOf("元", "年", "月", "/").any { tail.startsWith(it) } || (tail.startsWith("-") && !tail.startsWith("--"))) continue
             candidates += token.value
         }
     }
