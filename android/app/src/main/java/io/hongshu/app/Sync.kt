@@ -341,18 +341,11 @@ object SyncEngine {
                     var uploadFailure: Exception? = null
                     try {
                         if (c.upload && serverUpload) {
-                            val uploadDeadline =
-                                android.os.SystemClock.elapsedRealtime() + 10_000L
                             val registrations = SimRegistrations(repo.api, c)
                             for (sim in store.sims())
                                 registrations.ensure(sim.phone, sim.label, sim.sub)
                             for (batch in 0 until 20) {
                                 if (!c.upload || !c.serverUploadAllowed) break
-                                if (
-                                    batch > 0 &&
-                                        android.os.SystemClock.elapsedRealtime() >= uploadDeadline
-                                )
-                                    break
                                 val candidates = store.uploadCandidates(batch)
                                 val pending =
                                     candidates.take(
