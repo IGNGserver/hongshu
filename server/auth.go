@@ -37,6 +37,8 @@ type app struct {
 	pushStateFailures                 atomic.Int64
 	pushDeliveryFailures              atomic.Int64
 	pushLastSuccess                   atomic.Int64
+	pushSuppressed                    atomic.Int64
+	pushDropped                       atomic.Int64
 	wsCheckInterval                   time.Duration
 }
 type attempt struct {

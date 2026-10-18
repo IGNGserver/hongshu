@@ -14,6 +14,7 @@ import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.concurrent.Executors
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 
 // Opt-in fallback for ROMs (HyperOS "notification SMS", 5G/RCS, free network SMS) that never
@@ -212,14 +213,27 @@ class SmsNotificationListener : NotificationListenerService() {
         val notificationGeneration = config.notificationGeneration
         val messages =
             runCatching { parseSmsNotification(notificationSnapshot(sbn), packages, config.notificationSince) }
-                .getOrDefault(emptyList())
+                .getOrElse {
+                    config.notificationFailure = "通知解析失败"
+                    emptyList()
+                }
         if (messages.isEmpty()) return
         executor.execute {
-            runCatching {
+            try {
                 val resolved = messages.map { it.copy(sender = notificationSender(app, it.sender)) }
                 if (persistNotificationSms(app, resolved, generation,
-                        notificationGeneration = notificationGeneration) > 0)
-                    syncNow(app, manual = true)
+                        notificationGeneration = notificationGeneration) > 0) {
+                    config.notificationFailure = ""
+                    // Await the durable enqueue result: a scheduling failure must be visible
+                    // instead of silently losing the only copy of a notification-only SMS.
+                    try {
+                        runBlocking { syncNow(app, manual = true).await() }
+                    } catch (_: Exception) {
+                        config.notificationFailure = "通知已保存，调度失败，等待周期补传"
+                    }
+                }
+            } catch (_: Exception) {
+                config.notificationFailure = "通知保存失败，请检查本机存储"
             }
         }
     }

@@ -60,12 +60,6 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_batch")
 		return
 	}
-	for _, m := range in.Messages {
-		if !validMessage(m) {
-			fail(w, 400, "invalid_message")
-			return
-		}
-	}
 	tx, e := a.db.BeginTx(r.Context(), nil)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
@@ -77,9 +71,14 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	// Serialize revocation with writes and recheck policy inside the transaction.
+	// Serialize revocation with writes and recheck policy inside the transaction. A failed
+	// policy query is a database fault, not an administrator decision.
 	var active bool
-	if e = tx.QueryRowContext(r.Context(), "SELECT upload AND NOT revoked FROM devices WHERE id=? FOR UPDATE", d.ID).Scan(&active); e != nil || !active {
+	if e = tx.QueryRowContext(r.Context(), "SELECT upload AND NOT revoked FROM devices WHERE id=? FOR UPDATE", d.ID).Scan(&active); e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	if !active {
 		fail(w, 403, "upload_disabled")
 		return
 	}
@@ -92,6 +91,12 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	acks := make([]ack, 0, len(in.Messages))
 	for _, m := range in.Messages {
 		fp := fingerprint(m)
+		// A malformed message is rejected on its own; the valid neighbours in the batch still
+		// commit. Clients already understand a per-item invalid_message ACK.
+		if !validMessage(m) {
+			acks = append(acks, ack{Error: "invalid_message", Fingerprint: fp})
+			continue
+		}
 		// Idempotency must win over the current SIM registry. The original upload may have
 		// committed before a database restore or SIM cleanup removed its registration; a retry
 		// of that exact message still needs a success ACK so the client can clear its outbox.

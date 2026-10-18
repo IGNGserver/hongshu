@@ -326,6 +326,53 @@ abstract class RealtimeCaptureContract {
     }
 
     @Test
+    fun providerRowThatWasEmptyWhenFirstScannedIsRetriedByItsId() {
+        var scans = 0
+        var retrySelection: String? = null
+        fixture(
+            read = true,
+            queryRequest = { selection, _ ->
+                scans++
+                if (scans == 2) retrySelection = selection
+                MatrixCursor(arrayOf("_id", "address", "body", "date", "sub_id")).apply {
+                    if (scans <= 2)
+                        addRow(arrayOf<Any>(1L, "10086", if (scans == 1) "" else "synthetic recovered", 100L, 7))
+                }
+            },
+        ) { context, config, name ->
+            config.historyEnabled = true
+            assertTrue(catchUpInbox(context, name).contains("新增 0 条"))
+            Store(context, name).use {
+                assertEquals(0, it.pendingCount())
+                assertEquals(1L, it.providerWatermark())
+            }
+            assertTrue(catchUpInbox(context, name).contains("新增 1 条"))
+            assertTrue("retry must revisit the incomplete id: $retrySelection", retrySelection!!.contains("_id IN (1)"))
+            Store(context, name).use {
+                assertEquals("synthetic recovered", it.localPending().single().body)
+                // A captured row is no longer retried.
+                assertTrue(it.incompleteProviderIds().isEmpty())
+            }
+        }
+    }
+
+    @Test
+    fun providerHeadRegressionResetsTheScanWatermark() {
+        fixture { context, _, name ->
+            Store(context, name).use { store ->
+                store.captureProvider(50, SmsRecord("+1234567890", "10086", "synthetic", 100, 7), advance = true)
+                assertEquals(50L, store.providerWatermark())
+                store.observeProviderHead(9)
+                assertEquals(0L, store.providerWatermark())
+                store.captureProvider(60, SmsRecord("+1234567890", "10086", "synthetic two", 200, 7), advance = true)
+                assertEquals(60L, store.providerWatermark())
+                store.observeProviderHead(60)
+                assertEquals(60L, store.providerWatermark())
+            }
+        }
+    }
+
+    @Test
     fun recoveryAndBroadcastShareDedupLedgerAfterAck() {
         val timestamp = System.currentTimeMillis() + 1000
         fixture(
@@ -673,7 +720,7 @@ abstract class RealtimeCaptureContract {
                 store.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
             }
             Store(context, name).use { store ->
-                assertEquals(10, store.readableDatabase.version)
+                assertEquals(11, store.readableDatabase.version)
                 assertEquals(0L, store.analysisCursor())
                 assertFalse(store.aiEnabled())
                 assertEquals(50L, store.providerWatermark())

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -237,10 +238,10 @@ func (a *app) unsubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 type claimedPush struct {
-	id, lease int64
-	device    string
-	attempts  int
-	sub       webpush.Subscription
+	id, lease, messageID int64
+	device               string
+	attempts             int
+	sub                  webpush.Subscription
 }
 
 func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, error) {
@@ -251,14 +252,14 @@ func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, 
 	defer tx.Rollback()
 	// Claim immediately before delivery, rather than letting the tail of a
 	// serial batch consume its entire lease while earlier requests run.
-	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 1 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
+	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,j.message_id,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 1 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
 	jobs := []claimedPush{}
 	for rows.Next() {
 		j := claimedPush{lease: now.Add(60 * time.Second).UnixMilli()}
-		if err = rows.Scan(&j.id, &j.device, &j.attempts, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth); err != nil {
+		if err = rows.Scan(&j.id, &j.device, &j.attempts, &j.messageID, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -290,14 +291,36 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	if err != nil || !active || !time.Now().Before(leaseDeadline) {
 		return err
 	}
+	// A message that was already read on any device must not produce a new alert.
+	var read bool
+	if err = a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM messages m LEFT JOIN conversation_reads cr ON cr.sender=m.sender JOIN read_state rs ON rs.id=1 WHERE m.id=? AND (m.id<=rs.global_watermark_id OR m.id<=COALESCE(cr.last_read_message_id,0)))", j.messageID).Scan(&read); err != nil {
+		return err
+	}
+	if read {
+		if _, err = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease); err == nil {
+			a.pushSuppressed.Add(1)
+		}
+		return err
+	}
+	// Retries that exhausted the ceiling are noise, not a deliverable alert.
+	if j.attempts >= 50 {
+		if _, err = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease); err == nil {
+			a.pushDropped.Add(1)
+		}
+		return err
+	}
 	// Even if a DB stall consumed most of the lease, an HTTP request cannot
 	// outlive it. Keep the parent context for the conditional state update.
 	sendCtx, cancel := context.WithDeadline(ctx, leaseDeadline)
 	defer cancel()
 	res, sendErr := webpush.SendNotificationWithContext(sendCtx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
 	status := 0
+	var retryAfter time.Duration
 	if res != nil {
 		status = res.StatusCode
+		if seconds, e := strconv.Atoi(res.Header.Get("Retry-After")); e == nil && seconds > 0 {
+			retryAfter = time.Duration(seconds) * time.Second
+		}
 		res.Body.Close()
 	}
 	if sendErr == nil && status >= 200 && status < 300 {
@@ -309,12 +332,14 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	}
 	a.pushDeliveryFailures.Add(1)
 	if status == 404 || status == 410 {
+		// The subscription is gone for good. Remove every job that would only be retried
+		// through the dead endpoint, then the subscription itself.
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
-		if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease); err != nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE device_id=?", j.device); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", j.device, j.sub.Endpoint, j.sub.Keys.P256dh, j.sub.Keys.Auth); err != nil {
@@ -322,15 +347,17 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 		}
 		return tx.Commit()
 	}
-	shift := j.attempts
-	if shift > 10 {
-		shift = 10
+	if retryAfter <= 0 {
+		shift := j.attempts
+		if shift > 10 {
+			shift = 10
+		}
+		retryAfter = time.Duration(1<<shift) * 30 * time.Second
 	}
-	delay := time.Duration(1<<shift) * 30 * time.Second
-	if delay > 6*time.Hour {
-		delay = 6 * time.Hour
+	if retryAfter > 6*time.Hour {
+		retryAfter = 6 * time.Hour
 	}
-	_, err = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=?,leased_until=0 WHERE id=? AND leased_until=?", time.Now().Add(delay).UnixMilli(), j.id, j.lease)
+	_, err = a.db.ExecContext(ctx, "UPDATE push_jobs SET attempts=LEAST(attempts+1,100),next_at=?,leased_until=0 WHERE id=? AND leased_until=?", time.Now().Add(retryAfter).UnixMilli(), j.id, j.lease)
 	return err
 }
 

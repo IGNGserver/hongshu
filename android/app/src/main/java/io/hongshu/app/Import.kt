@@ -139,6 +139,23 @@ fun catchUpInbox(context: Context, databaseName: String = "hongshu.db"): String 
         }
     }
 
+// A wiped or restored SMS database can reuse low provider ids. Comparing the current head
+// with the scan watermark detects that rewrite without scanning the whole inbox; a provider
+// that keeps its highest id but replaces every row is out of scope and needs an explicit
+// full re-check. Runs on the maintenance worker, not on the per-scan path.
+internal fun verifyProviderRebuild(context: Context, store: Store) {
+    if (maxOf(store.providerWatermark(), store.recoveryWatermark()) <= 0) return
+    val head =
+        try {
+            context.contentResolver
+                .query(Telephony.Sms.Inbox.CONTENT_URI, arrayOf("_id"), null, null, "_id DESC")
+                ?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+        } catch (_: Exception) {
+            null
+        } ?: return
+    store.observeProviderHead(head)
+}
+
 internal fun scanInbox(
     context: Context,
     store: Store,
@@ -155,9 +172,17 @@ internal fun scanInbox(
                 config.recoveryEnabled && config.recoveryGeneration == recoveryGeneration
             else config.historyEnabled && config.historyGeneration == historyGeneration)
     if (!current()) return 0
+    val incomplete = store.incompleteProviderIds()
     // Provider IDs, not SMS dates, order insertion; a late older date remains eligible.
-    // Do not assume provider insertion order follows wall-clock dates.
-    val selection = if (recoverySince != null) "_id>? AND date>=?" else "_id>?"
+    // Do not assume provider insertion order follows wall-clock dates. Incomplete rows are
+    // revisited by id in rotation; the watermark still advances so they cannot block later
+    // complete messages.
+    val retryClause =
+        if (incomplete.isEmpty()) "" else " OR _id IN (${incomplete.joinToString(",")})"
+    val selection =
+        if (recoverySince != null)
+            (if (incomplete.isEmpty()) "_id>? AND date>=?" else "(_id>?$retryClause) AND date>=?")
+        else (if (incomplete.isEmpty()) "_id>?" else "(_id>?$retryClause)")
     val args =
         if (recoverySince != null)
             arrayOf(store.recoveryWatermark().toString(), recoverySince.toString())
@@ -177,14 +202,24 @@ internal fun scanInbox(
             batch.clear()
             true
         }
-    val cursor =
+    val cursor = try {
         context.contentResolver.query(
             Telephony.Sms.Inbox.CONTENT_URI,
-            null,
+            arrayOf("_id", "address", "body", "date", "sub_id"),
             selection,
             args,
             "_id ASC",
-        ) ?: error("SMS provider unavailable")
+        )
+    } catch (_: IllegalArgumentException) {
+        // Some vendor providers do not expose sub_id; keep the source unresolved.
+        context.contentResolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI,
+            arrayOf("_id", "address", "body", "date"),
+            selection,
+            args,
+            "_id ASC",
+        )
+    } ?: error("SMS provider unavailable")
     cursor.use { c ->
         val idIndex = c.getColumnIndexOrThrow("_id")
         val address = c.getColumnIndexOrThrow("address")
@@ -202,6 +237,7 @@ internal fun scanInbox(
                 if (!flush()) break
                 synchronized(identityLock) {
                     if (current()) {
+                        store.rememberIncompleteProvider(c.getLong(idIndex))
                         if (recoverySince != null)
                             store.advanceRecoveryProvider(c.getLong(idIndex))
                         else store.advanceProvider(c.getLong(idIndex))

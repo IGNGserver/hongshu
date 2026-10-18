@@ -23,6 +23,21 @@ object OtpNotificationManager {
     private const val OTP_TIMEOUT_MILLIS = 10 * 60 * 1000L // 10 minutes
 
     /**
+     * Whether a verification-code notification could actually be posted right now. The answer
+     * decides between the dedicated OTP channel and the ordinary summary, so it must be
+     * checked at intent-creation time.
+     */
+    internal fun otpNotificationsAvailable(context: Context): Boolean =
+        androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+            context
+                .getSystemService(NotificationManager::class.java)
+                .getNotificationChannel(CHANNEL_ID)
+                ?.importance != NotificationManager.IMPORTANCE_NONE &&
+            (Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED)
+
+    /**
      * Builds and displays a promoted ongoing notification (or standard high-priority notification on Android <= 15)
      * for verification codes received from other devices.
      */
@@ -34,22 +49,13 @@ object OtpNotificationManager {
         contact: String = "",
         deviceName: String = "",
         epoch: Long = 0,
+        expiresAt: Long = System.currentTimeMillis() + OTP_TIMEOUT_MILLIS,
     ): Boolean {
-        if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
-            return false
+        if (!otpNotificationsAvailable(context)) return false
+        val remaining = expiresAt - System.currentTimeMillis()
+        if (remaining <= 0) return false
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        val channel = manager.getNotificationChannel(CHANNEL_ID)
-        if (channel?.importance == NotificationManager.IMPORTANCE_NONE) return false
-
-        if (
-            Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-        ) {
-            return false
-        }
-
         // Full identity/epoch/message tags avoid both service IDs and folded Long collisions.
         val notificationId = NOTIFICATION_ID
         val tag = notificationTag(context, messageId, epoch)
@@ -104,7 +110,7 @@ object OtpNotificationManager {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setTimeoutAfter(OTP_TIMEOUT_MILLIS)
+            .setTimeoutAfter(remaining.coerceAtMost(OTP_TIMEOUT_MILLIS))
             .addAction(R.drawable.ic_content_copy, "复制", copyPending)
             .addAction(R.drawable.ic_close, "关闭", dismissPending)
 
@@ -137,3 +143,9 @@ object OtpNotificationManager {
         }
     }
 }
+
+// The display deadline for a verification code. A server-declared validity window is honored,
+// but the code never outlives ten minutes from the SMS timestamp: a late sync of an old
+// message must not highlight it as if it just arrived.
+internal fun otpNotificationExpiry(timestamp: Long, expiresAt: Long): Long =
+    minOf(timestamp + 10 * 60 * 1000L, expiresAt.takeIf { it > 0 } ?: Long.MAX_VALUE)
