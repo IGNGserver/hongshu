@@ -52,22 +52,24 @@ internal fun uploadPending(
     },
 ) {
     if (pending.isEmpty() || !enabled()) return
+    val safe = store.prepareUpload(pending)
+    if (safe.isEmpty()) return
     val response =
         try {
-            request(pending)
+            request(safe)
         } catch (e: ApiException) {
             if (e.status != 400 || e.code != "invalid_message") throw e
             // An old hub rejects the whole batch. Isolate the rejected row without
             // discarding valid neighbours, or treating a network/protocol failure as bad SMS.
-            if (pending.size == 1) store.block(pending.single().first, "invalid_message")
+            if (safe.size == 1) store.block(safe.single().first, "invalid_message")
             else {
-                val middle = pending.size / 2
-                uploadPending(api, store, pending.take(middle), enabled, request)
-                uploadPending(api, store, pending.drop(middle), enabled, request)
+                val middle = safe.size / 2
+                uploadPending(api, store, safe.take(middle), enabled, request)
+                uploadPending(api, store, safe.drop(middle), enabled, request)
             }
             return
         }
-    val acks = uploadAcks(pending, response.getJSONArray("acks"))
+    val acks = uploadAcks(safe, response.getJSONArray("acks"))
     store.ack(acks.filter { it.error.isEmpty() }.map { it.key })
     acks.filter { it.error.isNotEmpty() }.forEach { store.block(it.key, it.error) }
 }

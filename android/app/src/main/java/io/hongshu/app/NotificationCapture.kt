@@ -14,6 +14,7 @@ import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.concurrent.Executors
+import org.json.JSONArray
 
 // Opt-in fallback for ROMs (HyperOS "notification SMS", 5G/RCS, free network SMS) that never
 // deliver SMS_RECEIVED nor expose the provider row. Only notifications posted by SMS apps
@@ -40,9 +41,22 @@ internal data class NotificationSnapshot(
     val lines: List<NotificationLine>,
     val postTime: Long,
     val whenTime: Long,
+    val key: String = "",
 )
 
-internal data class SmsNotification(val sender: String, val body: String, val timestamp: Long)
+internal data class SmsNotification(
+    val sender: String,
+    val body: String,
+    val timestamp: Long,
+    val identity: String = "",
+    val uncertain: Boolean = true,
+)
+
+internal data class NotificationCaptureInput(
+    val message: SmsRecord,
+    val identity: String = "",
+    val uncertain: Boolean = false,
+)
 
 private val summaryText =
     Regex("^(\\d+\\s*条(新|未读)?(短信|信息|消息).*|\\d+\\s+(new|unread)\\s+messages?.*)$", RegexOption.IGNORE_CASE)
@@ -54,20 +68,34 @@ internal fun parseSmsNotification(
 ): List<SmsNotification> {
     if (snapshot.packageName !in smsPackages || snapshot.groupSummary || snapshot.ongoing)
         return emptyList()
-    if (snapshot.lines.isNotEmpty())
+    if (snapshot.lines.isNotEmpty()) {
         // MessagingStyle: a null sender is the device owner's own reply.
-        return snapshot.lines.mapNotNull { line ->
+        val occurrences = mutableMapOf<String, Int>()
+        val lines = snapshot.lines.mapNotNull { line ->
             val body = line.text?.trim().orEmpty()
             val sender = line.sender?.trim().orEmpty()
             if (body.isEmpty() || sender.isEmpty() || line.timestamp < since) null
-            else SmsNotification(sender, body, line.timestamp)
+            else Triple(sender, body, line.timestamp)
         }
+        val counts = lines.groupingBy { it }.eachCount()
+        return lines.map { line ->
+            val tuple = JSONArray(listOf(line.first, line.second, line.third)).toString()
+            val occurrence = occurrences.getOrDefault(tuple, 0)
+            occurrences[tuple] = occurrence + 1
+            SmsNotification(
+                line.first, line.second, line.third,
+                sha256(JSONArray(listOf(snapshot.packageName, snapshot.key, "message", tuple, occurrence)).toString()),
+                counts.getValue(line) > 1 || snapshot.key.isEmpty() || line.third <= 0,
+            )
+        }
+    }
     val body = (snapshot.bigText ?: snapshot.text)?.trim().orEmpty()
     val sender = (snapshot.title ?: snapshot.conversationTitle)?.trim().orEmpty()
     val timestamp = if (snapshot.whenTime > 0) snapshot.whenTime else snapshot.postTime
     if (body.isEmpty() || sender.isEmpty() || timestamp < since || summaryText.matches(body))
         return emptyList()
-    return listOf(SmsNotification(sender, body, timestamp))
+    return listOf(SmsNotification(sender, body, timestamp,
+        sha256(JSONArray(listOf(snapshot.packageName, snapshot.key, "plain", sender, body, timestamp)).toString())))
 }
 
 internal fun notificationSnapshot(sbn: StatusBarNotification): NotificationSnapshot {
@@ -87,6 +115,7 @@ internal fun notificationSnapshot(sbn: StatusBarNotification): NotificationSnaps
         },
         sbn.postTime,
         notification.`when`,
+        sbn.key,
     )
 }
 
@@ -136,9 +165,9 @@ internal fun persistNotificationSms(
         )
             return@synchronized 0
         Store(context, databaseName).use { store ->
-            messages.filter { it.timestamp >= config.notificationSince }.count {
-                store.queueNotification(SmsRecord("", it.sender, it.body, it.timestamp, -1))
-            }
+            store.queueNotifications(messages.filter { it.timestamp >= config.notificationSince }.map {
+                NotificationCaptureInput(SmsRecord("", it.sender, it.body, it.timestamp, -1), it.identity, it.uncertain)
+            })
         }
     }
 

@@ -189,6 +189,13 @@ fun LocalPendingPage(host: SettingsHost) {
                     }
                 }
             }
+        if (counts.collisions > 0)
+            settingsItem("group-notification-collision") {
+                PendingGroupCard(
+                    "通知身份碰撞 ${counts.collisions} 条，需处理",
+                    "多个通知观察对应相同上传指纹，中枢不能分别保存。记录已保留；请核实下方接收号码，或明确放弃。普通重试不会解除碰撞。",
+                ) {}
+            }
         settingsItem("sync") {
             Text(
                 "中枢同步：${smsSyncStatus(repo.context, repo)}",
@@ -238,7 +245,7 @@ fun LocalPendingPage(host: SettingsHost) {
                             PendingRecord(
                                 record = record,
                                 state = state,
-                                canAssign = state == PendingState.NEEDS_SIM && sims.isNotEmpty(),
+                                canAssign = state in setOf(PendingState.NEEDS_SIM, PendingState.NOTIFICATION_COLLISION) && sims.isNotEmpty(),
                                 canRetry = state == PendingState.INVALID,
                                 busy = host.busy,
                                 onAssign = { assigning = listOf(record.key) },
@@ -342,6 +349,7 @@ private fun PendingRecord(
                 append(" · 接收号码 ")
                 append(record.receiver.ifEmpty { "待确认" })
                 if (record.historical) append(" · 历史补齐")
+                if (record.notificationUncertain) append(" · 通知身份或跨源关联不确定，已保留")
             },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,

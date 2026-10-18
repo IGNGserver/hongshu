@@ -40,14 +40,17 @@ class NotificationCaptureTest {
             lines,
             t + 500,
             whenTime,
+            "synthetic-conversation",
         )
 
     @Test
     fun onlySmsAppNotificationsAfterConsentAreParsed() {
-        assertEquals(
-            listOf(SmsNotification("10086", "合成验证码 123456", t)),
-            parseSmsNotification(snapshot(), packages, t),
-        )
+        val parsed = parseSmsNotification(snapshot(), packages, t).single()
+        assertEquals("10086", parsed.sender)
+        assertEquals("合成验证码 123456", parsed.body)
+        assertEquals(t, parsed.timestamp)
+        assertTrue(parsed.identity.isNotEmpty())
+        assertTrue(parsed.uncertain)
         assertTrue(
             parseSmsNotification(snapshot(packageName = "com.tencent.mm"), packages, 0).isEmpty()
         )
@@ -73,7 +76,11 @@ class NotificationCaptureTest {
                 packages,
                 t,
             )
-        assertEquals(listOf(SmsNotification("95588", "合成新消息", t + 2)), parsed)
+        assertEquals(1, parsed.size)
+        assertEquals("95588", parsed.single().sender)
+        assertEquals("合成新消息", parsed.single().body)
+        assertEquals(t + 2, parsed.single().timestamp)
+        assertFalse(parsed.single().uncertain)
     }
 
     @Test
@@ -179,10 +186,12 @@ class NotificationCaptureTest {
             assertTrue(s.queue(SmsRecord("+8613800000000", "10086", "合成正文", t, 7), 0))
             assertFalse(s.queueNotification(SmsRecord("", "10086", "合成正文", t + 2_000, -1)))
             assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t, -1)))
-            assertFalse(s.queueNotification(SmsRecord("", "95588", "另一条", t + 5_000, -1)))
+            assertFalse(s.queueNotification(SmsRecord("", "95588", "另一条", t, -1)))
+            // Distinct message times inside the match window must not collapse.
+            assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t + 5_000, -1)))
             // Same text far apart is a genuinely new message.
             assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t + 10 * 60_000, -1)))
-            assertEquals(3, s.pendingCount())
+            assertEquals(4, s.pendingCount())
         }
     }
 

@@ -68,6 +68,8 @@ class MessageAnalysisTest {
                 store.writableDatabase.execSQL("DROP TABLE message_analysis")
                 store.writableDatabase.execSQL("DELETE FROM meta WHERE key IN ('analysis_cursor','ai_enabled','local_rule_cursor')")
                 store.writableDatabase.version = 6
+                store.writableDatabase.execSQL("DROP TABLE notification_receipts")
+                store.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
             }
             Store(context, name).use { store ->
                 assertEquals(1, store.pendingCount())

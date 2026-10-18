@@ -555,6 +555,7 @@ MySQL 验证包括旧数据有界回填、回滚/再升级、分类权限、人�
 - 本机 `adb devices -l` 没有连接设备；真实 SIM、双卡、厂商省电策略与公网 Push 仍未验收。
 - 用户选择本轮先完成代码与 CI；本轮不以模拟器或合成 Push transport 结果替代真机验收。
 - 本地检查使用 `~/.build/hongshu/audit-followup`，开始时本机盘可用 141 GiB；依赖缓存复用本机 scratch。
-- 本地 `:app:testDebugUnitTest` 首轮定向 6 类、74 项通过；独立复核补齐上传指纹碰撞与旧账本重放后，10 类、97 项通过，再补充边界后碰撞测试类 11 项通过（与前轮重叠，不累加计数）。`:app:compileDebugAndroidTestKotlin` 在最终修改后通过，后者仅证明仪器测试代码可编译。
+- 本地 `:app:testDebugUnitTest` 首轮定向 6 类、74 项通过；独立复核补齐上传指纹碰撞与旧账本重放后，10 类、97 项通过，再补充边界后碰撞测试类 11 项通过（与前轮重叠，不累加计数）。`:app:compileDebugAndroidTestKotlin` 在指纹碰撞修正后通过，后者仅证明仪器测试代码可编译。
+- 最后一轮历史关联修正后，通知碰撞、通知身份、通知采集、实时采集四类共 70 项重新通过，无失败或跳过；覆盖已 ACK 的另一来源仍参与竞争，以及重开、同步后碰撞记录保留。
 - 本地 Go `go test -race ./...` 与 `go vet ./...` 通过；没有设置 `TEST_MYSQL_DSN`，MySQL 用例跳过。已读回滚、持续上传期间 AI 领取及查询计划的真实数据库结果以本轮完整 CI 为准。
 - 仓库验证（含 12 项隔离运维测试及凭据模式扫描）、`git diff --check`、gofmt 检查和 `actionlint .github/workflows/ci.yml` 通过。

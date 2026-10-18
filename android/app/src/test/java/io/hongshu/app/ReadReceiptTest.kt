@@ -66,9 +66,11 @@ class ReadReceiptTest {
             s.markRead("10086", 1)
             s.writableDatabase.execSQL("DROP TABLE read_outbox")
             s.writableDatabase.version = 8
+            s.writableDatabase.execSQL("DROP TABLE notification_receipts")
+            s.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
         }
         Store(context, name).use { s ->
-            assertEquals(9, s.readableDatabase.version)
+            assertEquals(10, s.readableDatabase.version)
             assertEquals(1, s.unreadCounts()["10086"])
             assertTrue(s.pendingReads().isEmpty())
             assertTrue(s.markRead("10086", 2))
