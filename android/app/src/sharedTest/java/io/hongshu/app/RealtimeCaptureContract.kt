@@ -720,7 +720,7 @@ abstract class RealtimeCaptureContract {
                 store.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
             }
             Store(context, name).use { store ->
-                assertEquals(12, store.readableDatabase.version)
+                assertEquals(13, store.readableDatabase.version)
                 assertEquals(0L, store.analysisCursor())
                 assertFalse(store.aiEnabled())
                 assertEquals(50L, store.providerWatermark())

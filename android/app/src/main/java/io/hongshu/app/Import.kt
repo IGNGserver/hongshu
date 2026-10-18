@@ -193,12 +193,15 @@ internal fun scanInbox(
     fun flush(): Boolean =
         synchronized(identityLock) {
             if (!current()) return@synchronized false
-            count +=
+            val added =
                 store.captureProviders(
                     batch,
                     recoverySince == null,
                     recovery = recoverySince != null,
                 )
+            store.recordCaptureEvent(
+                if (recoverySince != null) CaptureSource.RECOVERY else CaptureSource.HISTORY, "added", added)
+            count += added
             batch.clear()
             true
         }

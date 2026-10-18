@@ -618,6 +618,10 @@ private fun DiagnosticsPage(host: SettingsHost) {
         produceState<String?>(null, host.refresh) {
             value = withContext(Dispatchers.IO) { vendorSmsStatus(activity) }
         }
+    val events by
+        produceState(emptyList<CaptureEvent>(), host.refresh) {
+            value = withContext(Dispatchers.IO) { host.repo.store.captureEvents() }
+        }
     val capture =
         buildList {
             add("实时接收" to realtimeSmsStatus(activity, diagnostics))
@@ -653,6 +657,16 @@ private fun DiagnosticsPage(host: SettingsHost) {
                 },
             )
         }
+        settingsGroup(
+            "events",
+            "采集事件（最近 30 条，不含短信内容）",
+            if (events.isEmpty())
+                listOf(SettingsRow("events-empty") { SettingsItem(title = "暂无记录", summary = "收到短信或短信通知后显示各来源的处理结果") })
+            else
+                events.mapIndexed { index, event ->
+                    SettingsRow("event-$index") { SettingsItem(title = captureEventLabel(event), summary = null) }
+                },
+        )
         settingsItem("copy") {
             FilledTonalButton(
                 onClick = {
@@ -662,6 +676,8 @@ private fun DiagnosticsPage(host: SettingsHost) {
                             (capture + sync + background).forEach { (label, text) ->
                                 appendLine("$label：$text")
                             }
+                            if (events.isNotEmpty()) appendLine("采集事件：")
+                            events.forEach { appendLine("  ${captureEventLabel(it)}") }
                         }
                     activity
                         .getSystemService(ClipboardManager::class.java)

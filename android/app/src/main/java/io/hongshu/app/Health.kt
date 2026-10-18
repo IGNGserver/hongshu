@@ -51,6 +51,34 @@ fun smsPermissionStatus(context: Context): String {
 fun vendorSmsStatus(context: Context): String? =
     if (!isXiaomiDevice()) null else xiaomiSmsStatus(xiaomiRomName(), xiaomiSmsAccess(context))
 
+// One content-free line per capture event, for the diagnostics page and copied report.
+fun captureEventLabel(event: CaptureEvent): String {
+    val source =
+        when (event.source) {
+            CaptureSource.BROADCAST -> "系统广播"
+            CaptureSource.NOTIFICATION -> "短信通知"
+            CaptureSource.RECOVERY -> "漏收检查"
+            CaptureSource.HISTORY -> "历史补齐"
+            else -> event.source
+        }
+    val times = if (event.count > 1) " ×${event.count}" else ""
+    val outcome =
+        when (event.outcome) {
+            "saved" -> "已保存$times"
+            "duplicate" -> "重复，已忽略$times"
+            "ignored" -> "系统或服务通知，已忽略$times"
+            "aggregate" -> "多条折叠的汇总通知，已请求补读收件箱$times"
+            "queued" -> "暂存 ${event.count} 条，等待与收件箱核对"
+            "paired_inbox" -> "已与收件箱记录关联$times"
+            "paired_broadcast" -> "已与系统广播关联$times"
+            "paired_late" -> "补读后关联 ${event.count} 条"
+            "uploaded_unpaired" -> "${event.count} 条未找到对应短信，按通知内容上传"
+            "added" -> "从收件箱新增 ${event.count} 条"
+            else -> event.outcome + times
+        }
+    return "${formatTimestamp(event.at)} · $source · $outcome"
+}
+
 fun notificationCaptureStatus(context: Context): String {
     val c = Config(context)
     if (!c.upload || !c.notificationCapture) return "已关闭 · 系统不投递短信广播且补漏读不到时可开启"
