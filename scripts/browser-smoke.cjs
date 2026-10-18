@@ -166,11 +166,24 @@ async function request(path, token, method = "GET", body) {
     assert.ok(await page.getByRole("listbox", { name: "筛选" }).isVisible());
     assert.ok(await page.getByRole("option", { name: "Synthetic SIM 2" }).isVisible());
     await page.keyboard.press("Escape");
+    const revocable = await request("/login", null, "POST", {
+      password,
+      name: "Revocation fixture",
+      kind: "web",
+    });
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
     await page.getByText("Synthetic Phone", { exact: true }).waitFor();
-    assert.equal(await page.getByText("Web browser", { exact: true }).count(), 0);
-    assert.equal(await page.locator(".device-card button").count(), 0);
+    assert.equal(await page.getByText("Web browser", { exact: true }).count(), 1, "administrator can see the current browser identity");
+    assert.equal(await page.locator(".device-card button").count(), 3, "administrator can revoke Android and Web identities");
+    const revocableCard = page.locator(".device-card").filter({hasText: "Revocation fixture"});
+    await revocableCard.getByRole("button", {name: "撤销设备", exact: true}).click();
+    await revocableCard.getByText("已撤销", {exact: true}).waitFor();
+    const revokedSession = await fetch(origin + "/api/me", {
+      headers: {Authorization: "Bearer " + revocable.token},
+    });
+    assert.equal(revokedSession.status, 401, "revoked browser credentials must stop authorizing requests");
+    assert.equal(await revocableCard.getByRole("button", {name: "撤销设备", exact: true}).count(), 0, "revoked device no longer offers a revoke action");
     await page.getByRole("switch", { name: "浏览器通知", exact: true }).waitFor();
     await page.getByText("通知已关闭", { exact: true }).waitFor();
     assert.equal(await page.getByText("中枢名称", { exact: true }).count(), 0);
