@@ -93,6 +93,11 @@ private fun syncRequest(urgent: Boolean, delayMillis: Long = 0): OneTimeWorkRequ
         }
         .build()
 
+// Every "an SMS may have arrived" signal (broadcast, inbox change, SMS app notification) funnels
+// into one coalesced capture pass: inbox read, notification pairing, then upload. No source
+// schedules its own work.
+internal fun requestCapture(context: Context): Deferred<Unit> = syncNow(context, manual = true)
+
 fun syncNow(context: Context, manual: Boolean = false): Deferred<Unit> {
     val app = context.applicationContext
     return syncSchedulingScope.async<Unit> {

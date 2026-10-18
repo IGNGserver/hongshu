@@ -318,7 +318,7 @@ class SmsNotificationListener : NotificationListenerService() {
                     // Await the durable enqueue result: a scheduling failure must be visible
                     // instead of silently losing the only copy of a notification-only SMS.
                     try {
-                        runBlocking { syncNow(app, manual = true).await() }
+                        runBlocking { requestCapture(app).await() }
                     } catch (_: Exception) {
                         config.notificationFailure = "通知已保存，调度失败，等待周期补传"
                     }
@@ -331,7 +331,7 @@ class SmsNotificationListener : NotificationListenerService() {
 
     private fun requestInboxRead(app: Context) {
         try {
-            runBlocking { syncNow(app, manual = true).await() }
+            runBlocking { requestCapture(app).await() }
         } catch (_: Exception) {
             Config(app).notificationFailure = "收件箱补读调度失败，等待周期补读"
         }

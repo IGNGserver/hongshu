@@ -658,11 +658,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val key = if (providerId == null) broadcastKey else "provider:$providerId"
         db.beginTransaction()
         try {
-            if (advance && providerId != null)
-                db.execSQL(
-                    "UPDATE meta SET value=MAX(value,?) WHERE key='provider_id'",
-                    arrayOf(providerId),
-                )
+            if (advance && providerId != null) advanceProvider(providerId)
             // The row is complete now: stop retrying it, whatever the merge outcome is.
             if (providerId != null) db.delete("incomplete_provider", "id=?", arrayOf(providerId.toString()))
             val existing =
@@ -1637,11 +1633,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         )
     }
 
+    // History visits every provider row up to its watermark (incomplete ones are remembered in
+    // the shared retry list), so new-SMS recovery never needs to read those rows again: the two
+    // forward cursors converge instead of scanning the same inbox twice. Recovery's own cursor
+    // never moves history's, because recovery skips rows dated before its consent.
     fun advanceProvider(id: Long) {
         writableDatabase.execSQL(
             "UPDATE meta SET value=MAX(value,?) WHERE key='provider_id'",
             arrayOf(id),
         )
+        advanceRecoveryProvider(id)
     }
 
     fun advanceInboxWatermark(date: Long, id: Long) {
