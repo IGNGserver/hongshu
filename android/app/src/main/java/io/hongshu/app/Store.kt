@@ -45,7 +45,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 11), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 12), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -141,6 +141,38 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 9) createReadOutbox(db)
         if (oldVersion < 10) createNotificationReceipts(db)
         if (oldVersion < 11) createReliabilityExtras(db)
+        if (oldVersion < 12) purgeNotificationNoise(db)
+    }
+
+    // v12: before service placeholders and "[N条]" summaries were filtered, the notification
+    // fallback queued them as SMS. They never were a single message, and nothing but the
+    // notification ever produced them: drop the unsent, unpaired rows and their receipts.
+    internal fun purgeNotificationNoise(db: SQLiteDatabase): Int {
+        val keys =
+            db.rawQuery(
+                    "SELECT c.key,c.sender,c.body FROM captures c JOIN outbox o ON o.key=c.key WHERE c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL",
+                    null,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            if (notificationNoise(c.getString(1), c.getString(2))) add(c.getString(0))
+                    }
+                }
+        if (keys.isEmpty()) return 0
+        db.beginTransaction()
+        try {
+            for (key in keys) {
+                db.delete("outbox", "key=?", arrayOf(key))
+                db.delete("captures", "key=?", arrayOf(key))
+                db.delete("notification_receipts", "capture_key=?", arrayOf(key))
+                db.delete("upload_fingerprints", "capture_key=?", arrayOf(key))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return keys.size
     }
 
     // v11: durable verification-code intents and a bounded retry list for provider rows that
