@@ -12,13 +12,21 @@ import org.json.JSONObject
 // Notification post time and SMS provider/PDU time differ by seconds, rarely minutes.
 internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
 
-// A notification titled with a contact name waits this long for the broadcast or inbox copy to
-// supply the number; otherwise the hub would file it as a separate, name-keyed conversation.
+// A notification is only evidence that an SMS arrived. Until the broadcast or the inbox copy
+// pairs with it, its row waits: the inbox read it triggers normally lands within seconds and
+// supplies the exact sender, SIM and text. A numeric title waits briefly (verification codes);
+// a contact or brand title waits longer, since uploading it would file a name-keyed thread.
+internal const val NOTIFICATION_NUMBER_HOLD = 30_000L
 internal const val NOTIFICATION_NAME_HOLD = 150_000L
 
-// SQL predicate (one `?`: the hold boundary) for notification rows still waiting for a number.
+private const val UNPAIRED_NOTIFICATION =
+    "EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL)"
+private const val NOTIFICATION_RELEASE_AT =
+    "(timestamp+CASE WHEN sender GLOB '*[^0-9+]*' THEN $NOTIFICATION_NAME_HOLD ELSE $NOTIFICATION_NUMBER_HOLD END)"
+
+// SQL predicate (one `?`: now) for notification rows still waiting for their SMS counterpart.
 private const val HELD_NOTIFICATION =
-    "timestamp>CAST(? AS INTEGER) AND sender GLOB '*[^0-9+]*' AND EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='notification')"
+    "$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER)"
 
 data class CachedMessage(
     val id: Long,
@@ -1399,7 +1407,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             readableDatabase
                 .rawQuery(
                     "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible)$lane AND NOT ($HELD_NOTIFICATION) AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
-                    (subs + listOf((now - NOTIFICATION_NAME_HOLD).toString(), lastTime.toString(), lastKey))
+                    (subs + listOf(now.toString(), lastTime.toString(), lastKey))
                         .toTypedArray(),
                 )
                 .use { c ->
@@ -1488,16 +1496,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         } finally { db.endTransaction() }
     }
 
-    // When a held notification row becomes uploadable, or null when none is held.
+    // Delay until the next held notification row is released, or null when none is held.
     fun nextNotificationRelease(now: Long = System.currentTimeMillis()): Long? =
         readableDatabase
             .rawQuery(
-                "SELECT MAX(timestamp) FROM outbox WHERE blocked='' AND $HELD_NOTIFICATION",
-                arrayOf((now - NOTIFICATION_NAME_HOLD).toString()),
+                "SELECT MIN($NOTIFICATION_RELEASE_AT) FROM outbox WHERE blocked='' AND $HELD_NOTIFICATION",
+                arrayOf(now.toString()),
             )
             .use { c ->
                 if (!c.moveToFirst() || c.isNull(0)) null
-                else (c.getLong(0) + NOTIFICATION_NAME_HOLD - now).coerceAtLeast(1000)
+                else (c.getLong(0) - now).coerceAtLeast(1000)
             }
 
     fun uploadCandidates(batch: Int): List<Pair<String, SmsRecord>> {

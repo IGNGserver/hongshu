@@ -29,6 +29,9 @@ internal val KNOWN_SMS_PACKAGES =
         "com.samsung.android.messaging",
     )
 
+// The re-read runs this long before a held row is released, so the release finds it paired.
+internal const val NOTIFICATION_REREAD_MARGIN = 8_000L
+
 internal data class NotificationLine(val sender: String?, val text: String?, val timestamp: Long)
 
 internal data class NotificationSnapshot(
@@ -233,6 +236,21 @@ internal fun persistNotificationSms(
         }
     }
 
+// A notification proves an SMS arrived but cannot carry each message: HyperOS folds several into
+// "[3条]…", and none has a SIM. The inbox read is what fetches them, so the fallback turns on
+// new-SMS recovery once per consent. Needs READ_SMS; callers check it.
+internal fun linkRecoveryToNotificationCapture(context: Context): Boolean =
+    synchronized(identityLock) {
+        val config = Config(context)
+        if (!config.upload || !config.notificationCapture || config.recoveryLinked ||
+            !hasPermission(context, Manifest.permission.READ_SMS))
+            return@synchronized false
+        config.recoveryLinked = true
+        if (config.recoveryEnabled) return@synchronized false
+        config.recoveryEnabled = true
+        true
+    }
+
 internal fun notificationListenerEnabled(context: Context): Boolean =
     context.packageName in NotificationManagerCompat.getEnabledListenerPackages(context)
 
@@ -272,12 +290,21 @@ class SmsNotificationListener : NotificationListenerService() {
         config.noteReceivedNotification(System.currentTimeMillis())
         val generation = config.captureGeneration
         val notificationGeneration = config.notificationGeneration
-        val messages =
-            runCatching { parseSmsNotification(notificationSnapshot(sbn), packages, config.notificationSince) }
-                .getOrElse {
-                    config.notificationFailure = "通知解析失败"
-                    emptyList()
-                }
+        val snapshot =
+            runCatching { notificationSnapshot(sbn) }.getOrElse {
+                config.notificationFailure = "通知解析失败"
+                return
+            }
+        when (classifySmsNotification(snapshot, packages)) {
+            NotificationClass.IGNORED -> return
+            // A summary names no single message: read them from the inbox instead.
+            NotificationClass.AGGREGATE -> {
+                if (snapshot.postTime >= config.notificationSince) executor.execute { requestInboxRead(app) }
+                return
+            }
+            NotificationClass.MESSAGES -> Unit
+        }
+        val messages = parseSmsNotification(snapshot, packages, config.notificationSince)
         if (messages.isEmpty()) return
         executor.execute {
             try {
@@ -285,6 +312,9 @@ class SmsNotificationListener : NotificationListenerService() {
                 if (persistNotificationSms(app, resolved, generation,
                         notificationGeneration = notificationGeneration) > 0) {
                     config.notificationFailure = ""
+                    val hold = if (resolved.all { confirmedNumber(normalizeSimNumber(it.sender)) })
+                        NOTIFICATION_NUMBER_HOLD else NOTIFICATION_NAME_HOLD
+                    runCatching { scheduleNotificationReread(app, hold - NOTIFICATION_REREAD_MARGIN) }
                     // Await the durable enqueue result: a scheduling failure must be visible
                     // instead of silently losing the only copy of a notification-only SMS.
                     try {
@@ -296,6 +326,14 @@ class SmsNotificationListener : NotificationListenerService() {
             } catch (_: Exception) {
                 config.notificationFailure = "通知保存失败，请检查本机存储"
             }
+        }
+    }
+
+    private fun requestInboxRead(app: Context) {
+        try {
+            runBlocking { syncNow(app, manual = true).await() }
+        } catch (_: Exception) {
+            Config(app).notificationFailure = "收件箱补读调度失败，等待周期补读"
         }
     }
 }

@@ -331,4 +331,27 @@ class NotificationCaptureTest {
             assertEquals(0, s.purgeNotificationNoise(s.writableDatabase))
         }
     }
+
+    @Test
+    fun notificationFallbackLinksRecoveryOncePerConsent() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val config = Config(context)
+        config.upload = true
+        config.notificationCapture = true
+        // The inbox read needs READ_SMS; without it nothing is linked or recorded.
+        assertFalse(linkRecoveryToNotificationCapture(context))
+        assertFalse(config.recoveryEnabled)
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.READ_SMS)
+        assertTrue(linkRecoveryToNotificationCapture(context))
+        assertTrue(config.recoveryEnabled)
+        // A later explicit "off" by the user stands.
+        config.recoveryEnabled = false
+        assertFalse(linkRecoveryToNotificationCapture(context))
+        assertFalse(config.recoveryEnabled)
+        // A new consent links again.
+        config.notificationCapture = false
+        config.notificationCapture = true
+        assertTrue(linkRecoveryToNotificationCapture(context))
+        assertTrue(config.recoveryEnabled)
+    }
 }

@@ -154,8 +154,17 @@ class Config(context: Context) {
                             "notification_since",
                             if (value) System.currentTimeMillis() else 0,
                         )
+                        .putBoolean("recovery_linked", false)
                         .commit()
             }
+        }
+
+    // Set once the notification fallback has switched on new-SMS recovery for this consent, so
+    // the user's later explicit "off" is not overridden. Cleared whenever the fallback is switched.
+    var recoveryLinked: Boolean
+        get() = prefs.getBoolean("recovery_linked", false)
+        set(value) {
+            prefs.edit().putBoolean("recovery_linked", value).commit()
         }
 
     val notificationSince: Long
