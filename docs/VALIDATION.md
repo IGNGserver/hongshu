@@ -23,10 +23,12 @@
 | scratch `~/.build/短信同步系统/pipeline-reliability/`：`go test -race -count=1 ./...`、`go vet ./...`、`go build -trimpath` | 通过；未提供 `TEST_MYSQL_DSN`，真实 MySQL 集成测试（新增逐条 ACK、Push 已读抑制/Retry-After/终态、404/410 全量清理用例）skip，由 PR CI 的隔离 MySQL 执行 |
 | `node --check web/app.js`、`node --test web/test/*.test.js` | 通过；69 项测试 0 失败（本轮未改 Web 代码） |
 | scratch Android：`./gradlew --no-daemon :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug` | 通过，2m10s；223 项 JVM/Robolectric 测试 0 失败、11 项截图测试按设计跳过（新增 `OtpIntentTest` 6 项、provider 补读/重建合同 2 项），lint 0 错误，debug APK 生成 |
+| PR [#66](https://github.com/IGNGserver/hongshu/pull/66) 的 [Hongshu validation 39107521482](https://github.com/IGNGserver/hongshu/actions/runs/39107521482) | 全绿：`verify` 7s、`web` 5s、`server` 2m43s（隔离 MySQL 8.4.5 执行全部真库集成测试，含新增逐条 ACK、Push 已读抑制/Retry-After/终态、404/410 全量清理）、`android (28)` 8m52s、`android (33)` 8m19s、`android (35)` 8m38s（各含 JVM 单测、lint、APK 与模拟器 instrumentation） |
+| 首轮 CI 回归与修复 | API 35 首轮失败 `NetworkTest.largeHistoryQueue...`（expected 5, got 205）：我加的 10 秒上传截止在慢速模拟器上把单轮 20 批截成 ~18 批。已移除该截止（保留 20 批上限与“上传失败不阻断接收”隔离），重跑全绿；该失败未通过放宽断言或跳过测试掩盖 |
 | 真机、API 36 胶囊、公网 Push、真实 MySQL 恢复演练 | 未执行：本机无 adb 设备、无 MySQL/Docker；由 PR CI 与后续目标环境验收承担，不以本机结果代替 |
 
 边界：本机无 `TEST_MYSQL_DSN` 时 Go 集成测试跳过，不能记作真库验证通过；意图、补读与 Push 新用例均为合成数据合同，
-不等于厂商 ROM 行为或真机验收。
+不等于厂商 ROM 行为或真机验收。真机、API 36 胶囊、公网 Push 与真实恢复演练仍未执行，需在目标环境单独验收。
 
 # 2026-10-17 Android 验证码实时胶囊 / 灵动岛通知
 
