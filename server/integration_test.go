@@ -271,6 +271,11 @@ func TestIntegrationWebSocketRevocation(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var initial map[string]any
+	if e = conn.ReadJSON(&initial); e != nil || initial["cursor"] != float64(0) {
+		t.Fatal("initial socket state missing", e, initial)
+	}
 	// Positive control: the still-authorized socket must receive a real change.
 	if _, e = db.Exec("INSERT INTO messages VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic WS fixture", time.Now().UnixMilli(), 1); e != nil {
 		t.Fatal(e)
@@ -280,7 +285,7 @@ func TestIntegrationWebSocketRevocation(t *testing.T) {
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var change map[string]any
-	if e = conn.ReadJSON(&change); e != nil || change["type"] != "changed" {
+	if e = conn.ReadJSON(&change); e != nil || change["type"] != "changed" || change["cursor"] != float64(1) {
 		t.Fatal("unrevoked positive control failed", e)
 	}
 	if _, e = db.Exec("UPDATE devices SET revoked=TRUE WHERE id=?", d.ID); e != nil {

@@ -103,13 +103,15 @@ class BackgroundTest {
                                     }
                                 } else {
                                     val body =
-                                        when (path) {
+                                        (if (path.startsWith("/api/read-state?"))
+                                            """{"items":[],"global_watermark_id":0,"revision":0,"head":0,"epoch":1,"more":false,"next":""}"""
+                                        else when (path) {
                                             "/api/me" ->
                                                 """{"cursor":0,"epoch":1,"device":{"notify":false,"upload":false,"created_at":1}}"""
                                             "/api/contacts" -> """{"contacts":{}}"""
                                             else ->
                                                 """{"messages":[],"cursor":0,"more":false,"epoch":1}"""
-                                        }.toByteArray()
+                                        }).toByteArray()
                                     output.write(
                                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
                                             .toByteArray()

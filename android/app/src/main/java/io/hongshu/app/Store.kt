@@ -37,8 +37,15 @@ data class CachedMessage(
 
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
 
+internal data class ConversationSnapshot(
+    val deviceId: String,
+    val epoch: Long,
+    val sender: String,
+    val messages: List<CachedMessage>,
+)
+
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 8), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 9), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -101,6 +108,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createCaptureDiagnostics(db)
         createMessageAnalysis(db)
         createReadState(db)
+        createReadOutbox(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -128,6 +136,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 6) createCaptureDiagnostics(db)
         if (oldVersion < 7) createMessageAnalysis(db)
         if (oldVersion < 8) createReadState(db)
+        if (oldVersion < 9) createReadOutbox(db)
+    }
+
+    private fun createReadOutbox(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS read_outbox (sender TEXT PRIMARY KEY, message_id INTEGER NOT NULL)")
     }
 
     private fun createReadState(db: SQLiteDatabase) {
@@ -173,43 +186,76 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
-    fun markRead(sender: String = "", messageId: Long = 0L, all: Boolean = false) {
+    fun markRead(sender: String = "", messageId: Long = 0L, all: Boolean = false): Boolean {
         val db = writableDatabase
+        var changed = false
         db.beginTransaction()
         try {
             if (all) {
-                db.execSQL(
-                    "UPDATE meta SET value=(SELECT COALESCE(MAX(id),0) FROM inbox) WHERE key='global_watermark_id'"
-                )
-            } else if (sender.isNotEmpty()) {
-                val targetId = if (messageId > 0) messageId else {
-                    var maxId = 0L
-                    db.rawQuery("SELECT COALESCE(MAX(id),0) FROM inbox WHERE sender=?", arrayOf(sender)).use {
-                        if (it.moveToFirst()) maxId = it.getLong(0)
-                    }
-                    maxId
+                val head = db.rawQuery("SELECT COALESCE(MAX(id),0) FROM inbox", null).use {
+                    it.moveToFirst(); it.getLong(0)
                 }
-                if (targetId > 0) {
-                    db.execSQL(
-                        "INSERT OR REPLACE INTO conversation_reads (sender, last_read_message_id) VALUES (?, MAX(COALESCE((SELECT last_read_message_id FROM conversation_reads WHERE sender=?), 0), ?))",
-                        arrayOf<Any>(sender, sender, targetId)
-                    )
+                if (head > meta("global_watermark_id")) {
+                    db.execSQL("UPDATE meta SET value=? WHERE key='global_watermark_id'", arrayOf(head))
+                    changed = true
+                }
+            } else if (sender.isNotEmpty() && messageId > 0) {
+                // Only an actual message loaded for this sender may move its read watermark.
+                val exists = db.rawQuery("SELECT 1 FROM inbox WHERE sender=? AND id=?",
+                    arrayOf(sender, messageId.toString())).use { it.moveToFirst() }
+                if (exists) {
+                    val previous = db.rawQuery("SELECT last_read_message_id FROM conversation_reads WHERE sender=?",
+                        arrayOf(sender)).use { if (it.moveToFirst()) it.getLong(0) else 0L }
+                    if (messageId > maxOf(previous, meta("global_watermark_id"))) {
+                        db.execSQL("INSERT OR REPLACE INTO conversation_reads VALUES (?,?)", arrayOf<Any>(sender, messageId))
+                        db.execSQL("INSERT OR REPLACE INTO read_outbox VALUES (?,?)", arrayOf<Any>(sender, messageId))
+                        changed = true
+                    }
                 }
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        changes.value++
+        if (changed) changes.value++
+        return changed
+    }
+
+    // Lock order is identityLock -> SQLite. Unlike identityMutex this fence is never held
+    // over HTTP. The transaction gives all the local queries one consistent database view.
+    internal fun conversationSnapshot(sender: String, limit: Int, group: String): ConversationSnapshot? =
+        synchronized(identityLock) {
+            if (config.identityChanging) return@synchronized null
+            val db = readableDatabase
+            db.beginTransactionNonExclusive()
+            try {
+                val result = ConversationSnapshot(config.deviceId, epoch(), sender,
+                    messagesWithLocal(sender, "", limit = limit, group = group))
+                db.setTransactionSuccessful()
+                result
+            } finally { db.endTransaction() }
+        }
+
+    internal fun markDisplayedRead(snapshot: ConversationSnapshot): Boolean = synchronized(identityLock) {
+        if (config.identityChanging || config.deviceId != snapshot.deviceId || epoch() != snapshot.epoch)
+            return@synchronized false
+        val shownId = snapshot.messages.filterNot { it.local }.maxOfOrNull { it.id } ?: 0L
+        markRead(snapshot.sender, shownId)
+    }
+
+    fun pendingReads(): List<Pair<String, Long>> = readableDatabase
+        .rawQuery("SELECT sender,message_id FROM read_outbox ORDER BY sender LIMIT 100", null)
+        .use { c -> buildList { while (c.moveToNext()) add(c.getString(0) to c.getLong(1)) } }
+
+    fun acknowledgeRead(sender: String, messageId: Long) {
+        writableDatabase.delete("read_outbox", "sender=? AND message_id<=?", arrayOf(sender, messageId.toString()))
     }
 
     fun updateGlobalWatermark(watermark: Long) {
         if (watermark <= 0) return
-        writableDatabase.execSQL(
-            "UPDATE meta SET value=MAX(value, ?) WHERE key='global_watermark_id'",
-            arrayOf(watermark)
-        )
-        changes.value++
+        val changed = writableDatabase.update("meta", ContentValues().apply { put("value", watermark) },
+            "key='global_watermark_id' AND value<?", arrayOf(watermark.toString()))
+        if (changed > 0) changes.value++
     }
 
     fun unreadCounts(): Map<String, Int> {
@@ -1470,7 +1516,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         self: String = "",
         pairedAt: Long = 0,
         pageEpoch: Long? = null,
-    ): List<CachedMessage> {
+    ): List<CachedMessage> = synchronized(identityLock) {
         val db = writableDatabase
         val added = mutableListOf<CachedMessage>()
         val resolveReceiver = self.takeIf { it.isNotEmpty() }?.let {
@@ -1545,7 +1591,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.endTransaction()
         }
         changes.value++
-        return added
+        added
     }
 
     fun receivers(): List<String> =
@@ -1733,13 +1779,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun resetForNewIdentity(
         connectedAt: Long = System.currentTimeMillis(),
         clearCaptures: Boolean = false,
-    ) {
+    ) = synchronized(identityLock) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
             db.delete("message_analysis", null, null)
             db.delete("contact_snapshot", null, null)
+            db.delete("conversation_reads", null, null)
+            db.delete("read_outbox", null, null)
             db.execSQL("UPDATE meta SET value=0")
             db.execSQL("UPDATE meta SET value=-1 WHERE key='initial_head'")
             db.execSQL("UPDATE meta SET value=? WHERE key='capture_since'", arrayOf(connectedAt))
@@ -1754,12 +1802,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     // Drop the synced inbox and its cursor. Outbox, SIM mappings and the local
     // capture watermark stay: a database rewind must not discard unsent SMS or
     // start importing history from before this phone was paired.
-    fun resetSyncedCache(epoch: Long) {
+    fun resetSyncedCache(epoch: Long) = synchronized(identityLock) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
             db.delete("message_analysis", null, null)
+            db.delete("conversation_reads", null, null)
+            db.delete("read_outbox", null, null)
+            db.execSQL("UPDATE meta SET value=0 WHERE key='global_watermark_id'")
+            db.execSQL("UPDATE meta SET value=0 WHERE key='read_state_seen'")
             db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor','ai_enabled')")
             db.execSQL("UPDATE meta SET value=0 WHERE key='cursor'")
             db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
@@ -1773,11 +1825,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
-    fun rememberEpoch(epoch: Long) {
-        if (epochSeen()) return
+    fun rememberEpoch(epoch: Long) = synchronized(identityLock) {
+        if (epochSeen()) return@synchronized
         val db = writableDatabase
-        db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
-        db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
+            db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
 
     fun applyContacts(names: JSONObject) {

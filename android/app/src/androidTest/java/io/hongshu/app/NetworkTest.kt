@@ -17,6 +17,9 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NetworkTest {
+    private fun emptyReadState() = JSONObject().put("epoch", 1).put("revision", 0).put("head", 0)
+        .put("global_watermark_id", 0).put("items", JSONArray()).put("more", false).put("next", "")
+
     private class Hub(private val handler: (String, JSONObject) -> Pair<Int, JSONObject>) :
         AutoCloseable {
         val socket = ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
@@ -154,6 +157,46 @@ class NetworkTest {
         }
 
     @Test
+    fun malformedSuccessfulLoginCannotPublishNewOriginOrEraseOldCache() = withConfig { context, config ->
+        val name = "login-atomic-${java.util.UUID.randomUUID()}.db"
+        try {
+            config.url = "https://old.example"
+            config.token = "a".repeat(64)
+            config.deviceId = "old-device"
+            config.deviceName = "old phone"
+            Repository(context, name).apply {
+                try {
+                    store.applySync(JSONArray().put(JSONObject().put("id", 1).put("device_id", "remote")
+                        .put("receiver", "+1234567890").put("sender", "10086").put("body", "synthetic")
+                        .put("timestamp", 1L)), 1)
+                    Hub { _, _ -> 200 to JSONObject().put("device", JSONObject()) }.use { hub ->
+                        assertThrows(Exception::class.java) { login(hub.url, "synthetic password", "new phone") }
+                    }
+                    assertEquals("https://old.example", config.url)
+                    assertEquals("a".repeat(64), config.token)
+                    assertEquals("old-device", config.deviceId)
+                    assertEquals(1, store.messages().size)
+                    assertFalse(config.identityChanging)
+                    config.beginIdentityChange()
+                    assertEquals("", Config(context).token)
+                    assertThrows(IllegalStateException::class.java) { Api(Config(context)).request("/me") }
+                    Hub { _, _ -> 200 to JSONObject().put("token", "b".repeat(64)).put("device",
+                        JSONObject().put("id", "new-device").put("name", "new phone")
+                            .put("created_at", 10L).put("notify", false)) }.use { hub ->
+                        login(hub.url, "synthetic password", "new phone")
+                        assertEquals(hub.url, Config(context).url)
+                    }
+                    assertEquals("b".repeat(64), Config(context).token)
+                    assertEquals("new-device", Config(context).deviceId)
+                    assertFalse(config.identityChanging)
+                    assertFalse(config.upload)
+                    assertTrue(store.messages().isEmpty())
+                } finally { store.close() }
+            }
+        } finally { context.deleteDatabase(name) }
+    }
+
+    @Test
     fun outagePreservesTokenAndPasswordsKeepExactWhitespace() = withConfig { context, config ->
         val status = java.util.concurrent.atomic.AtomicInteger(503)
         val loginBodies = LinkedBlockingQueue<String>()
@@ -163,7 +206,8 @@ class NetworkTest {
                     200 to
                         JSONObject()
                             .put("token", "s".repeat(64))
-                            .put("device", JSONObject().put("id", "synthetic"))
+                            .put("device", JSONObject().put("id", "synthetic")
+                                .put("name", "synthetic").put("created_at", 1L).put("notify", true))
                 } else status.get() to JSONObject().put("error", "database_unavailable")
             }
             .use { hub ->
@@ -209,6 +253,7 @@ class NetworkTest {
                     200 to
                         when {
                             path == "/api/me" -> me
+                            path.startsWith("/api/read-state?") -> emptyReadState()
                             path == "/api/contacts" -> JSONObject().put("contacts", JSONObject())
                             path == "/api/sims" -> {
                                 registrations.incrementAndGet()
@@ -289,7 +334,8 @@ class NetworkTest {
             val contactStatus = java.util.concurrent.atomic.AtomicInteger(503)
             Hub { path, _ ->
                     requests.add(path)
-                    when (path) {
+                    if (path.startsWith("/api/read-state?")) 200 to emptyReadState()
+                    else when (path) {
                         "/api/me" ->
                             200 to
                                 JSONObject()
@@ -383,6 +429,7 @@ class NetworkTest {
                         200 to
                             when {
                                 path == "/api/me" -> me
+                                path.startsWith("/api/read-state?") -> emptyReadState()
                                 path == "/api/contacts" ->
                                     JSONObject().put("contacts", JSONObject())
                                 else ->

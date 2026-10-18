@@ -3,10 +3,8 @@ package io.hongshu.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.provider.ContactsContract
 import android.provider.Telephony
 import androidx.core.content.ContextCompat
-import org.json.JSONObject
 
 private val inboxScanLock = Any()
 
@@ -51,8 +49,6 @@ fun recoverRecentInbox(context: Context, databaseName: String = "hongshu.db"): S
                     scanInbox(
                         context,
                         store,
-                        historical = false,
-                        incremental = true,
                         generation = generation,
                         recoverySince = since,
                         recoveryGeneration = recoveryGeneration,
@@ -118,8 +114,6 @@ fun catchUpInbox(context: Context, databaseName: String = "hongshu.db"): String 
                     scanInbox(
                         context,
                         store,
-                        historical = false,
-                        incremental = true,
                         generation = generation,
                         historyGeneration = historyGeneration,
                     )
@@ -148,8 +142,6 @@ fun catchUpInbox(context: Context, databaseName: String = "hongshu.db"): String 
 internal fun scanInbox(
     context: Context,
     store: Store,
-    historical: Boolean,
-    incremental: Boolean,
     generation: Long = Config(context).captureGeneration,
     historyGeneration: Long = Config(context).historyGeneration,
     recoverySince: Long? = null,
@@ -157,20 +149,17 @@ internal fun scanInbox(
 ): Int {
     val config = Config(context)
     fun current() =
-        !incremental ||
-            (config.upload &&
-                config.captureGeneration == generation &&
-                (if (recoverySince != null)
-                    config.recoveryEnabled && config.recoveryGeneration == recoveryGeneration
-                else config.historyEnabled && config.historyGeneration == historyGeneration))
+        config.upload &&
+            config.captureGeneration == generation &&
+            (if (recoverySince != null)
+                config.recoveryEnabled && config.recoveryGeneration == recoveryGeneration
+            else config.historyEnabled && config.historyGeneration == historyGeneration)
     if (!current()) return 0
     // Provider IDs, not SMS dates, order insertion; a late older date remains eligible.
     // Do not assume provider insertion order follows wall-clock dates.
-    val selection =
-        if (!incremental) null else if (recoverySince != null) "_id>? AND date>=?" else "_id>?"
+    val selection = if (recoverySince != null) "_id>? AND date>=?" else "_id>?"
     val args =
-        if (!incremental) null
-        else if (recoverySince != null)
+        if (recoverySince != null)
             arrayOf(store.recoveryWatermark().toString(), recoverySince.toString())
         else arrayOf(store.providerWatermark().toString())
     var count = 0
@@ -182,7 +171,7 @@ internal fun scanInbox(
             count +=
                 store.captureProviders(
                     batch,
-                    incremental && recoverySince == null,
+                    recoverySince == null,
                     recovery = recoverySince != null,
                 )
             batch.clear()
@@ -205,19 +194,17 @@ internal fun scanInbox(
         var visited = 0
         while (c.moveToNext()) {
             if (!current()) break
-            if (incremental && visited++ == 1000) break
+            if (visited++ == 1000) break
             val sub = if (subIndex >= 0) c.getInt(subIndex) else -1
             val text = c.getString(body)
             val sender = c.getString(address)
             if (text.isNullOrEmpty() || sender.isNullOrEmpty()) {
-                if (incremental) {
-                    if (!flush()) break
-                    synchronized(identityLock) {
-                        if (current()) {
-                            if (recoverySince != null)
-                                store.advanceRecoveryProvider(c.getLong(idIndex))
-                            else store.advanceProvider(c.getLong(idIndex))
-                        }
+                if (!flush()) break
+                synchronized(identityLock) {
+                    if (current()) {
+                        if (recoverySince != null)
+                            store.advanceRecoveryProvider(c.getLong(idIndex))
+                        else store.advanceProvider(c.getLong(idIndex))
                     }
                 }
                 continue
@@ -230,9 +217,8 @@ internal fun scanInbox(
                     c.getLong(date),
                     sub,
                     historical =
-                        historical ||
-                            (recoverySince == null &&
-                                isHistoricalSMS(c.getLong(date), store.historyBoundary())),
+                        recoverySince == null &&
+                            isHistoricalSMS(c.getLong(date), store.historyBoundary()),
                 )
             batch.add(c.getLong(idIndex) to record)
             if (batch.size == 100) {
@@ -241,51 +227,11 @@ internal fun scanInbox(
         }
         flush()
         synchronized(identityLock) {
-            if (incremental && current()) {
+            if (current()) {
                 if (recoverySince != null) config.recoveryPending = visited > 1000
                 else config.inboxScanPending = visited > 1000
             }
         }
-    }
-    return count
-}
-
-fun importContacts(context: Context): Int {
-    check(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) ==
-            PackageManager.PERMISSION_GRANTED
-    ) {
-        "请先授予通讯录权限"
-    }
-    val api = Api(Config(context))
-    var count = 0
-    val pendingBatch = org.json.JSONArray()
-    context.contentResolver
-        .query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(
-                ContactsContract.CommonDataKinds.Phone.NORMALIZED_NUMBER,
-                ContactsContract.CommonDataKinds.Phone.NUMBER,
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-            ),
-            null,
-            null,
-            null,
-        )
-        ?.use { c ->
-            while (c.moveToNext()) {
-                val phone = c.getString(0) ?: c.getString(1) ?: continue
-                val name = c.getString(2) ?: continue
-                pendingBatch.put(JSONObject().put("phone", phone).put("name", name))
-                count++
-                if (pendingBatch.length() >= 500) {
-                    api.request("/contacts", "PUT", JSONObject().put("contacts", pendingBatch))
-                    while (pendingBatch.length() > 0) pendingBatch.remove(0)
-                }
-            }
-        }
-    if (pendingBatch.length() > 0) {
-        api.request("/contacts", "PUT", JSONObject().put("contacts", pendingBatch))
     }
     return count
 }

@@ -55,30 +55,30 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 	var observed int64 = -1
 	var observedAnalysis int64
+	var observedRead int64
 	var lastPing time.Time
 
 	checkChanges := func() bool {
 		if _, err := a.lookup(r); err != nil {
 			return false
 		}
-		var seq int64
-		var clock, analysisRevision int64
-		if a.db.QueryRowContext(r.Context(), "SELECT seq,(SELECT revision FROM ai_settings WHERE id=1) FROM sync_clock WHERE id=1").Scan(&clock, &analysisRevision) != nil {
+		var clock, analysisRevision, readRevision int64
+		// All three state rows are singletons. Never scan messages/count unread
+		// per socket; clients fetch their own counts after a change hint.
+		if a.db.QueryRowContext(r.Context(), "SELECT c.seq,a.revision,r.updated_at FROM sync_clock c JOIN ai_settings a ON a.id=c.id JOIN read_state r ON r.id=c.id WHERE c.id=1").Scan(&clock, &analysisRevision, &readRevision) != nil {
 			return false
 		}
 		// Include this device's own uploads. Other clients must see them; the source
 		// device decides locally whether to notify itself.
-		if clock != observed && a.db.QueryRowContext(r.Context(), "SELECT COALESCE(MAX(id),0) FROM messages WHERE id>?", observed).Scan(&seq) != nil {
-			return false
-		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if seq > 0 || analysisRevision != observedAnalysis {
+		if clock != observed || analysisRevision != observedAnalysis || readRevision != observedRead {
 			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": clock, "analysis_revision": analysisRevision}) != nil {
 				return false
 			}
 		}
 		observed = clock
 		observedAnalysis = analysisRevision
+		observedRead = readRevision
 		return true
 	}
 
@@ -189,6 +189,18 @@ func (a *app) subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	// Authentication preceded decoding/DNS and may now be stale. Serialize
+	// against logout's device -> subscription lock order before creating state.
+	var revoked bool
+	e = tx.QueryRowContext(r.Context(), "SELECT revoked FROM devices WHERE id=? FOR UPDATE", device(r).ID).Scan(&revoked)
+	if e == sql.ErrNoRows || (e == nil && revoked) {
+		fail(w, 401, "unauthorized")
+		return
+	}
+	if e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
 	var other string
 	e = tx.QueryRowContext(r.Context(), "SELECT device_id FROM push_subscriptions WHERE endpoint=? AND device_id<>? LIMIT 1 FOR UPDATE", in.Endpoint, device(r).ID).Scan(&other)
 	if e == nil {
@@ -237,7 +249,9 @@ func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, 
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 20 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
+	// Claim immediately before delivery, rather than letting the tail of a
+	// serial batch consume its entire lease while earlier requests run.
+	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 1 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -267,12 +281,20 @@ func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, 
 }
 
 func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimedPush) error {
+	leaseDeadline := time.UnixMilli(j.lease)
+	if !time.Now().Before(leaseDeadline) {
+		return nil
+	}
 	var active bool
 	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM push_jobs j JOIN devices d ON d.id=j.device_id JOIN push_subscriptions p ON p.device_id=j.device_id WHERE j.id=? AND j.leased_until=? AND d.revoked=FALSE AND d.notify=TRUE AND p.endpoint=? AND p.p256dh=? AND p.auth=?)", j.id, j.lease, j.sub.Endpoint, j.sub.Keys.P256dh, j.sub.Keys.Auth).Scan(&active)
-	if err != nil || !active {
+	if err != nil || !active || !time.Now().Before(leaseDeadline) {
 		return err
 	}
-	res, sendErr := webpush.SendNotificationWithContext(ctx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
+	// Even if a DB stall consumed most of the lease, an HTTP request cannot
+	// outlive it. Keep the parent context for the conditional state update.
+	sendCtx, cancel := context.WithDeadline(ctx, leaseDeadline)
+	defer cancel()
+	res, sendErr := webpush.SendNotificationWithContext(sendCtx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
 	status := 0
 	if res != nil {
 		status = res.StatusCode
@@ -313,16 +335,20 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 }
 
 func (a *app) processPushBatch(ctx context.Context, client *http.Client, now time.Time) error {
-	jobs, err := a.claimPushJobs(ctx, now)
-	if err != nil {
-		a.pushClaimFailures.Add(1)
-		return fmt.Errorf("push claim failed")
-	}
-	for _, j := range jobs {
+	started := time.Now()
+	for i := 0; i < 20; i++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err = a.deliverPushJob(ctx, client, j); err != nil {
+		jobs, err := a.claimPushJobs(ctx, now.Add(time.Since(started)))
+		if err != nil {
+			a.pushClaimFailures.Add(1)
+			return fmt.Errorf("push claim failed")
+		}
+		if len(jobs) == 0 {
+			break
+		}
+		if err = a.deliverPushJob(ctx, client, jobs[0]); err != nil {
 			a.pushStateFailures.Add(1)
 			return fmt.Errorf("push state update failed")
 		}

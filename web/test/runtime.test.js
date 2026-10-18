@@ -9,7 +9,8 @@ function runtime() {
   vm.runInContext(`document={querySelector:()=>null};setBusy=()=>{};renderDetail=()=>{};
     state.me={cursor:200,epoch:1};state.cursor=200;state.epoch=1;state.epochSeen=true;
      state.sender='synthetic';
-    state.messages=Array.from({length:200},(_,i)=>({id:i+1,timestamp:i+1}));`,ctx);
+    state.messages=Array.from({length:200},(_,i)=>({id:i+1,timestamp:i+1}));
+    state.messagesQuery=historyQueryKey();state.conversationsQuery=inboxQueryKey();`,ctx);
   return ctx;
 }
 test('idle polling preserves older pages and never downloads discarded sync bodies',async()=>{

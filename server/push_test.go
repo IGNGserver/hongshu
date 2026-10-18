@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -51,5 +52,16 @@ func TestWebPushStandardEncryption(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != 202 {
 		t.Fatal("push delivery contract failed")
+	}
+}
+
+func TestPushExpiredLeaseNeverTouchesNetworkOrStore(t *testing.T) {
+	a := &app{} // An expired claim must be rejected even before consulting DB.
+	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("expired lease sent")
+		return nil, nil
+	})}
+	if err := a.deliverPushJob(context.Background(), client, claimedPush{lease: time.Now().Add(-time.Second).UnixMilli()}); err != nil {
+		t.Fatal(err)
 	}
 }

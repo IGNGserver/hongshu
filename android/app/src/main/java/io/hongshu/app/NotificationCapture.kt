@@ -124,17 +124,19 @@ internal fun persistNotificationSms(
     messages: List<SmsNotification>,
     generation: Long,
     databaseName: String = "hongshu.db",
+    notificationGeneration: Long,
 ): Int =
     synchronized(identityLock) {
         val config = Config(context)
         if (
             !config.upload ||
                 !config.notificationCapture ||
-                config.captureGeneration != generation
+                config.captureGeneration != generation ||
+                config.notificationGeneration != notificationGeneration
         )
             return@synchronized 0
         Store(context, databaseName).use { store ->
-            messages.count {
+            messages.filter { it.timestamp >= config.notificationSince }.count {
                 store.queueNotification(SmsRecord("", it.sender, it.body, it.timestamp, -1))
             }
         }
@@ -178,6 +180,7 @@ class SmsNotificationListener : NotificationListenerService() {
         if (!config.upload || !config.notificationCapture) return
         config.noteReceivedNotification(System.currentTimeMillis())
         val generation = config.captureGeneration
+        val notificationGeneration = config.notificationGeneration
         val messages =
             runCatching { parseSmsNotification(notificationSnapshot(sbn), packages, config.notificationSince) }
                 .getOrDefault(emptyList())
@@ -185,7 +188,9 @@ class SmsNotificationListener : NotificationListenerService() {
         executor.execute {
             runCatching {
                 val resolved = messages.map { it.copy(sender = notificationSender(app, it.sender)) }
-                if (persistNotificationSms(app, resolved, generation) > 0) syncNow(app, manual = true)
+                if (persistNotificationSms(app, resolved, generation,
+                        notificationGeneration = notificationGeneration) > 0)
+                    syncNow(app, manual = true)
             }
         }
     }

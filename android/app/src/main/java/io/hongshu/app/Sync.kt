@@ -414,45 +414,15 @@ object SyncEngine {
                             store.initializeSyncHead(repo.api.request("/me").getLong("cursor"))
                             continue
                         }
-                        val addedMessages = store.applySync(
-                            data.getJSONArray("messages"),
-                            data.getLong("cursor"),
-                            c.deviceId,
-                            pairedAt,
-                            data.getLong("epoch"),
-                        )
-                        if (c.notify && c.liveOtpIsland) {
-                            for (msg in addedMessages) {
-                                if (
-                                    c.deviceId.isNotEmpty() &&
-                                    shouldNotify(
-                                        msg.deviceId,
-                                        c.deviceId,
-                                        msg.historical,
-                                        store.initialComplete(),
-                                        msg.timestamp,
-                                        pairedAt,
-                                    )
-                                ) {
-                                    val otp = extractOtp(msg.body)
-                                    if (!otp.isNullOrEmpty()) {
-                                        OtpNotificationManager.showOtpNotification(
-                                            context = context,
-                                            messageId = msg.id,
-                                            otp = otp,
-                                            sender = msg.sender,
-                                            contact = msg.contact,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        applyMessagePage(context, c, store, data, pairedAt)
                         val pendingNotice = store.pendingNotification()
                         if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
                             store.acknowledgeNotification(pendingNotice)
                          if (!data.getBoolean("more")) {
                             // Cosmetic analysis has a separate cursor and never creates notifications.
                             syncMessageAnalysis(repo, session)
+                            uploadReadReceipts(repo.api, store)
+                            val readsComplete = syncReadState(store) { repo.api.request(it) }
                             c.lastSync = System.currentTimeMillis()
                             c.lastSyncError = ""
                             c.syncHealthy = true
@@ -466,7 +436,7 @@ object SyncEngine {
                                 else "同步完成"
                             if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
                             // Successful bounded work gets a successor, not failure backoff.
-                            return@withContext !(c.upload &&
+                            return@withContext readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                                 (serverUpload &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
@@ -478,6 +448,19 @@ object SyncEngine {
                 }
             }
         }
+}
+
+internal fun applyMessagePage(context: Context, config: Config, store: Store, data: JSONObject, pairedAt: Long) {
+    // Completing the initial head must not retroactively classify this page's old OTPs as new.
+    val hadPreviousSync = store.initialComplete()
+    val added = store.applySync(data.getJSONArray("messages"), data.getLong("cursor"),
+        config.deviceId, pairedAt, data.getLong("epoch"))
+    if (!config.notify || !config.liveOtpIsland || config.deviceId.isEmpty()) return
+    for (msg in added) {
+        if (!shouldNotify(msg.deviceId, config.deviceId, msg.historical, hadPreviousSync, msg.timestamp, pairedAt)) continue
+        val otp = extractOtp(msg.body) ?: continue
+        OtpNotificationManager.showOtpNotification(context, msg.id, otp, msg.sender, msg.contact, epoch = store.epoch())
+    }
 }
 
 internal fun syncMessageAnalysis(repo: Repository, session: JSONObject) {
@@ -507,19 +490,31 @@ internal fun syncMessageAnalysis(repo: Repository, session: JSONObject) {
     } catch (_: Exception) { /* retry independently on the next sync */ }
 }
 
+// Called under identityMutex, after checking the hub epoch. Failed requests leave durable
+// receipts for WorkManager retry; an ACK cannot consume a newer local read watermark.
+internal fun uploadReadReceipts(api: Api, store: Store) {
+    for ((sender, id) in store.pendingReads()) {
+        api.request("/messages/read", "POST", JSONObject().put("sender", sender).put("message_id", id))
+        store.acknowledgeRead(sender, id)
+    }
+}
+
 // The hub keeps its own copy of the upload switch. A toggle that never reached it (offline,
 // or a re-login that created a fresh hub device) is re-sent; otherwise the hub's value is an
 // administrator's decision and wins.
 internal fun reconcileUploadSwitch(api: Api, c: Config, server: Boolean): Boolean {
-    if (!c.uploadPatchPending) return server
-    if (server == c.upload) {
-        c.uploadPatchPending = false
+    val (version, desired, pending) = synchronized(identityLock) {
+        Triple(c.uploadVersion, c.upload, c.uploadPatchPending)
+    }
+    if (!pending) return server
+    if (server == desired) {
+        c.confirmUpload(version, server)
         return server
     }
     return try {
-        api.request("/devices/${c.deviceId}", "PATCH", JSONObject().put("upload", c.upload))
-        c.uploadPatchPending = false
-        c.upload
+        api.request("/devices/${c.deviceId}", "PATCH", JSONObject().put("upload", desired))
+        c.confirmUpload(version, desired)
+        desired
     } catch (e: CancellationException) {
         throw e
     } catch (e: ApiException) {

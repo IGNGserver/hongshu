@@ -64,7 +64,7 @@ else:
 class Operations(unittest.TestCase):
     def setUp(self):
         # Caller selects an external build/cache location; never create repo artifacts.
-        self.temp = tempfile.TemporaryDirectory(prefix='hongshu-ops-', dir=os.environ.get('HONGSHU_TEST_TMP', '/home/lvziw/tmp/opencode') if pathlib.Path('/home/lvziw/tmp/opencode').is_dir() else None)
+        self.temp = tempfile.TemporaryDirectory(prefix='hongshu-ops-', dir=os.environ.get('HONGSHU_TEST_TMP'))
         self.root = pathlib.Path(self.temp.name)
         tools = self.root / 'bin'
         tools.mkdir()

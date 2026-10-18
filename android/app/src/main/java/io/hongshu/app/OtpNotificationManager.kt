@@ -14,6 +14,12 @@ import androidx.core.content.ContextCompat
 
 object OtpNotificationManager {
     const val CHANNEL_ID = "otp_island"
+    internal const val NOTIFICATION_ID = 1
+    internal fun identityTag(context: Context): String = Config(context).let {
+        "otp:${sha256("${it.url}\u0000${it.deviceId}")}:"
+    }
+    internal fun notificationTag(context: Context, messageId: Long, epoch: Long = 0): String =
+        "${identityTag(context)}$epoch:$messageId"
     private const val OTP_TIMEOUT_MILLIS = 10 * 60 * 1000L // 10 minutes
 
     /**
@@ -27,6 +33,7 @@ object OtpNotificationManager {
         sender: String,
         contact: String = "",
         deviceName: String = "",
+        epoch: Long = 0,
     ): Boolean {
         if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
             return false
@@ -43,13 +50,18 @@ object OtpNotificationManager {
             return false
         }
 
-        // Generate a stable notification ID per message ID (clamped into Int range)
-        val notificationId = (messageId xor (messageId ushr 32)).toInt().let { if (it == 0) 1000 else it }
+        // Full identity/epoch/message tags avoid both service IDs and folded Long collisions.
+        val notificationId = NOTIFICATION_ID
+        val tag = notificationTag(context, messageId, epoch)
+        fun actionData(action: String) = android.net.Uri.Builder().scheme("hongshu")
+            .authority("otp").appendPath(tag).appendPath(action).build()
 
         val copyIntent = Intent(context, OtpNotificationReceiver::class.java).apply {
             action = ACTION_COPY_OTP
+            data = actionData("copy")
             putExtra(EXTRA_OTP_CODE, otp)
             putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_NOTIFICATION_TAG, tag)
         }
         val copyPending = PendingIntent.getBroadcast(
             context,
@@ -60,7 +72,9 @@ object OtpNotificationManager {
 
         val dismissIntent = Intent(context, OtpNotificationReceiver::class.java).apply {
             action = ACTION_DISMISS_OTP
+            data = actionData("dismiss")
             putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            putExtra(EXTRA_NOTIFICATION_TAG, tag)
         }
         val dismissPending = PendingIntent.getBroadcast(
             context,
@@ -69,7 +83,7 @@ object OtpNotificationManager {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val openIntent = mainActivityIntent(context)
+        val openIntent = mainActivityIntent(context).setData(actionData("open"))
         val openPending = PendingIntent.getActivity(
             context,
             notificationId * 2,
@@ -96,7 +110,7 @@ object OtpNotificationManager {
 
         applyPromotedOngoing(builder, otp)
 
-        manager.notify(notificationId, builder.build())
+        manager.notify(tag, notificationId, builder.build())
         return true
     }
 

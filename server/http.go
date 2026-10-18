@@ -42,6 +42,7 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/analysis/counts", a.auth(a.analysisCounts))
 	mux.HandleFunc("PATCH /api/messages/{id}/category", a.auth(a.changeCategory))
 	mux.HandleFunc("POST /api/messages/read", a.auth(a.markRead))
+	mux.HandleFunc("GET /api/read-state", a.auth(a.readState))
 	mux.HandleFunc("GET /api/conversations", a.auth(a.conversations))
 	mux.HandleFunc("GET /api/sync", a.auth(a.syncMessages))
 	mux.HandleFunc("GET /api/ws", a.auth(a.ws))

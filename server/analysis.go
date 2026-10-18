@@ -1098,6 +1098,16 @@ func (a *app) testAI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "ai_budget_or_rate_limit")
 		return
 	}
+	// This synchronous test can legitimately exceed the server's normal 30s
+	// write timeout. Extend only this response, with a bounded flush margin.
+	if s.Timeout < 2 || s.Timeout > 60 {
+		fail(w, 503, "invalid_ai_settings")
+		return
+	}
+	if e = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Duration(s.Timeout)*time.Second + 5*time.Second)); e != nil {
+		fail(w, 503, "response_deadline_unavailable")
+		return
+	}
 	if _, e = tx.ExecContext(r.Context(), "UPDATE ai_settings SET usage_day=?,usage_count=?,next_call=? WHERE id=1", time.Now().UTC().Unix()/86400, s.Usage+1, now+60000/int64(s.Rate)); e != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return

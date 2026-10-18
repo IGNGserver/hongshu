@@ -13,6 +13,42 @@ import javax.crypto.spec.GCMParameterSpec
 class Config(context: Context) {
     private val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
 
+    internal val identityChanging: Boolean
+        get() = prefs.getBoolean("identity_changing", false)
+
+    // A durable fail-closed fence bridges SQLite reset and the single identity preferences commit.
+    internal fun beginIdentityChange() {
+        check(prefs.edit().putBoolean("identity_changing", true)
+            .putLong("capture_generation", captureGeneration + 1).commit()) {
+            "无法保存身份切换状态，请重新连接"
+        }
+    }
+
+    internal fun completeIdentity(identity: LoginIdentity, encryptedToken: String, keepUpload: Boolean) {
+        val saved = prefs.edit()
+            .putString("url", identity.origin)
+            .putString("token", encryptedToken)
+            .putString("device", identity.deviceId)
+            .putString("device_name", identity.name)
+            .putBoolean("upload", keepUpload)
+            .putLong("upload_version", uploadVersion + 1)
+            .putBoolean("upload_patch_pending", keepUpload)
+            .putBoolean("server_upload_allowed", false)
+            .putStringSet("registered_sims", emptySet())
+            .putBoolean("notify", identity.notify)
+            .putBoolean("sync_healthy", false)
+            .putBoolean("inbox_scan_pending", false)
+            .putBoolean("recovery_pending", false)
+            .putString("status", "已连接")
+            .putBoolean("identity_changing", false)
+            .commit()
+        if (!saved) {
+            // commit(false) can still update the in-memory preferences; close that gate too.
+            prefs.edit().putBoolean("identity_changing", true).commit()
+            error("身份保存失败，请重新连接")
+        }
+    }
+
     init {
         synchronized(identityLock) {
             if (!prefs.contains("history_enabled")) {
@@ -113,6 +149,7 @@ class Config(context: Context) {
                     prefs
                         .edit()
                         .putBoolean("notification_capture", value)
+                        .putLong("notification_generation", notificationGeneration + 1)
                         .putLong(
                             "notification_since",
                             if (value) System.currentTimeMillis() else 0,
@@ -123,6 +160,9 @@ class Config(context: Context) {
 
     val notificationSince: Long
         get() = prefs.getLong("notification_since", 0)
+
+    val notificationGeneration: Long
+        get() = prefs.getLong("notification_generation", 0)
 
     val receivedNotifications: Long
         get() = prefs.getLong("received_notifications", 0)
@@ -231,6 +271,16 @@ class Config(context: Context) {
             prefs.edit().putBoolean("upload_patch_pending", value).commit()
         }
 
+    internal val uploadVersion: Long
+        get() = prefs.getLong("upload_version", 0)
+
+    internal fun confirmUpload(version: Long, allowed: Boolean): Boolean = synchronized(identityLock) {
+        if (identityChanging || uploadVersion != version) return@synchronized false
+        check(prefs.edit().putBoolean("upload_patch_pending", false)
+            .putBoolean("server_upload_allowed", allowed).commit()) { "无法保存上传确认" }
+        true
+    }
+
     var lastSyncAttempt: Long
         get() = prefs.getLong("last_sync_attempt", 0)
         set(value) {
@@ -294,11 +344,14 @@ class Config(context: Context) {
         }
 
     var upload: Boolean
-        get() = prefs.getBoolean("upload", false)
+        get() = !identityChanging && prefs.getBoolean("upload", false)
         set(v) {
             synchronized(identityLock) {
                 val edit = prefs.edit().putBoolean("upload", v)
-                if (v != upload) edit.putLong("capture_generation", captureGeneration + 1)
+                if (v != upload) edit
+                    .putLong("capture_generation", captureGeneration + 1)
+                    .putLong("upload_version", uploadVersion + 1)
+                    .putBoolean("upload_patch_pending", true)
                 if (!v) {
                     edit.putBoolean("inbox_scan_pending", false)
                     edit.putBoolean("recovery_pending", false)
@@ -310,7 +363,7 @@ class Config(context: Context) {
                 }
                 if (v && !upload && notificationCapture)
                     edit.putLong("notification_since", System.currentTimeMillis())
-                edit.commit()
+                check(edit.commit()) { "无法保存采集开关，请重试" }
             }
         }
 
@@ -334,6 +387,7 @@ class Config(context: Context) {
 
     var token: String
         get() {
+            if (identityChanging) return ""
             val encrypted = prefs.getString("token", null) ?: return ""
             return try {
                 val bytes = Base64.decode(encrypted, Base64.NO_WRAP)
@@ -353,19 +407,14 @@ class Config(context: Context) {
                 prefs.edit().remove("token").commit()
                 return
             }
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key())
-            prefs
-                .edit()
-                .putString(
-                    "token",
-                    Base64.encodeToString(
-                        cipher.iv + cipher.doFinal(value.toByteArray()),
-                        Base64.NO_WRAP,
-                    ),
-                )
-                .commit()
+            prefs.edit().putString("token", encryptToken(value)).commit()
         }
+
+    internal fun encryptToken(value: String): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key())
+        return Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+    }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

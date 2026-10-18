@@ -671,7 +671,7 @@ abstract class RealtimeCaptureContract {
                 store.writableDatabase.version = 5
             }
             Store(context, name).use { store ->
-                assertEquals(8, store.readableDatabase.version)
+                assertEquals(9, store.readableDatabase.version)
                 assertEquals(0L, store.analysisCursor())
                 assertFalse(store.aiEnabled())
                 assertEquals(50L, store.providerWatermark())

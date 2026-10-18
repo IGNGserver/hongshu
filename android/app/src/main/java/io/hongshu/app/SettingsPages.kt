@@ -62,7 +62,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -143,15 +142,9 @@ fun CapturePage(host: SettingsHost) {
             host.action {
                 check(!enabled || c.token.isNotEmpty()) { "请先连接中枢" }
                 c.upload = enabled
-                try {
-                    host.patchDevice("upload", enabled)
-                    c.serverUploadAllowed = enabled
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    c.syncHealthy = false
-                    c.status = "本机采集设置已保存 · 中枢设置未确认，请联网后重试"
-                }
+                // The sync worker owns PATCH and versioned acknowledgement. An offline toggle
+                // is durable immediately, and a late response cannot clear a newer toggle.
+                if (c.uploadPatchPending) c.status = "本机采集设置已保存 · 等待中枢确认"
                 syncNow(activity, manual = true)
                 when {
                     !enabled -> "短信采集已关闭，未上传的短信仍保留在本机"

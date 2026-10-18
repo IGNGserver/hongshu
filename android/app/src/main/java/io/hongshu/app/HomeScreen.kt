@@ -5,8 +5,6 @@
 
 package io.hongshu.app
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -654,20 +652,26 @@ private fun ConversationPane(
     // Each conversation screen owns its query, so a leaving screen keeps its own messages for the
     // whole exit animation instead of reloading as soon as the destination changes.
     var messageLimit by remember(conversation) { mutableIntStateOf(200) }
-    var messages by remember(conversation) { mutableStateOf<List<CachedMessage>?>(null) }
+    var snapshot by remember(conversation) { mutableStateOf<ConversationSnapshot?>(null) }
+    val messages = snapshot?.messages
     LaunchedEffect(conversation, model.changes, messageLimit, model.group) {
-        messages =
+        val loaded =
             withContext(Dispatchers.IO) {
-                repo.store.readUnlessClosed(emptyList()) {
-                    val res = messagesWithLocal(sender, "", limit = messageLimit, group = model.group)
-                    markRead(sender)
-                    res
+                repo.store.readUnlessClosed(null) {
+                    conversationSnapshot(sender, messageLimit, model.group)
                 }
             }
+        if (loaded != null) {
+            snapshot = loaded
+        }
+    }
+    // Run only after the loaded messages have been published to this composition. A filtered
+    // or paged view must not mark a newer, unseen hub message as read.
+    LaunchedEffect(conversation, snapshot) {
+        val shown = snapshot ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
-            try {
-                repo.api.request("/messages/read", "POST", org.json.JSONObject().put("sender", sender))
-            } catch (_: Exception) {}
+            val changed = repo.store.readUnlessClosed(false) { markDisplayedRead(shown) }
+            if (changed) syncNow(context, manual = true)
         }
     }
     val deviceId = repo.config.deviceId
@@ -686,9 +690,7 @@ private fun ConversationPane(
     val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 2 } }
 
     fun copyCode(code: String) {
-        context
-            .getSystemService(ClipboardManager::class.java)
-            .setPrimaryClip(ClipData.newPlainText("验证码", code))
+        copyOtp(context, code)
         actions.onMessage("验证码已复制")
     }
 

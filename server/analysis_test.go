@@ -96,6 +96,11 @@ func TestAnalysisWebSocketChangesWithoutNewSMS(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var initial map[string]any
+	if e = conn.ReadJSON(&initial); e != nil || initial["cursor"] != float64(0) || initial["analysis_revision"] != float64(0) {
+		t.Fatal("initial socket state missing", e, initial)
+	}
 	if _, e = db.Exec("UPDATE ai_settings SET revision=revision+1 WHERE id=1"); e != nil {
 		t.Fatal(e)
 	}
