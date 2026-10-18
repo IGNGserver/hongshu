@@ -168,6 +168,9 @@ WAL 与等待已覆盖实际的丢失风险。
 
 ## 升级与回退
 
+SQLite v11→v12 一次性删除旧版误采的通知噪声（系统/服务占位通知、“[N条]”汇总），仅限未上传且未与广播/收件箱
+关联的行及其通知身份与指纹占用；其余数据不变。v12→v13 仅新增无正文的 capture_events（时间、来源、结果代码、
+次数，最多 200 行），不改动任何现有表。两次升级都不可由旧 APK 直接打开，回退需受控备份。
 SQLite v9→v10 仅新增 notification_receipts（通知身份、canonical capture、固定不确定性标记）及
 upload_fingerprints（上传指纹、canonical capture 占用）。前者 capture_key 唯一保证通知与对端一对一；
 后者 fingerprint 唯一，同一 capture 可保留多个历史发送指纹，以覆盖号码/发件人补全及在途请求。

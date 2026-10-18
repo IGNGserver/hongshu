@@ -19,6 +19,19 @@ internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
 internal const val NOTIFICATION_NUMBER_HOLD = 30_000L
 internal const val NOTIFICATION_NAME_HOLD = 150_000L
 
+internal const val CAPTURE_EVENT_LIMIT = 200
+internal const val CAPTURE_EVENT_FOLD_MS = 60_000L
+
+data class CaptureEvent(val at: Long, val source: String, val outcome: String, val count: Int)
+
+// Event sources; outcomes are short codes rendered by captureEventLabel.
+internal object CaptureSource {
+    const val BROADCAST = "broadcast"
+    const val NOTIFICATION = "notification"
+    const val RECOVERY = "recovery"
+    const val HISTORY = "history"
+}
+
 private const val UNPAIRED_NOTIFICATION =
     "EXISTS (SELECT 1 FROM captures c WHERE c.key=outbox.key AND c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL)"
 private const val NOTIFICATION_RELEASE_AT =
@@ -53,7 +66,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 12), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 13), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -119,6 +132,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createReadOutbox(db)
         createNotificationReceipts(db)
         createReliabilityExtras(db)
+        createCaptureEvents(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -150,7 +164,35 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 10) createNotificationReceipts(db)
         if (oldVersion < 11) createReliabilityExtras(db)
         if (oldVersion < 12) purgeNotificationNoise(db)
+        if (oldVersion < 13) createCaptureEvents(db)
     }
+
+    // v13: a bounded, content-free log of what each capture source did, so a device report can
+    // show "notification arrived → inbox read paired it" without any sender or body.
+    private fun createCaptureEvents(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS capture_events (id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,source TEXT NOT NULL,outcome TEXT NOT NULL,count INTEGER NOT NULL DEFAULT 1)")
+    }
+
+    internal fun recordCaptureEvent(source: String, outcome: String, count: Int = 1, at: Long = System.currentTimeMillis()) {
+        if (count <= 0) return
+        val db = writableDatabase
+        // A burst of the same outcome (a reposted notification, a paged inbox) folds into one line.
+        val merged = db.rawQuery("SELECT id FROM capture_events WHERE id=(SELECT MAX(id) FROM capture_events) AND source=? AND outcome=? AND ABS(at-?)<=$CAPTURE_EVENT_FOLD_MS",
+            arrayOf(source, outcome, at.toString())).use { if (it.moveToFirst()) it.getLong(0) else null }
+        if (merged != null) {
+            db.execSQL("UPDATE capture_events SET count=count+?,at=MAX(at,?) WHERE id=?", arrayOf<Any>(count, at, merged))
+            return
+        }
+        db.execSQL("INSERT INTO capture_events (at,source,outcome,count) VALUES (?,?,?,?)", arrayOf<Any>(at, source, outcome, count))
+        db.execSQL("DELETE FROM capture_events WHERE id<=(SELECT MAX(id) FROM capture_events)-$CAPTURE_EVENT_LIMIT")
+    }
+
+    fun captureEvents(limit: Int = 30): List<CaptureEvent> =
+        readableDatabase
+            .rawQuery("SELECT at,source,outcome,count FROM capture_events ORDER BY id DESC LIMIT ?", arrayOf(limit.toString()))
+            .use { c ->
+                buildList { while (c.moveToNext()) add(CaptureEvent(c.getLong(0), c.getString(1), c.getString(2), c.getInt(3))) }
+            }
 
     // v12: before service placeholders and "[N条]" summaries were filtered, the notification
     // fallback queued them as SMS. They never were a single message, and nothing but the
@@ -538,6 +580,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             val added = capture(m, slot, null, false)
+            recordCaptureEvent(CaptureSource.BROADCAST, if (added) "saved" else "duplicate", at = receivedAt)
             db.execSQL("UPDATE meta SET value=value+1 WHERE key='realtime_broadcasts'")
             db.execSQL("UPDATE meta SET value=? WHERE key='last_broadcast'", arrayOf(receivedAt))
             db.execSQL(
@@ -975,6 +1018,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     markNotificationUncertain(db, listOf(orphan.key) + reverse.orEmpty().map { it.key })
                 }
             }
+            recordCaptureEvent(CaptureSource.NOTIFICATION, "paired_late", merged)
             db.setTransactionSuccessful()
             if (merged > 0) changes.value++
             return merged
@@ -1159,6 +1203,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             "key=?",
             arrayOf(key),
         )
+        recordCaptureEvent(CaptureSource.NOTIFICATION, if (providerId == null) "paired_broadcast" else "paired_inbox")
         changes.value++
         return true
     }
@@ -1585,6 +1630,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             val resolver = receiverResolver(allowFallback = false)
+            var notificationOnly = 0
             for (key in keys) {
                 // Enrichment may race an HTTP request. Recheck the current wire identity
                 // before ACK can remove a newly colliding observation.
@@ -1593,8 +1639,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         c.getString(1), c.getString(2), c.getLong(3), c.getInt(4))
                 }
                 if (current != null && confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
-                db.delete("outbox", "key=? AND blocked<>'notification_collision'", arrayOf(key))
+                val unpaired = db.rawQuery("SELECT 1 FROM outbox WHERE key=? AND $UNPAIRED_NOTIFICATION", arrayOf(key)).use { it.moveToFirst() }
+                if (db.delete("outbox", "key=? AND blocked<>'notification_collision'", arrayOf(key)) > 0 && unpaired)
+                    notificationOnly++
             }
+            recordCaptureEvent(CaptureSource.NOTIFICATION, "uploaded_unpaired", notificationOnly)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

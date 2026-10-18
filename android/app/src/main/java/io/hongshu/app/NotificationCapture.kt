@@ -232,7 +232,7 @@ internal fun persistNotificationSms(
         Store(context, databaseName).use { store ->
             store.queueNotifications(messages.filter { it.timestamp >= config.notificationSince }.map {
                 NotificationCaptureInput(SmsRecord("", it.sender, it.body, it.timestamp, -1), it.identity, it.uncertain)
-            })
+            }).also { store.recordCaptureEvent(CaptureSource.NOTIFICATION, "queued", it) }
         }
     }
 
@@ -296,10 +296,16 @@ class SmsNotificationListener : NotificationListenerService() {
                 return
             }
         when (classifySmsNotification(snapshot, packages)) {
-            NotificationClass.IGNORED -> return
+            NotificationClass.IGNORED -> {
+                executor.execute { record(app, "ignored") }
+                return
+            }
             // A summary names no single message: read them from the inbox instead.
             NotificationClass.AGGREGATE -> {
-                if (snapshot.postTime >= config.notificationSince) executor.execute { requestInboxRead(app) }
+                if (snapshot.postTime >= config.notificationSince) executor.execute {
+                    record(app, "aggregate")
+                    requestInboxRead(app)
+                }
                 return
             }
             NotificationClass.MESSAGES -> Unit
@@ -327,6 +333,11 @@ class SmsNotificationListener : NotificationListenerService() {
                 config.notificationFailure = "通知保存失败，请检查本机存储"
             }
         }
+    }
+
+    // Diagnostics only; a failure here must never affect capture.
+    private fun record(app: Context, outcome: String) {
+        runCatching { Store(app).use { it.recordCaptureEvent(CaptureSource.NOTIFICATION, outcome) } }
     }
 
     private fun requestInboxRead(app: Context) {
