@@ -662,7 +662,51 @@ type analysisJob struct {
 	Settings    AISettings
 }
 
+const analysisClaimableSQL = "otp='' AND manual_override=FALSE AND category='' AND ((state='pending' AND next_at<=?) OR (state='processing' AND leased_until<=?))"
+const analysisCandidateSQL = "SELECT x.message_id,m.body,x.revision FROM message_analysis x JOIN messages m ON m.id=x.message_id WHERE " + analysisClaimableSQL + " ORDER BY m.historical ASC,m.timestamp DESC,m.id DESC LIMIT 1"
+
+type analysisCandidate struct {
+	ID, Revision, SelectedAt int64
+	Body                     string
+}
+
+func selectAnalysisCandidate(ctx context.Context, q rowQuerier) (*analysisCandidate, error) {
+	c := &analysisCandidate{SelectedAt: time.Now().UnixMilli()}
+	// One nonlocking statement selects the highest-priority eligible candidate
+	// in its MVCC snapshot. Ingestion holds sync_clock before ai_settings;
+	// holding settings during this unbounded join/sort would stall all uploads.
+	e := q.QueryRowContext(ctx, analysisCandidateSQL, c.SelectedAt, c.SelectedAt).Scan(&c.ID, &c.Body, &c.Revision)
+	if e == sql.ErrNoRows {
+		return nil, nil
+	}
+	return c, e
+}
+
 func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
+	// Cheap, advisory reads avoid scanning the queue when work is disabled or
+	// throttled. All policy and accounting is checked again under the lock.
+	s, e := loadAI(ctx, a.db, false)
+	if e != nil {
+		return nil, e
+	}
+	if !s.Enabled || s.Paused || s.Usage >= s.DailyLimit {
+		return nil, nil
+	}
+	var next int64
+	if e = a.db.QueryRowContext(ctx, "SELECT next_call FROM ai_settings WHERE id=1").Scan(&next); e != nil {
+		return nil, e
+	}
+	if time.Now().UnixMilli() < next {
+		return nil, nil
+	}
+	c, e := selectAnalysisCandidate(ctx, a.db)
+	if e != nil || c == nil {
+		return nil, e
+	}
+	return a.claimAnalysisCandidate(ctx, c)
+}
+
+func (a *app) claimAnalysisCandidate(ctx context.Context, c *analysisCandidate) (*analysisJob, error) {
 	tx, e := a.db.BeginTx(ctx, nil)
 	if e != nil {
 		return nil, e
@@ -672,7 +716,15 @@ func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
 	if e != nil {
 		return nil, e
 	}
+	// Ordering belongs to the selection snapshot; concurrent arrivals join the
+	// next selection. A global-revision guard would starve all work under even
+	// unrelated OTP uploads. Recheck this candidate and use current settings,
+	// without rescanning the queue under the settings lock.
 	now := time.Now().UnixMilli()
+	day := now / 86400000
+	if s.UsageDay != day {
+		s.Usage = 0
+	}
 	var next int64
 	if e = tx.QueryRowContext(ctx, "SELECT next_call FROM ai_settings WHERE id=1").Scan(&next); e != nil {
 		return nil, e
@@ -680,12 +732,12 @@ func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
 	if !s.Enabled || s.Paused || now < next || s.Usage >= s.DailyLimit {
 		return nil, nil
 	}
-	j := &analysisJob{Settings: s}
+	j := &analysisJob{ID: c.ID, Body: c.Body, Settings: s}
 	var attempts int
-	// All queue mutations take the settings-row lock first. Do not lock messages
-	// while sorting candidates: ingestion already holds message/FK locks before
-	// allocating an analysis revision, and reversing that order risks deadlocks.
-	e = tx.QueryRowContext(ctx, "SELECT x.message_id,m.body,x.attempts FROM message_analysis x JOIN messages m ON m.id=x.message_id WHERE x.otp='' AND x.manual_override=FALSE AND x.category='' AND ((x.state='pending' AND x.next_at<=?) OR (x.state='processing' AND x.leased_until<=?)) ORDER BY m.historical ASC,m.timestamp DESC,m.id DESC LIMIT 1", now, now).Scan(&j.ID, &j.Body, &attempts)
+	// Point lookup only; never lock messages in the reverse order to ingestion.
+	// Keep the selection cutoff so newly due retries do not alter its ordering.
+	where := " WHERE message_id=? AND revision=? AND " + analysisClaimableSQL
+	e = tx.QueryRowContext(ctx, "SELECT attempts FROM message_analysis"+where+" FOR UPDATE", c.ID, c.Revision, c.SelectedAt, c.SelectedAt).Scan(&attempts)
 	if e == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -696,24 +748,32 @@ func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
 	if e != nil {
 		return nil, e
 	}
+	var result sql.Result
 	if attempts >= 3 {
-		_, e = tx.ExecContext(ctx, "UPDATE message_analysis SET state='failed',error='attempts_exhausted',lease_token='',revision=? WHERE message_id=?", rev, j.ID)
-		if e != nil {
-			return nil, e
-		}
-		return nil, tx.Commit()
+		result, e = tx.ExecContext(ctx, "UPDATE message_analysis SET state='failed',error='attempts_exhausted',lease_token='',leased_until=0,revision=?"+where, rev, c.ID, c.Revision, c.SelectedAt, c.SelectedAt)
+	} else {
+		j.Token = random(16)
+		result, e = tx.ExecContext(ctx, "UPDATE message_analysis SET state='processing',attempts=attempts+1,lease_token=?,leased_until=?,revision=?"+where, j.Token, now+int64(s.Timeout+15)*1000, rev, c.ID, c.Revision, c.SelectedAt, c.SelectedAt)
 	}
-	j.Token = random(16)
-	if _, e = tx.ExecContext(ctx, "UPDATE message_analysis SET state='processing',attempts=attempts+1,lease_token=?,leased_until=?,revision=? WHERE message_id=?", j.Token, now+int64(s.Timeout+15)*1000, rev, j.ID); e != nil {
+	if e != nil {
 		return nil, e
 	}
-	if _, e = tx.ExecContext(ctx, "UPDATE ai_settings SET usage_day=?,usage_count=?,next_call=? WHERE id=1", time.Now().UTC().Unix()/86400, s.Usage+1, now+60000/int64(s.Rate)); e != nil {
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return nil, err // rollback also discards the allocated revision
+	}
+	if attempts < 3 {
+		_, e = tx.ExecContext(ctx, "UPDATE ai_settings SET usage_day=?,usage_count=?,next_call=? WHERE id=1", day, s.Usage+1, now+60000/int64(s.Rate))
+	}
+	if e != nil {
 		return nil, e
 	}
 	if e = tx.Commit(); e != nil {
 		return nil, e
 	}
 	a.broadcastChange()
+	if attempts >= 3 {
+		return nil, nil
+	}
 	return j, nil
 }
 
