@@ -184,6 +184,7 @@ class OtpNotificationManagerTest {
         config.notify = true
         config.liveOtpIsland = true
         val name = "otp-page-${java.util.UUID.randomUUID()}.db"
+        val now = System.currentTimeMillis()
         fun message(id: Long, timestamp: Long, source: String = "remote", historical: Boolean = false) =
             org.json.JSONObject().put("id", id).put("device_id", source).put("receiver", "+1234567890")
                 .put("sender", "10086").put("body", "验证码为 849201").put("timestamp", timestamp).put("historical", historical)
@@ -191,18 +192,19 @@ class OtpNotificationManagerTest {
             Store(app, name).use { store ->
                 store.initializeSyncHead(4)
                 val page = org.json.JSONObject().put("epoch", 1).put("cursor", 4).put("messages",
-                    org.json.JSONArray().put(message(1, 50)).put(message(2, 150))
-                        .put(message(3, 150, "self")).put(message(4, 150, historical = true)))
-                applyMessagePage(app, config, store, page, pairedAt = 100)
+                    org.json.JSONArray().put(message(1, now - 120_000)).put(message(2, now))
+                        .put(message(3, now, "self")).put(message(4, now, historical = true)))
+                applyMessagePage(app, config, store, page, pairedAt = now - 60_000)
                 assertTrue(store.initialComplete())
                 val notifications = shadowOf(app.getSystemService(NotificationManager::class.java))
                 assertNull(notifications.getNotification(OtpNotificationManager.notificationTag(app, 1, 1), 1))
                 assertNotNull(notifications.getNotification(OtpNotificationManager.notificationTag(app, 2, 1), 1))
                 assertNull(notifications.getNotification(OtpNotificationManager.notificationTag(app, 3, 1), 1))
                 assertNull(notifications.getNotification(OtpNotificationManager.notificationTag(app, 4, 1), 1))
-                assertEquals(1L, store.pendingNotification())
-                applyMessagePage(app, config, store, page, pairedAt = 100)
-                assertEquals(1L, store.pendingNotification())
+                // The code owns its dedicated channel; it is not also counted for the summary.
+                assertEquals(0L, store.pendingNotification())
+                applyMessagePage(app, config, store, page, pairedAt = now - 60_000)
+                assertEquals(0L, store.pendingNotification())
             }
         } finally { app.deleteDatabase(name) }
     }

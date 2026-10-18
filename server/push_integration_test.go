@@ -221,6 +221,62 @@ func TestIntegrationPushLeaseAndRevocation(t *testing.T) {
 	}
 }
 
+func TestIntegrationPushSuppressesAlreadyReadMessages(t *testing.T) {
+	a, _ := pushFixture(t)
+	if _, err := a.db.Exec("UPDATE read_state SET global_watermark_id=1 WHERE id=1"); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("a read message must not be pushed")
+		return nil, nil
+	})}
+	if err := a.processPushBatch(context.Background(), client, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("read message job retained: %d %v", count, err)
+	}
+	if a.pushSuppressed.Load() != 1 {
+		t.Fatalf("suppression not counted: %d", a.pushSuppressed.Load())
+	}
+}
+
+func TestIntegrationPushHonoursRetryAfterAndDropsExhaustedJobs(t *testing.T) {
+	a, d := pushFixture(t)
+	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Retry-After", "120")
+		return &http.Response{StatusCode: 429, Body: io.NopCloser(strings.NewReader("")), Header: header}, nil
+	})}
+	before := time.Now()
+	if err := a.processPushBatch(context.Background(), client, before); err != nil {
+		t.Fatal(err)
+	}
+	var next int64
+	if err := a.db.QueryRow("SELECT next_at FROM push_jobs").Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	if next < before.Add(119*time.Second).UnixMilli() {
+		t.Fatalf("Retry-After ignored: next_at=%d", next)
+	}
+	// An exhausted job is dropped instead of retried forever.
+	if _, err := a.db.Exec("UPDATE push_jobs SET attempts=50,next_at=0,leased_until=0 WHERE device_id=?", d.ID); err != nil {
+		t.Fatal(err)
+	}
+	client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("exhausted job was sent")
+		return nil, nil
+	})
+	if err := a.processPushBatch(context.Background(), client, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&count); err != nil || count != 0 || a.pushDropped.Load() != 1 {
+		t.Fatalf("exhausted job retained: count=%d dropped=%d err=%v", count, a.pushDropped.Load(), err)
+	}
+}
+
 func TestIntegrationPushRetryAndExpiredEndpoint(t *testing.T) {
 	a, _ := pushFixture(t)
 	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
@@ -247,5 +303,10 @@ func TestIntegrationPushRetryAndExpiredEndpoint(t *testing.T) {
 	var count int
 	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_subscriptions").Scan(&count); err != nil || count != 0 {
 		t.Fatal("expired endpoint retained", err)
+	}
+	// Every job that could only be retried through the dead endpoint is gone too.
+	var jobs int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&jobs); err != nil || jobs != 0 {
+		t.Fatal("jobs for the dead subscription retained", jobs, err)
 	}
 }

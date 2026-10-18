@@ -126,11 +126,19 @@ func TestOriginAndCookie(t *testing.T) {
 		t.Fatalf("LAN host origin matching failed: got %d %s", w.Code, w.Body.String())
 	}
 
-	// Reverse proxy with X-Forwarded-Host
+	// Reverse proxy with X-Forwarded-Host: honored only from a trusted proxy.
 	r = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"wrong"}`))
 	r.Host = "127.0.0.1:18473"
 	r.Header.Set("X-Forwarded-Host", "sms.example.com")
 	r.Header.Set("Origin", "https://sms.example.com")
+	w = httptest.NewRecorder()
+	lanServer.routes("../web").ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("untrusted forwarded host was honored: got %d %s", w.Code, w.Body.String())
+	}
+	if err := lanServer.configureTrustedProxies("192.0.2.0/24"); err != nil {
+		t.Fatal(err)
+	}
 	w = httptest.NewRecorder()
 	lanServer.routes("../web").ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "invalid_password") {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,7 +18,7 @@ func (a *app) routes(web string) http.Handler {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"status": "ok", "push": map[string]any{"enabled": a.vapidPublic != "" && a.vapidPrivate != "", "claim_failures": a.pushClaimFailures.Load(), "state_failures": a.pushStateFailures.Load(), "delivery_failures": a.pushDeliveryFailures.Load(), "last_success": a.pushLastSuccess.Load()}})
+		writeJSON(w, 200, map[string]any{"status": "ok", "push": map[string]any{"enabled": a.vapidPublic != "" && a.vapidPrivate != "", "claim_failures": a.pushClaimFailures.Load(), "state_failures": a.pushStateFailures.Load(), "delivery_failures": a.pushDeliveryFailures.Load(), "suppressed_read": a.pushSuppressed.Load(), "dropped": a.pushDropped.Load(), "last_success": a.pushLastSuccess.Load()}})
 	})
 	mux.HandleFunc("POST /api/login", a.loginHandler)
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -387,12 +389,38 @@ func (a *app) isHostAllowed(r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	for _, h := range []string{r.Header.Get("X-Forwarded-Host"), r.Host, r.URL.Host} {
+	hosts := []string{r.Host, r.URL.Host}
+	// A forwarded host is only meaningful behind a trusted edge; anyone else can set the
+	// header themselves and would otherwise bypass the same-origin check.
+	if a.isTrustedProxy(r) {
+		hosts = append([]string{r.Header.Get("X-Forwarded-Host")}, hosts...)
+	}
+	for _, h := range hosts {
 		if h == "" {
 			continue
 		}
 		hostPart := strings.TrimSpace(strings.Split(h, ",")[0])
 		if hostPart != "" && strings.EqualFold(u.Host, hostPart) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) isTrustedProxy(r *http.Request) bool {
+	if len(a.trustedProxies) == 0 {
+		return false
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	for _, prefix := range a.trustedProxies {
+		if prefix.Contains(peer.Unmap()) {
 			return true
 		}
 	}

@@ -1,3 +1,35 @@
+# 2026-10-18 短信链路补充加固（验证码意图、provider 补读、Push 终态）
+
+基线 `8c6d5d7`（`0.2.0-alpha.7`，含 #65 审计整改），分支 `agent/pipeline-reliability`，版本号保持不变。
+本轮只补做 #65 未覆盖的部分，契约与未实施项见 [PIPELINE_RELIABILITY.md](PIPELINE_RELIABILITY.md)。
+
+- 验证码通知持久化与单渠道：SQLite v11 `otp_intents` 与消息页同事务提交，进程中断后仍可补发未过期验证码；
+  能展示时不再计入普通汇总（不再一条短信响两次）；有效期取服务端解析值与“短信时间 + 10 分钟”的较小者，
+  过期不排队、不展示，展示超时按剩余时间；已读、epoch 重置、身份切换撤销意图并取消已展示通知。
+- provider 补读与重建：字段为空的行进入 `incomplete_provider` 轮转重读（水位仍前进，不阻塞后续短信）；
+  维护任务比较最高 `_id` 与扫描水位，回退即重置重新扫描（“最高 ID 不变但整库替换”不在覆盖范围，需人工核对）。
+- 上传不再阻断接收：上传异常延迟到下载完成后才报告给 worker，本机发送队列故障不再拖住接收其他设备短信。
+- 服务端：格式非法消息逐条 `invalid_message` ACK（同批有效短信仍提交，已发布客户端已理解该错误类型）；
+  上传策略查询失败返回 503 而非 403 `upload_disabled`；Push 投递前跳过已读消息（`suppressed_read`）、
+  429 尊重 Retry-After、`attempts>=50` 丢弃（`dropped`）、404/410 清理该设备全部任务与订阅；
+  healthz 新增上述两个计数；迁移 010 增加未读索引；`X-Forwarded-Host` 仅在 TRUSTED_PROXY_CIDRS 内
+  参与 Origin 匹配；OkHttp 增加 45 秒 call timeout；诊断页显示通知兜底失败原因（脱敏）。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；12 项运维测试 OK |
+| `git diff --check` | 通过 |
+| `gofmt -l server/*.go server/cmd/vapid/*.go` | 无输出 |
+| scratch `~/.build/短信同步系统/pipeline-reliability/`：`go test -race -count=1 ./...`、`go vet ./...`、`go build -trimpath` | 通过；未提供 `TEST_MYSQL_DSN`，真实 MySQL 集成测试（新增逐条 ACK、Push 已读抑制/Retry-After/终态、404/410 全量清理用例）skip，由 PR CI 的隔离 MySQL 执行 |
+| `node --check web/app.js`、`node --test web/test/*.test.js` | 通过；69 项测试 0 失败（本轮未改 Web 代码） |
+| scratch Android：`./gradlew --no-daemon :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug` | 通过，2m10s；223 项 JVM/Robolectric 测试 0 失败、11 项截图测试按设计跳过（新增 `OtpIntentTest` 6 项、provider 补读/重建合同 2 项），lint 0 错误，debug APK 生成 |
+| PR [#66](https://github.com/IGNGserver/hongshu/pull/66) 的 [Hongshu validation 39107521482](https://github.com/IGNGserver/hongshu/actions/runs/39107521482) | 全绿：`verify` 7s、`web` 5s、`server` 2m43s（隔离 MySQL 8.4.5 执行全部真库集成测试，含新增逐条 ACK、Push 已读抑制/Retry-After/终态、404/410 全量清理）、`android (28)` 8m52s、`android (33)` 8m19s、`android (35)` 8m38s（各含 JVM 单测、lint、APK 与模拟器 instrumentation） |
+| 首轮 CI 回归与修复 | API 35 首轮失败 `NetworkTest.largeHistoryQueue...`（expected 5, got 205）：我加的 10 秒上传截止在慢速模拟器上把单轮 20 批截成 ~18 批。已移除该截止（保留 20 批上限与“上传失败不阻断接收”隔离），重跑全绿；该失败未通过放宽断言或跳过测试掩盖 |
+| 真机、API 36 胶囊、公网 Push、真实 MySQL 恢复演练 | 未执行：本机无 adb 设备、无 MySQL/Docker；由 PR CI 与后续目标环境验收承担，不以本机结果代替 |
+
+边界：本机无 `TEST_MYSQL_DSN` 时 Go 集成测试跳过，不能记作真库验证通过；意图、补读与 Push 新用例均为合成数据合同，
+不等于厂商 ROM 行为或真机验收。真机、API 36 胶囊、公网 Push 与真实恢复演练仍未执行，需在目标环境单独验收。
+
 # 2026-10-17 Android 验证码实时胶囊 / 灵动岛通知
 
 基线 `2a173f0`（`0.2.0-alpha.4`），分支 `agent/live-otp-island`，版本号保持不变。

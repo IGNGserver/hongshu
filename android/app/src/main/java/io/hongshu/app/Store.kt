@@ -45,7 +45,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 10), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 11), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -110,6 +110,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createReadState(db)
         createReadOutbox(db)
         createNotificationReceipts(db)
+        createReliabilityExtras(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -139,6 +140,140 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 8) createReadState(db)
         if (oldVersion < 9) createReadOutbox(db)
         if (oldVersion < 10) createNotificationReceipts(db)
+        if (oldVersion < 11) createReliabilityExtras(db)
+    }
+
+    // v11: durable verification-code intents and a bounded retry list for provider rows that
+    // were incomplete when first scanned. Both are additive; no existing row is rewritten.
+    private fun createReliabilityExtras(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS otp_intents (message_id INTEGER PRIMARY KEY,otp TEXT NOT NULL,expires_at INTEGER NOT NULL,sender TEXT NOT NULL,contact TEXT NOT NULL,epoch INTEGER NOT NULL,shown INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS incomplete_provider (id INTEGER PRIMARY KEY,last_attempt INTEGER NOT NULL DEFAULT 0)"
+        )
+    }
+
+    data class OtpIntent(
+        val messageId: Long,
+        val otp: String,
+        val expiresAt: Long,
+        val sender: String,
+        val contact: String,
+        val epoch: Long,
+    )
+
+    fun pendingOtpIntents(now: Long = System.currentTimeMillis()): List<OtpIntent> =
+        readableDatabase
+            .rawQuery(
+                "SELECT message_id,otp,expires_at,sender,contact,epoch FROM otp_intents WHERE shown=0 AND expires_at>? ORDER BY message_id",
+                arrayOf(now.toString()),
+            )
+            .use { c ->
+                buildList {
+                    while (c.moveToNext())
+                        add(
+                            OtpIntent(
+                                c.getLong(0),
+                                c.getString(1),
+                                c.getLong(2),
+                                c.getString(3),
+                                c.getString(4),
+                                c.getLong(5),
+                            )
+                        )
+                }
+            }
+
+    fun markOtpShown(messageId: Long) {
+        writableDatabase.execSQL(
+            "UPDATE otp_intents SET shown=1 WHERE message_id=?",
+            arrayOf(messageId),
+        )
+    }
+
+    fun dropExpiredOtpIntents(now: Long = System.currentTimeMillis()) {
+        writableDatabase.execSQL(
+            "DELETE FROM otp_intents WHERE shown=0 AND expires_at<=?",
+            arrayOf(now),
+        )
+    }
+
+    // Read state revokes both pending and already shown intents; the caller cancels the
+    // matching system notifications with the same identity tag.
+    private fun revokeOtpIntents(
+        db: SQLiteDatabase,
+        sender: String?,
+        boundary: Long,
+    ): List<OtpIntent> {
+        val where = if (sender == null) "message_id<=?" else "sender=? AND message_id<=?"
+        val args =
+            if (sender == null) arrayOf(boundary.toString())
+            else arrayOf(sender, boundary.toString())
+        val revoked =
+            db.rawQuery(
+                    "SELECT message_id,otp,expires_at,sender,contact,epoch FROM otp_intents WHERE $where",
+                    args,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            add(
+                                OtpIntent(
+                                    c.getLong(0),
+                                    c.getString(1),
+                                    c.getLong(2),
+                                    c.getString(3),
+                                    c.getString(4),
+                                    c.getLong(5),
+                                )
+                            )
+                    }
+                }
+        if (revoked.isNotEmpty()) db.execSQL("DELETE FROM otp_intents WHERE $where", args)
+        return revoked
+    }
+
+    private fun cancelOtpNotifications(intents: List<OtpIntent>) {
+        if (intents.isEmpty()) return
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        for (intent in intents)
+            manager.cancel(
+                OtpNotificationManager.notificationTag(context, intent.messageId, intent.epoch),
+                OtpNotificationManager.NOTIFICATION_ID,
+            )
+    }
+
+    fun incompleteProviderIds(): List<Long> {
+        val ids =
+            readableDatabase
+                .rawQuery(
+                    "SELECT id FROM incomplete_provider ORDER BY last_attempt,id LIMIT 100",
+                    null,
+                )
+                .use { c ->
+                    buildList { while (c.moveToNext()) add(c.getLong(0)) }
+                }
+        for (id in ids)
+            writableDatabase.execSQL(
+                "UPDATE incomplete_provider SET last_attempt=? WHERE id=?",
+                arrayOf(System.currentTimeMillis(), id),
+            )
+        return ids
+    }
+
+    fun rememberIncompleteProvider(id: Long) {
+        writableDatabase.execSQL("INSERT OR IGNORE INTO incomplete_provider (id) VALUES (?)", arrayOf(id))
+    }
+
+    // A wiped or restored SMS database can reuse low provider ids; comparing the current head
+    // with the scan watermark detects the rewrite without scanning the whole inbox.
+    fun observeProviderHead(head: Long) {
+        if (head < maxOf(providerWatermark(), recoveryWatermark())) {
+            writableDatabase.execSQL(
+                "UPDATE meta SET value=0 WHERE key IN ('provider_id','recovery_provider_id')"
+            )
+        }
     }
 
     private fun createNotificationReceipts(db: SQLiteDatabase) {
@@ -206,6 +341,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun markRead(sender: String = "", messageId: Long = 0L, all: Boolean = false): Boolean {
         val db = writableDatabase
         var changed = false
+        val revoked = mutableListOf<OtpIntent>()
         db.beginTransaction()
         try {
             if (all) {
@@ -216,6 +352,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     db.execSQL("UPDATE meta SET value=? WHERE key='global_watermark_id'", arrayOf(head))
                     changed = true
                 }
+                if (head > 0) revoked += revokeOtpIntents(db, null, head)
             } else if (sender.isNotEmpty() && messageId > 0) {
                 // Only an actual message loaded for this sender may move its read watermark.
                 val exists = db.rawQuery("SELECT 1 FROM inbox WHERE sender=? AND id=?",
@@ -228,12 +365,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         db.execSQL("INSERT OR REPLACE INTO read_outbox VALUES (?,?)", arrayOf<Any>(sender, messageId))
                         changed = true
                     }
+                    revoked += revokeOtpIntents(db, sender, messageId)
                 }
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+        cancelOtpNotifications(revoked)
         if (changed) changes.value++
         return changed
     }
@@ -484,6 +623,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     "UPDATE meta SET value=MAX(value,?) WHERE key='provider_id'",
                     arrayOf(providerId),
                 )
+            // The row is complete now: stop retrying it, whatever the merge outcome is.
+            if (providerId != null) db.delete("incomplete_provider", "id=?", arrayOf(providerId.toString()))
             val existing =
                 if (providerId == null)
                     db.rawQuery(
@@ -1561,6 +1702,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(pageEpoch))
                 db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
             }
+            // Read the epoch through this transaction's connection; a separate read connection
+            // can still observe the pre-page snapshot in WAL mode.
+            val intentEpoch =
+                db.rawQuery("SELECT value FROM meta WHERE key='epoch'", null).use {
+                    if (it.moveToFirst()) it.getLong(0) else 0L
+                }
+            var fresh = 0
             for (i in 0 until messages.length()) {
                 val m = messages.getJSONObject(i)
                 reconcileSyncedOutbox(db, m, self, resolveReceiver)
@@ -1580,32 +1728,55 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 val analysis = m.optJSONObject("analysis")?.let { MessageAnalysis.from(it) }
                     ?: MessageAnalysis(otp = extractOtp(m.getString("body")).orEmpty())
                 saveAnalysis(db, m.getLong("id"), analysis)
-                if (inserted != -1L)
-                    added.add(
-                        CachedMessage(
-                            m.getLong("id"),
-                            m.getString("device_id"),
-                            m.getString("receiver"),
-                            m.getString("sender"),
-                            m.getString("body"),
-                            m.getLong("timestamp"),
-                            m.optString("contact"),
-                            m.optBoolean("historical"),
-                        )
+                if (inserted == -1L) continue
+                added.add(
+                    CachedMessage(
+                        m.getLong("id"),
+                        m.getString("device_id"),
+                        m.getString("receiver"),
+                        m.getString("sender"),
+                        m.getString("body"),
+                        m.getLong("timestamp"),
+                        m.optString("contact"),
+                        m.optBoolean("historical"),
+                        analysis = analysis,
                     )
+                )
+                if (!shouldNotify(
+                        m.getString("device_id"),
+                        self,
+                        m.optBoolean("historical"),
+                        initialComplete(),
+                        m.getLong("timestamp"),
+                        pairedAt,
+                    )
+                )
+                    continue
+                // A verification code occupies exactly one channel: a durable intent when it
+                // can be shown while valid, otherwise the ordinary summary. The intent is
+                // committed with the page, so a process death still shows the code later.
+                val otp = analysis.otp.ifEmpty { extractOtp(m.getString("body")).orEmpty() }
+                val expiresAt = otpNotificationExpiry(m.getLong("timestamp"), analysis.expiresAt)
+                if (
+                    otp.isNotEmpty() &&
+                        expiresAt > System.currentTimeMillis() &&
+                        config.notify &&
+                        config.liveOtpIsland &&
+                        OtpNotificationManager.otpNotificationsAvailable(context)
+                )
+                    db.execSQL(
+                        "INSERT OR REPLACE INTO otp_intents (message_id,otp,expires_at,sender,contact,epoch,shown) VALUES (?,?,?,?,?,?,0)",
+                        arrayOf(
+                            m.getLong("id"),
+                            otp,
+                            expiresAt,
+                            m.getString("sender"),
+                            m.optString("contact"),
+                            intentEpoch,
+                        ),
+                    )
+                else fresh++
             }
-            val fresh =
-                added.count {
-                    self.isNotEmpty() &&
-                        shouldNotify(
-                            it.deviceId,
-                            self,
-                            it.historical,
-                            initialComplete(),
-                            it.timestamp,
-                            pairedAt,
-                        )
-                }
             if (fresh > 0)
                 db.execSQL(
                     "UPDATE meta SET value=value+? WHERE key='notify_pending'",
@@ -1817,6 +1988,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         clearCaptures: Boolean = false,
     ) = synchronized(identityLock) {
         val db = writableDatabase
+        val revoked = mutableListOf<OtpIntent>()
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
@@ -1824,6 +1996,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.delete("contact_snapshot", null, null)
             db.delete("conversation_reads", null, null)
             db.delete("read_outbox", null, null)
+            revoked += revokeOtpIntents(db, null, Long.MAX_VALUE)
             db.execSQL("UPDATE meta SET value=0")
             db.execSQL("UPDATE meta SET value=-1 WHERE key='initial_head'")
             db.execSQL("UPDATE meta SET value=? WHERE key='capture_since'", arrayOf(connectedAt))
@@ -1836,6 +2009,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         } finally {
             db.endTransaction()
         }
+        cancelOtpNotifications(revoked)
         changes.value++
     }
 
@@ -1844,12 +2018,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     // start importing history from before this phone was paired.
     fun resetSyncedCache(epoch: Long) = synchronized(identityLock) {
         val db = writableDatabase
+        val revoked = mutableListOf<OtpIntent>()
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
             db.delete("message_analysis", null, null)
             db.delete("conversation_reads", null, null)
             db.delete("read_outbox", null, null)
+            revoked += revokeOtpIntents(db, null, Long.MAX_VALUE)
             db.execSQL("UPDATE meta SET value=0 WHERE key='global_watermark_id'")
             db.execSQL("UPDATE meta SET value=0 WHERE key='read_state_seen'")
             db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor','ai_enabled')")
@@ -1862,6 +2038,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         } finally {
             db.endTransaction()
         }
+        cancelOtpNotifications(revoked)
         changes.value++
     }
 

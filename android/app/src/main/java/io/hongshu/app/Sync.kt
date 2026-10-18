@@ -149,6 +149,7 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                     it.reconcileNotificationCaptures()
                     it.reconcileUnknownSimCaptures()
                     it.resolvePendingFallback()
+                    verifyProviderRebuild(applicationContext, it)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -337,42 +338,57 @@ object SyncEngine {
                     // Local capture remains independent; server can deny upload without
                     // deleting
                     // its queue.
-                    if (c.upload && serverUpload) {
-                        val registrations = SimRegistrations(repo.api, c)
-                        for (sim in store.sims()) registrations.ensure(sim.phone, sim.label, sim.sub)
-                        for (batch in 0 until 20) {
-                            if (!c.upload || !c.serverUploadAllowed) break
-                            val candidates = store.uploadCandidates(batch)
-                            val pending =
-                                candidates.take(
-                                    uploadBatchCount(
-                                        candidates.map {
-                                            it.second.json().toString().toByteArray().size
-                                        }
+                    var uploadFailure: Exception? = null
+                    try {
+                        if (c.upload && serverUpload) {
+                            val registrations = SimRegistrations(repo.api, c)
+                            for (sim in store.sims())
+                                registrations.ensure(sim.phone, sim.label, sim.sub)
+                            for (batch in 0 until 20) {
+                                if (!c.upload || !c.serverUploadAllowed) break
+                                val candidates = store.uploadCandidates(batch)
+                                val pending =
+                                    candidates.take(
+                                        uploadBatchCount(
+                                            candidates.map {
+                                                it.second.json().toString().toByteArray().size
+                                            }
+                                        )
                                     )
+                                if (pending.isEmpty()) break
+                                // Queued captures retain the number used before an offline SIM
+                                // change. Register those snapshots too; never rewrite them to the
+                                // new number.
+                                for (message in
+                                    pending
+                                        .map { it.second }
+                                        .distinctBy { it.receiver to it.subscriptionId }) {
+                                    registrations.ensure(
+                                        message.receiver,
+                                        "SIM",
+                                        message.subscriptionId,
+                                    )
+                                }
+                                uploadPending(
+                                    repo.api,
+                                    store,
+                                    pending,
+                                    enabled = { c.upload && c.serverUploadAllowed },
                                 )
-                            if (pending.isEmpty()) break
-                            // Queued captures retain the number used before an offline SIM
-                            // change. Register those snapshots too; never rewrite them to the
-                            // new number.
-                            for (message in
-                                pending
-                                    .map { it.second }
-                                    .distinctBy { it.receiver to it.subscriptionId }) {
-                                registrations.ensure(message.receiver, "SIM", message.subscriptionId)
+                                // A cached registration the hub no longer knows (restored database,
+                                // removed SIM) is re-sent once; a fresh rejection stays blocked.
+                                registrations
+                                    .forgetRejected(store.simRejectedReceivers())
+                                    .takeIf { it.isNotEmpty() }
+                                    ?.let { store.releaseSimRejections(it) }
                             }
-                            uploadPending(
-                                repo.api,
-                                store,
-                                pending,
-                                enabled = { c.upload && c.serverUploadAllowed },
-                            )
-                            // A cached registration the hub no longer knows (restored database,
-                            // removed SIM) is re-sent once; a fresh rejection stays blocked.
-                            registrations.forgetRejected(store.simRejectedReceivers())
-                                .takeIf { it.isNotEmpty() }
-                                ?.let { store.releaseSimRejections(it) }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: ApiException) {
+                        if (e.status == 401) throw e else uploadFailure = e
+                    } catch (e: Exception) {
+                        uploadFailure = e
                     }
                     val contactsHealthy =
                         try {
@@ -435,6 +451,9 @@ object SyncEngine {
                                     "同步完成 · 历史短信采集中，自动继续"
                                 else "同步完成"
                             if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
+                            // Download completed; report the upload failure so the worker backs
+                            // off and retries without having blocked receiving.
+                            uploadFailure?.let { throw it }
                             // Successful bounded work gets a successor, not failure backoff.
                             return@withContext readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                                 (serverUpload &&
@@ -451,15 +470,17 @@ object SyncEngine {
 }
 
 internal fun applyMessagePage(context: Context, config: Config, store: Store, data: JSONObject, pairedAt: Long) {
-    // Completing the initial head must not retroactively classify this page's old OTPs as new.
-    val hadPreviousSync = store.initialComplete()
-    val added = store.applySync(data.getJSONArray("messages"), data.getLong("cursor"),
+    store.applySync(data.getJSONArray("messages"), data.getLong("cursor"),
         config.deviceId, pairedAt, data.getLong("epoch"))
     if (!config.notify || !config.liveOtpIsland || config.deviceId.isEmpty()) return
-    for (msg in added) {
-        if (!shouldNotify(msg.deviceId, config.deviceId, msg.historical, hadPreviousSync, msg.timestamp, pairedAt)) continue
-        val otp = extractOtp(msg.body) ?: continue
-        OtpNotificationManager.showOtpNotification(context, msg.id, otp, msg.sender, msg.contact, epoch = store.epoch())
+    // Intents were committed with the message pages, so a process death between the commit
+    // and this loop still shows a valid code on the next sync. Consume every pending intent,
+    // not just this page's, while it is still valid.
+    store.dropExpiredOtpIntents()
+    for (intent in store.pendingOtpIntents()) {
+        if (OtpNotificationManager.showOtpNotification(context, intent.messageId, intent.otp,
+                intent.sender, intent.contact, epoch = intent.epoch, expiresAt = intent.expiresAt))
+            store.markOtpShown(intent.messageId)
     }
 }
 

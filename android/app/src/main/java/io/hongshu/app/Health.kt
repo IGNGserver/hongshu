@@ -60,6 +60,7 @@ fun notificationCaptureStatus(context: Context): String {
         "短信应用通知到达 ${c.receivedNotifications} 次" +
             if (c.lastReceivedNotification > 0) " · 最近 ${formatTimestamp(c.lastReceivedNotification)}"
             else ""
+    if (c.notificationFailure.isNotEmpty()) return "$arrived · ${c.notificationFailure}"
     return "$arrived · 只采集开启后的短信通知；发件人可能显示为联系人名称，号码由后续广播/补漏校正"
 }
 

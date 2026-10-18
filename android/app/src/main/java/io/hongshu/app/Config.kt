@@ -161,6 +161,14 @@ class Config(context: Context) {
     val notificationSince: Long
         get() = prefs.getLong("notification_since", 0)
 
+    // Empty when the notification fallback is healthy; otherwise a redacted reason shown in
+    // diagnostics. Never contains SMS content.
+    var notificationFailure: String
+        get() = prefs.getString("notification_failure", "")!!
+        set(value) {
+            prefs.edit().putString("notification_failure", value).apply()
+        }
+
     val notificationGeneration: Long
         get() = prefs.getLong("notification_generation", 0)
 

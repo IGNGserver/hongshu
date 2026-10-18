@@ -128,6 +128,7 @@ class Api(private val config: Config, private val originOverride: String? = null
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(45, TimeUnit.SECONDS)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .build()
