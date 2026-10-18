@@ -554,12 +554,12 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
     }
 
-    fun localPending(limit: Int = 100, offset: Int = 0): List<LocalPendingMessage> {
+    fun localPending(limit: Int = 100, offset: Int = 0, now: Long = System.currentTimeMillis()): List<LocalPendingMessage> {
         val resolver = receiverResolver(allowFallback = false)
         return readableDatabase
             .rawQuery(
-                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0) FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
-                arrayOf(limit.coerceIn(1, 200).toString(), offset.coerceAtLeast(0).toString()),
+                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0),$UNPAIRED_NOTIFICATION,$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER) FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
+                arrayOf(now.toString(), limit.coerceIn(1, 200).toString(), offset.coerceAtLeast(0).toString()),
             )
             .use { c ->
                 buildList {
@@ -578,6 +578,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                             c.getInt(7) != 0,
                             c.getString(8),
                             c.getInt(10) != 0,
+                            c.getInt(11) != 0,
+                            c.getInt(12) != 0,
                         )
                     )
                 }
@@ -1516,30 +1518,32 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return primary.take(100 - secondary.size) + secondary
     }
 
-    fun pendingCounts(): PendingCounts {
+    fun pendingCounts(now: Long = System.currentTimeMillis()): PendingCounts {
         val resolver = receiverResolver(allowFallback = false)
         return readableDatabase
             .rawQuery(
-                "SELECT receiver,sub,blocked,COUNT(*) FROM outbox GROUP BY receiver,sub,blocked",
-                null,
+                "SELECT receiver,sub,blocked,COUNT(*),held FROM (SELECT receiver,sub,blocked,($HELD_NOTIFICATION) AS held FROM outbox) GROUP BY receiver,sub,blocked,held",
+                arrayOf(now.toString()),
             )
             .use { rows ->
                 var ready = 0
                 var needsSim = 0
                 var invalid = 0
                 var collisions = 0
+                var held = 0
                 while (rows.moveToNext()) {
                     val count = rows.getInt(3)
                     when {
                         rows.getString(2) == "notification_collision" -> collisions += count
                         rows.getString(2) == "invalid_message" -> invalid += count
+                        rows.getInt(4) != 0 -> held += count
                         rows.getString(2).isNotEmpty() ||
                             !confirmedNumber(rows.getString(0).ifEmpty { resolver(rows.getInt(1)) }) ->
                             needsSim += count
                         else -> ready += count
                     }
                 }
-                PendingCounts(ready, needsSim, invalid, collisions)
+                PendingCounts(ready, needsSim, invalid, collisions, held)
             }
     }
 
