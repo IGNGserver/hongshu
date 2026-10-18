@@ -17,7 +17,7 @@ import (
 )
 
 // All fixtures are synthetic and bounded; even the query-plan case has only
-// 512 rows. These tests run against CI's isolated MySQL, never an AI provider.
+// 10,000 rows. These tests run against CI's isolated MySQL, never an AI provider.
 func analysisClaimFixture(t *testing.T, count int) (*app, Device) {
 	t.Helper()
 	db := testDB(t)
@@ -197,14 +197,15 @@ func uploadAnalysisFixture(t *testing.T, a *app, d Device, messages ...Incoming)
 }
 
 func TestAnalysisCandidateScanDoesNotBlockUpload(t *testing.T) {
-	a, d := analysisClaimFixture(t, 512)
+	const queueRows = 10000
+	a, d := analysisClaimFixture(t, queueRows)
 	db := a.db
 	now := time.Now().UnixMilli()
 	var plan string
 	if err := db.QueryRow("EXPLAIN ANALYZE "+analysisCandidateSQL, now, now).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("synthetic 512-row queue; unlocked candidate EXPLAIN ANALYZE:", plan)
+	t.Logf("synthetic %d-row queue; unlocked candidate EXPLAIN ANALYZE: %s", queueRows, plan)
 	workerDB, gate := blockedAnalysisDB(t, db)
 	defer workerDB.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -227,7 +228,7 @@ func TestAnalysisCandidateScanDoesNotBlockUpload(t *testing.T) {
 	release()
 	select {
 	case got := <-result:
-		if got.err != nil || got.job == nil || got.job.ID != 512 {
+		if got.err != nil || got.job == nil || got.job.ID != queueRows {
 			t.Fatal("valid snapshot candidate lost progress after concurrent upload", got.err)
 		}
 	case <-ctx.Done():
@@ -243,17 +244,17 @@ func TestAnalysisCandidateScanDoesNotBlockUpload(t *testing.T) {
 	started := time.Now()
 	job, err := a.claimAnalysis(ctx)
 	claimElapsed := time.Since(started)
-	if err != nil || job == nil || job.ID != 513 {
+	if err != nil || job == nil || job.ID != queueRows+1 {
 		t.Fatal("new incoming did not outrank historical queue", err)
 	}
 	if _, err = db.Exec("UPDATE ai_settings SET next_call=0 WHERE id=1"); err != nil {
 		t.Fatal(err)
 	}
 	job, err = a.claimAnalysis(ctx)
-	if err != nil || job == nil || job.ID != 511 {
+	if err != nil || job == nil || job.ID != queueRows-1 {
 		t.Fatal("historical task lost or chronological priority changed", err)
 	}
-	t.Logf("synthetic queue_rows=512 blocked_scan_upload=%s subsequent_claim=%s (diagnostic timing, no throughput assertion)", uploadElapsed, claimElapsed)
+	t.Logf("synthetic queue_rows=%d blocked_scan_upload=%s subsequent_claim=%s (diagnostic timing, no throughput assertion)", queueRows, uploadElapsed, claimElapsed)
 }
 
 func TestAnalysisConcurrentCandidatesShareLeaseAndQuota(t *testing.T) {

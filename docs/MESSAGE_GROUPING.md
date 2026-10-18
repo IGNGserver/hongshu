@@ -72,5 +72,5 @@ Android SQLite v7 仅新增派生元数据和同步水位，不清空 inbox/outb
 `server/analysis_claim_test.go` 在真实 MySQL 上以查询响应屏障验证：候选读取未返回时上传仍能提交，
 每轮读取期间都有 OTP/低优先级历史上传仍能逐轮领取，并发新消息在下一次排序优先；
 双 worker 不重复领取或超额度，失效候选/过期租约不会丢任务。
-CI 的 `go test -race -count=1 -v ./...` 输出 512 条合成队列的 `EXPLAIN ANALYZE` 与上传/领取耗时；
+CI 的 `go test -race -count=1 -v ./...` 输出 10,000 条合成队列的 `EXPLAIN ANALYZE` 与上传/领取耗时；
 该规模仅作锁范围回归与诊断，不代表大库吞吐量保证。未设置 `TEST_MYSQL_DSN` 时这些测试跳过，不能视为数据库验证通过。

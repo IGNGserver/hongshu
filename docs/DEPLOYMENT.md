@@ -148,7 +148,8 @@ FROM conversation_reads cr LEFT JOIN messages m
 WHERE cr.last_read_message_id<>0 AND m.id IS NULL;
 ```
 
-若有异常，先将所有运行中的中枢实例升级到已修复版本并备份数据库，再由部署者显式执行部署包中的修复脚本：
+结果为 0 时无需执行修复。有异常时，先将所有运行中的中枢实例（包括临时 `compose run` 启动的实例）
+升级到已修复版本并备份数据库，再由部署者显式执行部署包中的修复脚本：
 
 ```bash
 docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu hongshu' < scripts/repair-read-watermarks.sql
@@ -157,6 +158,8 @@ docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu ho
 脚本仅将无效会话水位重置为 0，并通知在线客户端重新观察；保留有效水位、全局水位及所有短信。
 旧水位原本想表达的已读范围无法还原，部分历史非导入短信可能重新显示未读，用户可重新标读。
 脚本不随启动或数据库迁移自动执行；回滚该次修复需使用执行前备份中的对应水位记录。
+不要给 mysql 添加 `--force`；SQL 错误应中止执行并回滚未提交事务。执行后重复上述只读查询，
+确认异常数量为 0，再检查各客户端刷新和新消息未读计数；重复运行无异常的脚本不会推进已读修订。
 
 ## 本地开发
 
