@@ -240,12 +240,14 @@ fun LocalPendingPage(host: SettingsHost) {
                                 config.serverUploadAllowed,
                                 connected,
                                 authorized,
+                                record.notificationOnly,
+                                record.notificationHeld,
                             )
                         SettingsRow(record.key) {
                             PendingRecord(
                                 record = record,
                                 state = state,
-                                canAssign = state in setOf(PendingState.NEEDS_SIM, PendingState.NOTIFICATION_COLLISION) && sims.isNotEmpty(),
+                                canAssign = state in setOf(PendingState.NEEDS_SIM, PendingState.NOTIFICATION_ONLY, PendingState.NOTIFICATION_COLLISION) && sims.isNotEmpty(),
                                 canRetry = state == PendingState.INVALID,
                                 busy = host.busy,
                                 onAssign = { assigning = listOf(record.key) },

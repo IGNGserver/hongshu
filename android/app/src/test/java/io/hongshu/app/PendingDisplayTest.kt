@@ -146,6 +146,22 @@ class PendingDisplayTest {
     }
 
     @Test
+    fun heldAndNotificationOnlyRowsAreShownAsSuch() = withStore { store ->
+        val now = 10_000_000L
+        assertTrue(store.queueNotification(SmsRecord("", "95588", "synthetic", now, -1)))
+        val held = store.localPending(now = now + 1000).single()
+        assertTrue(held.notificationOnly)
+        assertTrue(held.notificationHeld)
+        assertEquals(1, store.pendingCounts(now + 1000).held)
+        val released = store.localPending(now = now + NOTIFICATION_NUMBER_HOLD + 1).single()
+        assertTrue(released.notificationOnly)
+        assertFalse(released.notificationHeld)
+        assertEquals(0, store.pendingCounts(now + NOTIFICATION_NUMBER_HOLD + 1).held)
+        assertFalse(store.captureProvider(9, SmsRecord(phone, "95588", "synthetic", now + 2000, 7)))
+        assertFalse(store.localPending(now = now + 3000).single().notificationOnly)
+    }
+
+    @Test
     fun notificationPairedWithItsSmsIsNotHeld() = withStore { store ->
         val now = 10_000_000L
         assertTrue(store.queueNotification(SmsRecord("", "95588", "synthetic", now, -1)))
