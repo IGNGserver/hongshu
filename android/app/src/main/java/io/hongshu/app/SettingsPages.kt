@@ -196,13 +196,23 @@ fun CapturePage(host: SettingsHost) {
     }
 
     fun setNotificationCapture(enabled: Boolean) {
-        host.action {
-            check(!enabled || c.upload) { "请先开启短信采集" }
-            c.notificationCapture = enabled
-            if (enabled && !notificationListenerEnabled(activity))
-                host.openSystem(notificationListenerIntents(activity), "无法打开通知使用权设置")
-            if (enabled) "请在系统中允许鸿枢读取通知；只处理短信应用的通知" else "已停止从通知读取短信"
-        }
+        fun apply(readSms: Boolean) =
+            host.action {
+                check(!enabled || c.upload) { "请先开启短信采集" }
+                c.notificationCapture = enabled
+                // The notification only signals; the inbox read fetches each message.
+                if (enabled && linkRecoveryToNotificationCapture(activity)) SmsInboxObserver.ensure(activity)
+                if (enabled && !notificationListenerEnabled(activity))
+                    host.openSystem(notificationListenerIntents(activity), "无法打开通知使用权设置")
+                syncNow(activity, manual = true)
+                when {
+                    !enabled -> "已停止从通知读取短信"
+                    readSms -> "请在系统中允许鸿枢读取通知；收到短信通知时会立即补读收件箱"
+                    else -> "已开启，但未授予读取短信权限：折叠成一条的多条短信无法从收件箱补全"
+                }
+            }
+        if (enabled) host.requestPermissions(arrayOf(Manifest.permission.READ_SMS), ::apply)
+        else apply(true)
     }
 
     SettingsScaffold(SettingsPage.Capture.title, host.back, busy) {

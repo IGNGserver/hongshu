@@ -132,13 +132,25 @@ class PendingDisplayTest {
     }
 
     @Test
-    fun nameTitledNotificationWaitsForTheNumberBeforeUpload() = withStore { store ->
+    fun unpairedNotificationsWaitForTheirSmsCounterpartBeforeUpload() = withStore { store ->
         val now = 10_000_000L
         assertTrue(store.queueNotification(SmsRecord(phone, "妈妈", "synthetic", now, 7)))
         assertTrue(store.queueNotification(SmsRecord(phone, "95588", "synthetic", now, 7)))
-        assertEquals(listOf("95588"), store.pending(now = now + 1000).map { it.second.sender })
-        assertEquals(NOTIFICATION_NAME_HOLD - 1000, store.nextNotificationRelease(now + 1000))
+        assertTrue(store.pending(now = now + 1000).isEmpty())
+        assertEquals(NOTIFICATION_NUMBER_HOLD - 1000, store.nextNotificationRelease(now + 1000))
+        assertEquals(listOf("95588"), store.pending(now = now + NOTIFICATION_NUMBER_HOLD + 1).map { it.second.sender })
+        assertEquals(NOTIFICATION_NAME_HOLD - NOTIFICATION_NUMBER_HOLD - 1,
+            store.nextNotificationRelease(now + NOTIFICATION_NUMBER_HOLD + 1))
         assertEquals(2, store.pending(now = now + NOTIFICATION_NAME_HOLD + 1).size)
         assertNull(store.nextNotificationRelease(now + NOTIFICATION_NAME_HOLD + 1))
+    }
+
+    @Test
+    fun notificationPairedWithItsSmsIsNotHeld() = withStore { store ->
+        val now = 10_000_000L
+        assertTrue(store.queueNotification(SmsRecord("", "95588", "synthetic", now, -1)))
+        assertFalse(store.captureProvider(9, SmsRecord(phone, "95588", "synthetic", now + 2000, 7)))
+        assertEquals(listOf("95588"), store.pending(now = now + 3000).map { it.second.sender })
+        assertNull(store.nextNotificationRelease(now + 3000))
     }
 }

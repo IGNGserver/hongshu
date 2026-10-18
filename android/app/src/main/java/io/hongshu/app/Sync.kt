@@ -144,6 +144,9 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             } catch (_: Exception) {
                 config.simRecognitionHealthy = false
             }
+            // Installs that enabled the notification fallback before it implied recovery.
+            if (linkRecoveryToNotificationCapture(applicationContext))
+                SmsInboxObserver.ensure(applicationContext)
             try {
                 Store(applicationContext).use {
                     it.reconcileNotificationCaptures()
@@ -212,6 +215,28 @@ private fun enqueueCaptureContinuation(context: Context) =
     }
 
 internal const val CAPTURE_CONTINUATION_DELAY_MS = 10_000L
+
+// A second inbox read shortly before a held notification is released, for providers that store
+// the row after posting the notification. Runs outside the shared capture chain, like the
+// periodic worker, so a long history page cannot delay it. Notifications whose re-reads fall in
+// the same 10-second slot share one pass, and the first one keeps its time: a burst of
+// notifications cannot keep postponing the re-read of an earlier row.
+internal fun scheduleNotificationReread(context: Context, delayMillis: Long) =
+    synchronized(schedulingLock) {
+        val slot = (System.currentTimeMillis() + delayMillis) / NOTIFICATION_REREAD_SLOT_MS
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(
+                "hongshu-notification-reread-$slot",
+                ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<CaptureWorker>()
+                    .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+                    .build(),
+            )
+            .result
+            .get()
+    }
+
+internal const val NOTIFICATION_REREAD_SLOT_MS = 10_000L
 
 fun schedule(context: Context) {
     WorkManager.getInstance(context)
