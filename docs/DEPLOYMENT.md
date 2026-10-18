@@ -136,6 +136,31 @@ down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手�
 应用回滚只能在 schema 兼容时退回旧版本镜像标签（修改 `.env` 中的 `HONGSHU_VERSION` 并重新 `docker compose up -d hub`）；不兼容时恢复已验证的新卷备份，不能盲目执行 down.sql。
 保留数据库与授权信息，`docker compose down` 不加 `-v`；删除数据卷不是升级/回滚步骤。
 
+### 旧版异常会话已读水位
+
+旧版已读接口可能接受不存在或属于其他发件人的消息 ID；升级后的输入校验不会自动改写这些存量水位。
+可先只读检查异常数量（不输出号码或短信）：
+
+```sql
+SELECT COUNT(*) AS invalid_read_watermarks
+FROM conversation_reads cr LEFT JOIN messages m
+  ON m.id=cr.last_read_message_id AND m.sender=cr.sender
+WHERE cr.last_read_message_id<>0 AND m.id IS NULL;
+```
+
+结果为 0 时无需执行修复。有异常时，先将所有运行中的中枢实例（包括临时 `compose run` 启动的实例）
+升级到已修复版本并备份数据库，再由部署者显式执行部署包中的修复脚本：
+
+```bash
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu hongshu' < scripts/repair-read-watermarks.sql
+```
+
+脚本仅将无效会话水位重置为 0，并通知在线客户端重新观察；保留有效水位、全局水位及所有短信。
+旧水位原本想表达的已读范围无法还原，部分历史非导入短信可能重新显示未读，用户可重新标读。
+脚本不随启动或数据库迁移自动执行；回滚该次修复需使用执行前备份中的对应水位记录。
+不要给 mysql 添加 `--force`；SQL 错误应中止执行并回滚未提交事务。执行后重复上述只读查询，
+确认异常数量为 0，再检查各客户端刷新和新消息未读计数；重复运行无异常的脚本不会推进已读修订。
+
 ## 本地开发
 
 Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。直接运行 Go 服务时默认监听 8080；Docker Compose 的宿主默认端口为 18473。

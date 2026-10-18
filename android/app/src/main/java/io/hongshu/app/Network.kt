@@ -50,6 +50,35 @@ internal fun describeApiError(status: Int, code: String): String =
 internal val identityLock = Any()
 internal val identityMutex = Mutex()
 
+internal data class LoginIdentity(
+    val origin: String,
+    val token: String,
+    val deviceId: String,
+    val name: String,
+    val createdAt: Long,
+    val notify: Boolean,
+)
+
+internal fun validatedLogin(origin: String, response: JSONObject): LoginIdentity {
+    val device = response.getJSONObject("device")
+    val token = response.get("token") as? String ?: error("中枢返回的凭据无效")
+    val id = device.get("id") as? String ?: error("中枢返回的设备身份无效")
+    val name = device.get("name") as? String ?: error("中枢返回的设备名称无效")
+    val created = device.get("created_at")
+    val notify = device.get("notify") as? Boolean ?: error("中枢返回的通知设置无效")
+    check(token.isNotEmpty() && token.length <= 4096 && token.all { it.code in 33..126 }) {
+        "中枢返回的凭据无效"
+    }
+    check(id.matches(Regex("[A-Za-z0-9_-]{1,100}"))) { "中枢返回的设备身份无效" }
+    check(name.isNotBlank() && name.toByteArray().size <= 100 && !name.contains('\u0000')) {
+        "中枢返回的设备名称无效"
+    }
+    check((created is Int || created is Long) && (created as Number).toLong() > 0) {
+        "中枢返回的连接时间无效"
+    }
+    return LoginIdentity(origin, token, id, name, (created as Number).toLong(), notify)
+}
+
 internal fun hubOrigin(url: String): String {
     val base = URI(url)
     val scheme = base.scheme?.lowercase()
@@ -111,7 +140,10 @@ class Api(private val config: Config, private val originOverride: String? = null
         authorized: Boolean = true,
     ): JSONObject {
         val (origin, token) =
-            synchronized(identityLock) { hubOrigin(originOverride ?: config.url) to config.token }
+            synchronized(identityLock) {
+                check(!authorized || !config.identityChanging) { "身份切换未完成，请重新连接" }
+                hubOrigin(originOverride ?: config.url) to config.token
+            }
         val builder = Request.Builder().url(origin + "/api" + path)
         if (authorized) {
             builder.header("Authorization", "Bearer $token")
@@ -153,9 +185,9 @@ class Api(private val config: Config, private val originOverride: String? = null
     }
 }
 
-class Repository(val context: Context) {
+class Repository(val context: Context, databaseName: String = "hongshu.db") {
     val config = Config(context)
-    val store = Store(context)
+    val store = Store(context, databaseName)
     val api = Api(config)
 
     fun saveConnection(url: String, password: String, name: String) = runBlocking {
@@ -210,6 +242,8 @@ class Repository(val context: Context) {
                             .put("kind", "android"),
                         false,
                     )
+            val identity = validatedLogin(newUrl, r)
+            val encryptedToken = config.encryptToken(identity.token)
             synchronized(identityLock) {
                 check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
                     "连接期间采集了尚未上传的短信，不能更换中枢"
@@ -218,22 +252,12 @@ class Repository(val context: Context) {
                 // login are not dropped; the new hub device record starts with upload disabled,
                 // so the switch is re-sent on the next sync. A different hub always starts off.
                 val keepUpload = oldUrl == newUrl && config.upload
-                config.invalidateCaptureSession()
+                config.beginIdentityChange()
                 store.resetForNewIdentity(
-                    connectedAt =
-                        r.getJSONObject("device").optLong("created_at", System.currentTimeMillis()),
+                    connectedAt = identity.createdAt,
                     clearCaptures = oldUrl.isNotEmpty() && oldUrl != newUrl,
                 )
-                config.url = newUrl
-                config.token = r.getString("token")
-                config.deviceId = r.getJSONObject("device").getString("id")
-                config.deviceName = r.getJSONObject("device").optString("name", name.trim())
-                config.upload = keepUpload
-                config.uploadPatchPending = keepUpload
-                config.registeredSims = emptySet()
-                config.notify = r.getJSONObject("device").optBoolean("notify", true)
-                config.syncHealthy = false
-                config.status = "已连接"
+                config.completeIdentity(identity, encryptedToken, keepUpload)
             }
         } catch (e: Exception) {
             throw e

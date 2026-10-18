@@ -5,9 +5,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,6 +59,118 @@ func pushFixture(t *testing.T) (*app, Device) {
 		t.Fatal(err)
 	}
 	return a, d
+}
+
+func addPushJobs(t *testing.T, a *app, d Device, total int) {
+	t.Helper()
+	for id := 2; id <= total; id++ {
+		if _, err := a.db.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic SMS", id, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.db.Exec("INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) VALUES (?,?,0,0)", id, d.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestIntegrationPushClaimsJustInTimeAndBoundsBatch(t *testing.T) {
+	a, d := pushFixture(t)
+	addPushJobs(t, a, d, 21)
+	sent := 0
+	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		sent++
+		var leased int
+		if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs WHERE leased_until>0").Scan(&leased); err != nil || leased != 1 {
+			t.Errorf("queued jobs leased before their send: count=%d err=%v", leased, err)
+		}
+		if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) > 60*time.Second {
+			t.Error("send missing bounded lease deadline")
+		}
+		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	if err := a.processPushBatch(context.Background(), client, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var pending, leased int
+	if err := a.db.QueryRow("SELECT COUNT(*),COALESCE(SUM(leased_until>0),0) FROM push_jobs").Scan(&pending, &leased); err != nil || pending != 1 || leased != 0 || sent != 20 {
+		t.Fatalf("batch sent=%d pending=%d leased=%d err=%v", sent, pending, leased, err)
+	}
+}
+
+func TestIntegrationPushConcurrentWorkersDoNotPreleaseTail(t *testing.T) {
+	a, d := pushFixture(t)
+	addPushJobs(t, a, d, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var sent atomic.Int32
+	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		if sent.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	first := make(chan error, 1)
+	go func() { first <- a.processPushBatch(ctx, client, time.Now()) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("first worker did not start")
+	}
+	if err := a.processPushBatch(ctx, client, time.Now()); err != nil {
+		t.Error(err)
+	}
+	if sent.Load() != 2 {
+		t.Error("slow first delivery prevented another worker from claiming the unstarted tail")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&pending); err != nil || pending != 0 || sent.Load() != 2 {
+		t.Fatalf("pending=%d sends=%d err=%v", pending, sent.Load(), err)
+	}
+}
+
+func TestIntegrationPushSendCannotOutliveLease(t *testing.T) {
+	a, _ := pushFixture(t)
+	jobs, err := a.claimPushJobs(context.Background(), time.Now())
+	if err != nil || len(jobs) != 1 {
+		t.Fatal("claim", err)
+	}
+	j := jobs[0]
+	j.lease = time.Now().Add(time.Second).UnixMilli()
+	if _, err := a.db.Exec("UPDATE push_jobs SET leased_until=? WHERE id=?", j.lease, j.id); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		if !ok || deadline.After(time.UnixMilli(j.lease)) {
+			t.Error("HTTP call can outlive ownership")
+		}
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	if err := a.deliverPushJob(ctx, client, j); err != nil {
+		t.Fatal("failed to persist retry after send deadline", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("send waited for parent timeout instead of lease expiry")
+	}
+	var attempts int
+	var lease int64
+	if err := a.db.QueryRow("SELECT attempts,leased_until FROM push_jobs WHERE id=?", j.id).Scan(&attempts, &lease); err != nil || attempts != 1 || lease != 0 {
+		t.Fatal("expired send not left retryable", attempts, lease, err)
+	}
 }
 
 func TestIntegrationPushWorkerClaimsAndDelivers(t *testing.T) {

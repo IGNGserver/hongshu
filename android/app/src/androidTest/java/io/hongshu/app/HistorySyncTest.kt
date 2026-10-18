@@ -90,19 +90,19 @@ class HistorySyncTest {
                 store.resetForNewIdentity(connectedAt = 1000)
                 store.initializeHistoryBoundary(2000)
                 store.saveSim(SimMapping(7, 0, "+1234567890", "SIM1"))
-                assertEquals(1000, scanInbox(context, store, false, true))
+                assertEquals(1000, scanInbox(context, store))
                 assertEquals(1000L, store.providerWatermark())
                 assertTrue(Config(base).inboxScanPending)
                 assertTrue(store.pending().all { it.second.historical })
             }
             Store(context, name).use { store ->
-                assertEquals(205, scanInbox(context, store, false, true))
+                assertEquals(205, scanInbox(context, store))
                 assertFalse(Config(base).inboxScanPending)
                 assertEquals(1205, store.pendingCount())
-                assertEquals(0, scanInbox(context, store, false, true))
+                assertEquals(0, scanInbox(context, store))
                 inbox.rows++
                 inbox.lastTimestamp = 2100
-                assertEquals(1, scanInbox(context, store, false, true))
+                assertEquals(1, scanInbox(context, store))
                 val live =
                     store.readableDatabase
                         .rawQuery("SELECT historical FROM outbox WHERE key='provider:1206'", null)
@@ -113,7 +113,7 @@ class HistorySyncTest {
                 assertEquals(0, live)
                 Config(base).upload = false
                 inbox.rows++
-                assertEquals(0, scanInbox(context, store, false, true))
+                assertEquals(0, scanInbox(context, store))
                 assertEquals(1206, store.pendingCount())
                 assertEquals("未启用本机采集", catchUpInbox(context))
             }

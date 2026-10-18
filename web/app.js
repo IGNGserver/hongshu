@@ -170,6 +170,8 @@ const state = {
   device: "",
   conversations: [],
   messages: [],
+  conversationsQuery: "",
+  messagesQuery: "",
   conversationsLoaded: false,
   conversationsHasMore: false,
   loadingMore: false,
@@ -184,6 +186,10 @@ const state = {
   busy: false,
   contacts: {},
   inboxDirty: false,
+  historyDirty: false,
+  conversationsDirty: false,
+  readRetry: false,
+  pendingDisplayedRead: null,
   historyHasMore: true,
   historyLoading: false,
   group: "all",
@@ -194,6 +200,25 @@ const state = {
   arrivalsPending: false,
   unreadCount: 0,
 };
+
+const inboxQueryKey = () => JSON.stringify([state.group, state.q, state.sim, state.device]);
+const historyQueryKey = () => JSON.stringify([inboxQueryKey(), state.sender]);
+
+function invalidateQueryData() {
+  if (state.conversationsQuery !== inboxQueryKey()) {
+    state.conversations = [];
+    state.conversationsLoaded = state.conversationsHasMore = false;
+  }
+  if (state.messagesQuery !== historyQueryKey()) {
+    state.pendingDisplayedRead = null;
+    historyAbortController?.abort();
+    historyRequestId++;
+    state.messages = [];
+    state.seenMessageId = 0;
+    state.historyHasMore = true;
+    state.historyLoading = false;
+  }
+}
 
 const errors = {
   unauthorized: "登录状态已失效，请重新输入中枢密码",
@@ -969,8 +994,9 @@ function renderFilterMenu() {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false, arrivals = false } = {}) {
-  if (!state.me) return;
+async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false, revalidateConversations = false, arrivals = false } = {}) {
+  if (!state.me) return false;
+  invalidateQueryData();
   if (inboxAbortController) {
     inboxAbortController.abort();
   }
@@ -981,7 +1007,11 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
   try {
     setBusy(true);
     if (metadata) await reloadMetadata();
-    if (signal.aborted) return;
+    if (signal.aborted) return false;
+
+    invalidateQueryData();
+    const key = inboxQueryKey();
+    preserveHistory &&= state.conversationsQuery === key;
 
     if (gen === refreshGeneration) renderFilterMenu();
     const args = {
@@ -996,18 +1026,36 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
       api("/conversations?" + query(args), "GET", undefined, { signal }),
       api("/analysis/counts?" + query({q:state.q,sim:state.sim,device:state.device}), "GET", undefined, { signal }),
     ]);
-    if (signal.aborted || gen !== refreshGeneration) return;
+    if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey()) return false;
     const head = d.conversations;
     const headIsFull = head.length === CONVERSATION_PAGE;
-    state.conversations = preserveHistory ? mergeConversationPages(head, state.conversations, headIsFull) : head;
-    if (!preserveHistory || !headIsFull) state.conversationsHasMore = headIsFull;
+    if (preserveHistory && revalidateConversations) {
+      let rows = head;
+      let full = headIsFull;
+      // Scrolling can append pages while a revalidation request is in flight.
+      // Re-read the live range after each await, rather than replacing it with
+      // the shorter range captured at the start of this refresh.
+      for (let page = 1; page < Math.ceil(state.conversations.length / CONVERSATION_PAGE) && full; page++) {
+        const next = await api("/conversations?" + query({ ...args, offset: page * CONVERSATION_PAGE }), "GET", undefined, { signal });
+        rows = rows.concat(next.conversations);
+        full = next.conversations.length === CONVERSATION_PAGE;
+      }
+      if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey()) return false;
+      state.conversations = rows;
+      state.conversationsHasMore = full;
+    } else {
+      state.conversations = preserveHistory ? mergeConversationPages(head, state.conversations, headIsFull) : head;
+      if (!preserveHistory || !headIsFull) state.conversationsHasMore = headIsFull;
+    }
+    state.conversationsQuery = key;
     state.conversationsLoaded = true;
     state.counts = counts.counts;
     renderGroupBar();
     renderConversations({ arrivals });
     if (state.sender) await loadHistory(false, { preserve: preserveHistory, revalidate: revalidateHistory });
+    return !signal.aborted && gen === refreshGeneration;
   } catch (err) {
-    if (err.name === "AbortError" || signal.aborted) return;
+    if (err.name === "AbortError" || signal.aborted) return false;
     throw err;
   } finally {
     setBusy(false);
@@ -1017,6 +1065,8 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
 async function loadMoreConversations() {
   if (!state.me || state.loadingMore || !state.conversationsHasMore) return;
   const gen = refreshGeneration;
+  const key = inboxQueryKey();
+  if (key !== state.conversationsQuery) return;
   state.loadingMore = true;
   $(".list-more")?.removeAttribute("hidden");
   try {
@@ -1024,7 +1074,7 @@ async function loadMoreConversations() {
       group: state.group, q: state.q, sim: state.sim, device: state.device,
       offset: state.conversations.length, limit: CONVERSATION_PAGE,
     }));
-    if (gen !== refreshGeneration || !state.me) return;
+    if (gen !== refreshGeneration || !state.me || key !== inboxQueryKey()) return;
     const keys = new Set(state.conversations.map(conversationKey));
     state.conversations = state.conversations.concat(d.conversations.filter((c) => !keys.has(conversationKey(c))));
     state.conversationsHasMore = d.conversations.length === CONVERSATION_PAGE;
@@ -1185,6 +1235,9 @@ function updateHistoryStatus() {
 async function loadHistory(older, { preserve = false, revalidate = false } = {}) {
   const sender = state.sender;
   if (!sender || (older && (!state.historyHasMore || state.historyLoading))) return;
+  const key = historyQueryKey();
+  if (older && key !== state.messagesQuery) return;
+  preserve &&= key === state.messagesQuery;
 
   if (!older) {
     if (historyAbortController) historyAbortController.abort();
@@ -1230,7 +1283,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       signal?.aborted ||
       requestId !== historyRequestId ||
       generation !== state.generation || !state.me ||
-      sender !== state.sender
+      key !== historyQueryKey()
     ) {
       return;
     }
@@ -1238,6 +1291,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
     state.messages = older || (preserve && !revalidate)
       ? mergeMessages(state.messages, incoming)
       : mergeMessages([], incoming);
+    state.messagesQuery = key;
     state.messages = state.messages.map((message) => ({
       ...message,
       contact: state.contacts[message.sender] || message.contact || "",
@@ -1252,14 +1306,13 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
     state.historyLoading = false;
     const freshCount = renderDetail();
 
-    if (!older && state.sender && incoming.length > 0) {
-      const conv = state.conversations.find((c) => c.sender === state.sender);
-      if (conv && conv.unread_count > 0) {
-        state.unreadCount = Math.max(0, (state.unreadCount || 0) - conv.unread_count);
-        conv.unread_count = 0;
-        updateAppBadge(state.unreadCount);
-        renderConversations();
-        api("/messages/read", "POST", { sender: state.sender }).catch(() => {});
+    if (!older && incoming.length > 0 && $(".messages")) {
+      const conv = state.conversations.find((c) => c.sender === sender);
+      if (conv?.unread_count > 0) {
+        // Bind the write to the response actually rendered, not a newer server head.
+        const message_id = incoming.reduce((high, message) => Math.max(high, message.id), 0);
+        state.pendingDisplayedRead = { generation, epoch: state.epoch, key, sender, message_id };
+        void flushDisplayedRead();
       }
     }
 
@@ -1289,6 +1342,35 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       state.historyLoading = false;
       updateHistoryStatus();
       setBusy(false);
+    }
+  }
+}
+
+async function flushDisplayedRead() {
+  const pending = state.pendingDisplayedRead;
+  if (!pending) return;
+  if (!state.me || pending.generation !== state.generation || pending.epoch !== state.epoch ||
+      pending.key !== historyQueryKey() || pending.key !== state.messagesQuery ||
+      !state.messages.some(message => message.id === pending.message_id)) {
+    state.pendingDisplayedRead = null;
+    return;
+  }
+  if (state.page !== "inbox" || document.visibilityState !== "visible" || !$(".messages")) return;
+  // Consume before awaiting so concurrent visibility/WS polls cannot submit it twice.
+  state.pendingDisplayedRead = null;
+  await markDisplayedRead(pending.sender, pending.message_id);
+}
+
+async function markDisplayedRead(sender, message_id) {
+  const generation = state.generation;
+  try {
+    await api("/messages/read", "POST", { sender, message_id });
+    if (generation === state.generation && state.me) await catchUp();
+  } catch (error) {
+    if (generation === state.generation && state.me && error.name !== "AbortError") {
+      // Keep existing counts and retry on the next poll, without a tight retry loop.
+      state.readRetry = true;
+      toast(error.message);
     }
   }
 }
@@ -1583,9 +1665,27 @@ function pushCapability() {
 
 async function browserPushEnabled() {
   if (!pushCapability() || Notification.permission !== "granted") return false;
+  const session = pushSession();
   const registration = await navigator.serviceWorker.getRegistration();
+  checkPushSession(session);
   const subscription = await registration?.pushManager.getSubscription();
-  return Boolean(state.me?.device?.notify && subscription);
+  checkPushSession(session);
+  if (!state.me.device.notify || !subscription) return false;
+  // Logout removes the server binding but leaves the browser's subscription intact.
+  const json = subscription.toJSON();
+  await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
+  checkPushSession(session);
+  return true;
+}
+
+function pushSession() {
+  return { generation: state.generation, device: state.me?.device?.id };
+}
+
+function checkPushSession(session) {
+  if (!session.device || session.generation !== state.generation || session.device !== state.me?.device?.id) {
+    throw new DOMException("Session ended", "AbortError");
+  }
 }
 
 function setLocalNotificationState(enabled) {
@@ -1595,12 +1695,20 @@ function setLocalNotificationState(enabled) {
 }
 
 async function disablePush() {
+  const session = pushSession();
+  checkPushSession(session);
   await api("/push", "DELETE");
+  checkPushSession(session);
   if ("serviceWorker" in navigator) {
     const registration = await navigator.serviceWorker.getRegistration();
-    await (await registration?.pushManager.getSubscription())?.unsubscribe();
+    checkPushSession(session);
+    const subscription = await registration?.pushManager.getSubscription();
+    checkPushSession(session);
+    await subscription?.unsubscribe();
+    checkPushSession(session);
   }
-  await api("/devices/" + state.me.device.id, "PATCH", { notify: false });
+  await api("/devices/" + session.device, "PATCH", { notify: false });
+  checkPushSession(session);
   setLocalNotificationState(false);
 }
 
@@ -1691,23 +1799,38 @@ function queueChips(s) {
 }
 
 // -------------------------------------------------------------
-// Devices & SIMs: read-only phone inventory, shown inside Settings
+// Devices & SIMs: inventory and administrator revocation, shown inside Settings
 // -------------------------------------------------------------
 function deviceRows() {
-  const phones = state.devices.filter((device) => device.kind === "android" && !device.revoked);
-  if (!phones.length) {
-    return [settingsRow({ icon: ICONS.phoneAndroid, title: "暂无已连接手机", summary: "连接 Android 手机后，设备信息会显示在这里。" })];
+  if (!state.devices.length) {
+    return [settingsRow({ icon: ICONS.devices, title: "暂无已连接设备" })];
   }
-  return phones.map((d) => {
+  return state.devices.map((d) => {
     const sims = state.sims.filter((s) => s.device_id === d.id);
+    const current = d.id === state.me?.device?.id;
+    const trailing = el("div");
+    trailing.append(el("span", "badge", d.revoked ? "已撤销" : current ? "本浏览器" : d.kind === "android" ? "Android 手机" : "Web 浏览器"));
+    if (state.me?.device?.admin && !d.revoked) {
+      trailing.append(button("撤销设备", () => revokeDevice(d.id), "text-button"));
+    }
     return settingsRow({
-      icon: ICONS.phoneAndroid,
+      icon: d.kind === "android" ? ICONS.phoneAndroid : ICONS.devices,
       title: d.name,
-      summary: sims.length ? sims.map((s) => `${s.label || "SIM"} ${s.phone}`).join(" · ") : "暂无 SIM 信息",
-      trailing: el("span", "badge", "Android 手机"),
+      summary: sims.length ? sims.map((s) => `${s.label || "SIM"} ${s.phone}`).join(" · ") : d.kind === "android" ? "暂无 SIM 信息" : "浏览器会话",
+      trailing,
       cls: "device-card",
     });
   });
+}
+
+async function revokeDevice(id) {
+  const generation = state.generation;
+  const current = id === state.me?.device?.id;
+  await api("/devices/" + encodeURIComponent(id), "DELETE");
+  if (generation !== state.generation) return;
+  if (current) { disconnect(); authView(); return; }
+  await reloadMetadata();
+  if (generation === state.generation && state.me) shell();
 }
 
 // -------------------------------------------------------------
@@ -1740,7 +1863,7 @@ function settingsView() {
       setBusy(false);
     }
   });
-  toggle.setDisabled(!pushCapability());
+  toggle.setDisabled(true);
   inner.append(settingsGroup("本浏览器", [
     settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: status, trailing: toggle }),
     settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
@@ -1769,7 +1892,9 @@ function settingsView() {
     toggle.setChecked(enabled);
     status.textContent = enabled ? "通知已开启" : "通知已关闭";
   }).catch(() => {
-    status.textContent = "通知已关闭";
+    status.textContent = "无法确认通知状态，请重新开启";
+  }).finally(() => {
+    toggle.setDisabled(!pushCapability());
   });
 }
 
@@ -1876,27 +2001,37 @@ async function renderAISettings(group) {
 // Web Push Subscription Handlers
 // -------------------------------------------------------------
 async function enablePush() {
+  const session = pushSession();
+  checkPushSession(session);
+  const vapid = state.me.vapid_public_key;
   if (!window.isSecureContext) {
     throw new Error("Web Push 需要 HTTPS 或 localhost；公网 HTTP 不支持安全上下文");
   }
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     throw new Error("当前浏览器不支持 Web Push");
   }
-  if (!state.me.vapid_public_key) throw new Error("部署者尚未配置 VAPID");
-  if ((await Notification.requestPermission()) !== "granted") {
+  if (!vapid) throw new Error("部署者尚未配置 VAPID");
+  const permission = await Notification.requestPermission();
+  checkPushSession(session);
+  if (permission !== "granted") {
     throw new Error("请在浏览器设置中允许通知");
   }
   const reg = await navigator.serviceWorker.ready;
+  checkPushSession(session);
   let sub = await reg.pushManager.getSubscription();
+  checkPushSession(session);
   if (!sub) {
     sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: pushKey(state.me.vapid_public_key),
+      applicationServerKey: pushKey(vapid),
     });
+    checkPushSession(session);
   }
   const json = sub.toJSON();
   await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
-  await api("/devices/" + state.me.device.id, "PATCH", { notify: true });
+  checkPushSession(session);
+  await api("/devices/" + session.device, "PATCH", { notify: true });
+  checkPushSession(session);
   setLocalNotificationState(true);
 }
 
@@ -1928,6 +2063,7 @@ function disconnect() {
   state.me = null;
   state.messages = [];
   state.conversations = [];
+  state.messagesQuery = state.conversationsQuery = "";
   state.devices = [];
   state.sims = [];
   state.contacts = {};
@@ -1938,6 +2074,9 @@ function disconnect() {
   state.renderedDetailKey = "";
   state.epochSeen = false;
   state.inboxDirty = false;
+  state.historyDirty = state.conversationsDirty = false;
+  state.readRetry = false;
+  state.pendingDisplayedRead = null;
   state.page = "inbox";
   state.arrivalsPending = false;
   state.renderedRows = new Map();
@@ -1976,10 +2115,18 @@ async function catchUp() {
     const me = await api("/me");
     if (generation !== state.generation || !state.me) return;
     const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled;
-    const changed = analysisChanged || me.cursor !== state.cursor || epochReset(state.epochSeen, state.epoch, me.epoch);
+    const unreadChanged = me.unread_count !== state.me.unread_count;
+    const cursorChanged = me.cursor !== state.cursor;
+    const changed = analysisChanged || unreadChanged || cursorChanged || epochReset(state.epochSeen, state.epoch, me.epoch);
+    // Persist invalidation before metadata I/O; a failed request must not consume it.
+    state.inboxDirty ||= changed || state.readRetry;
+    state.historyDirty ||= analysisChanged;
+    // An arrival and a read can cancel in the total; cursor changes also recheck tail rows.
+    state.conversationsDirty ||= analysisChanged || unreadChanged || cursorChanged;
     const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
     state.arrivalsPending ||= me.cursor > state.cursor && !epochReset(state.epochSeen, state.epoch, me.epoch);
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
+      state.pendingDisplayedRead = null;
       state.messages = [];
       state.conversations = [];
       state.cursor = 0;
@@ -1997,12 +2144,21 @@ async function catchUp() {
     await reloadMetadata();
     if (generation !== state.generation || !state.me) return;
     const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
-    state.inboxDirty ||= changed || metadataChanged;
+    state.inboxDirty ||= metadataChanged;
+    state.historyDirty ||= metadataChanged;
+    state.conversationsDirty ||= metadataChanged;
     if (state.page === "inbox" && state.inboxDirty) {
-      await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: analysisChanged, arrivals: state.arrivalsPending });
-      state.inboxDirty = false;
-      state.arrivalsPending = false;
+      state.readRetry = false;
+      const refreshed = await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: state.historyDirty, revalidateConversations: state.conversationsDirty, arrivals: state.arrivalsPending });
+      if (generation === state.generation && refreshed !== false) {
+        state.inboxDirty = false;
+        state.historyDirty = state.conversationsDirty = false;
+        state.arrivalsPending = false;
+      }
     }
+    // A hidden WS refresh may have consumed all data changes without marking the
+    // rendered messages read. Visibility recovery must work even for an idle head.
+    if (generation === state.generation) await flushDisplayedRead();
   } finally {
     if (syncingGeneration === generation) {
       syncingGeneration = null;
@@ -2023,17 +2179,22 @@ async function start() {
   state.epochSeen = true;
   state.loggedOut = false;
   state.generation++;
+  const sessionGeneration = state.generation;
   if (typeof state.me.unread_count === "number") {
     state.unreadCount = state.me.unread_count;
     updateAppBadge(state.unreadCount);
   }
   await reloadMetadata();
+  if (sessionGeneration !== state.generation || !state.me || state.loggedOut) return;
   shell();
   if ("serviceWorker" in navigator) {
     void navigator.serviceWorker
       .register("/sw.js")
       .catch(() => toast("离线应用壳注册失败"));
   }
+  void browserPushEnabled().catch((error) => {
+    if (error.name !== "AbortError") toast("通知订阅恢复失败，请在设置中重新开启");
+  });
   realtime();
 }
 

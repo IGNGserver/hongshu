@@ -41,4 +41,6 @@ GHCR 与 GitHub Release 无跨服务原子事务，提升期间版本镜像可�
 
 发布工作流在构建和签名校验完成后，才会创建 GHCR staging 镜像与 GitHub draft Release。若发布在这一步之后中断，可从 Actions 手动运行 `Hongshu release`，输入同一个既有版本 tag 恢复；流程会校验 draft、校验和、提交来源及镜像 digest，不会覆盖已发布 Release 或已有版本 tag。
 
+手动恢复必须检出输入 tag 的源码；构建前校验工作区 HEAD 与 tag 指向的提交完全一致，不能仅凭相同 VERSION 将当前分支源码标记为旧 tag 的产物。
+
 同一个 tag 一旦成为已发布 Release，或其版本镜像 tag 已指向不同 digest，恢复流程会停止。不得删除、覆盖或强制重建已发布 tag；应按版本规则准备下一个预发布版本。

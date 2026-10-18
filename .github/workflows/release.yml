@@ -43,6 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Configure build caches outside the checkout
         run: |
@@ -60,6 +61,7 @@ jobs:
           git fetch origin main --quiet
           git fetch origin "+refs/tags/$TAG:refs/tags/$TAG" --quiet
           release_sha=$(git rev-parse "$TAG^{commit}")
+          test "$(git rev-parse HEAD)" = "$release_sha"
           git merge-base --is-ancestor "$release_sha" origin/main
           if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
             test "$release_sha" = "$GITHUB_SHA"
@@ -171,7 +173,7 @@ jobs:
           rm -rf "$deployment_stage"
           mkdir -p "$deployment_stage/scripts" "$deployment_stage/docs"
           cp compose.yml .env.example VERSION "$deployment_stage/"
-          cp scripts/backup.sh scripts/init-deployment.sh scripts/next-restore-epoch.sh "$deployment_stage/scripts/"
+          cp scripts/backup.sh scripts/init-deployment.sh scripts/next-restore-epoch.sh scripts/repair-read-watermarks.sql "$deployment_stage/scripts/"
           cp docs/DEPLOYMENT.md "$deployment_stage/docs/"
 
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
@@ -184,6 +186,7 @@ jobs:
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/init-deployment.sh'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/backup.sh'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/next-restore-epoch.sh'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/repair-read-watermarks.sql'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'docs/DEPLOYMENT.md'
 
       - name: Set up Docker Buildx

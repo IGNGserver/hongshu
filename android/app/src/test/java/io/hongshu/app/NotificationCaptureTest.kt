@@ -40,14 +40,17 @@ class NotificationCaptureTest {
             lines,
             t + 500,
             whenTime,
+            "synthetic-conversation",
         )
 
     @Test
     fun onlySmsAppNotificationsAfterConsentAreParsed() {
-        assertEquals(
-            listOf(SmsNotification("10086", "合成验证码 123456", t)),
-            parseSmsNotification(snapshot(), packages, t),
-        )
+        val parsed = parseSmsNotification(snapshot(), packages, t).single()
+        assertEquals("10086", parsed.sender)
+        assertEquals("合成验证码 123456", parsed.body)
+        assertEquals(t, parsed.timestamp)
+        assertTrue(parsed.identity.isNotEmpty())
+        assertTrue(parsed.uncertain)
         assertTrue(
             parseSmsNotification(snapshot(packageName = "com.tencent.mm"), packages, 0).isEmpty()
         )
@@ -73,7 +76,11 @@ class NotificationCaptureTest {
                 packages,
                 t,
             )
-        assertEquals(listOf(SmsNotification("95588", "合成新消息", t + 2)), parsed)
+        assertEquals(1, parsed.size)
+        assertEquals("95588", parsed.single().sender)
+        assertEquals("合成新消息", parsed.single().body)
+        assertEquals(t + 2, parsed.single().timestamp)
+        assertFalse(parsed.single().uncertain)
     }
 
     @Test
@@ -179,10 +186,12 @@ class NotificationCaptureTest {
             assertTrue(s.queue(SmsRecord("+8613800000000", "10086", "合成正文", t, 7), 0))
             assertFalse(s.queueNotification(SmsRecord("", "10086", "合成正文", t + 2_000, -1)))
             assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t, -1)))
-            assertFalse(s.queueNotification(SmsRecord("", "95588", "另一条", t + 5_000, -1)))
+            assertFalse(s.queueNotification(SmsRecord("", "95588", "另一条", t, -1)))
+            // Distinct message times inside the match window must not collapse.
+            assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t + 5_000, -1)))
             // Same text far apart is a genuinely new message.
             assertTrue(s.queueNotification(SmsRecord("", "95588", "另一条", t + 10 * 60_000, -1)))
-            assertEquals(3, s.pendingCount())
+            assertEquals(4, s.pendingCount())
         }
     }
 
@@ -233,18 +242,18 @@ class NotificationCaptureTest {
     @Test
     fun persistenceHonorsSwitchesAndCaptureGeneration() = store { context, name ->
         val config = Config(context)
-        val message = listOf(SmsNotification("10086", "合成正文", t))
+        val message = listOf(SmsNotification("10086", "合成正文", System.currentTimeMillis() + 1000))
         config.upload = false
-        assertEquals(0, persistNotificationSms(context, message, config.captureGeneration, name))
+        assertEquals(0, persistNotificationSms(context, message, config.captureGeneration, name, config.notificationGeneration))
         config.upload = true
-        assertEquals(0, persistNotificationSms(context, message, config.captureGeneration, name))
+        assertEquals(0, persistNotificationSms(context, message, config.captureGeneration, name, config.notificationGeneration))
         config.notificationCapture = true
         assertTrue(config.notificationSince > 0)
         assertEquals(
             0,
-            persistNotificationSms(context, message, config.captureGeneration - 1, name),
+            persistNotificationSms(context, message, config.captureGeneration - 1, name, config.notificationGeneration),
         )
-        assertEquals(1, persistNotificationSms(context, message, config.captureGeneration, name))
+        assertEquals(1, persistNotificationSms(context, message, config.captureGeneration, name, config.notificationGeneration))
         config.notificationCapture = false
         assertEquals(0L, config.notificationSince)
     }
@@ -255,5 +264,23 @@ class NotificationCaptureTest {
         assertFalse(inboxChangeTriggersScan(upload = true, recovery = false, history = false))
         assertTrue(inboxChangeTriggersScan(upload = true, recovery = true, history = false))
         assertTrue(inboxChangeTriggersScan(upload = true, recovery = false, history = true))
+    }
+
+    @Test
+    fun delayedNotificationCannotCrossDisableAndReenableBoundary() = store { context, name ->
+        val config = Config(context)
+        config.upload = true
+        config.notificationCapture = true
+        val captureGeneration = config.captureGeneration
+        val oldGeneration = config.notificationGeneration
+        // Even a timestamp after the new consent boundary must not bypass the generation check.
+        val delayed = listOf(SmsNotification("10086", "delayed synthetic", System.currentTimeMillis() + 1000))
+        config.notificationCapture = false
+        config.notificationCapture = true
+        assertEquals(0, persistNotificationSms(context, delayed, captureGeneration, name, oldGeneration))
+        assertEquals(0, persistNotificationSms(context,
+            listOf(SmsNotification("10086", "old synthetic", config.notificationSince - 1)),
+            captureGeneration, name, config.notificationGeneration))
+        assertEquals(1, persistNotificationSms(context, delayed, captureGeneration, name, config.notificationGeneration))
     }
 }
