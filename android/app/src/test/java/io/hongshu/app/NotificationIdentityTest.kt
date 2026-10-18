@@ -223,7 +223,7 @@ class NotificationIdentityTest {
             store.writableDatabase.version = 9
         }
         Store(context, name).use { store ->
-            assertEquals(11, store.readableDatabase.version)
+            assertEquals(12, store.readableDatabase.version)
             assertEquals(41L, store.providerWatermark())
             assertEquals(1, store.sims().size)
             assertEquals(queued.body, store.localPending().single().body)

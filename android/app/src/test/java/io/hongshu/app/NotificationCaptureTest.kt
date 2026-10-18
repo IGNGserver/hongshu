@@ -283,4 +283,52 @@ class NotificationCaptureTest {
             captureGeneration, name, config.notificationGeneration))
         assertEquals(1, persistNotificationSms(context, delayed, captureGeneration, name, config.notificationGeneration))
     }
+
+    // Real-device samples (2026-10-18, HyperOS Messages): the system placeholder for the
+    // Messages foreground service, and a per-sender summary of three different SMS.
+    @Test
+    fun serviceAndSystemNotificationsFromSmsAppsAreIgnored() {
+        val placeholder = snapshot(title = "短信正在运行", text = "点按即可了解详情或停止应用")
+        assertEquals(NotificationClass.IGNORED, classifySmsNotification(placeholder, packages))
+        assertTrue(parseSmsNotification(placeholder, packages, 0).isEmpty())
+        assertEquals(NotificationClass.IGNORED,
+            classifySmsNotification(snapshot().copy(foregroundService = true), packages))
+        assertEquals(NotificationClass.IGNORED,
+            classifySmsNotification(snapshot().copy(category = "service"), packages))
+        assertEquals(NotificationClass.IGNORED,
+            classifySmsNotification(snapshot(title = "Messages is running", text = "Tap for more information or to stop the app"), packages))
+        assertEquals(NotificationClass.MESSAGES,
+            classifySmsNotification(snapshot().copy(category = "msg"), packages))
+    }
+
+    @Test
+    fun perSenderSummariesAreAggregatesNotMessages() {
+        val folded = snapshot(title = "106900000000", text = "[3条]【天中驿城，驻马店欢迎您】合成正文")
+        assertEquals(NotificationClass.AGGREGATE, classifySmsNotification(folded, packages))
+        assertTrue(parseSmsNotification(folded, packages, 0).isEmpty())
+        for (title in listOf("106900000000 (3条)", "银行（2条新信息）", "Bank (3 messages)"))
+            assertEquals(title, NotificationClass.AGGREGATE,
+                classifySmsNotification(snapshot(title = title, text = "合成正文"), packages))
+        assertEquals(NotificationClass.AGGREGATE, classifySmsNotification(snapshot(summary = true), packages))
+        // A brand signature in 【】 or a number inside the text is an ordinary message.
+        for (text in listOf("【天中驿城，驻马店欢迎您】合成正文", "您有(3)个包裹待取", "验证码 123456，3条规则"))
+            assertEquals(text, NotificationClass.MESSAGES,
+                classifySmsNotification(snapshot(text = text), packages))
+    }
+
+    @Test
+    fun upgradePurgesOnlyUnpairedNotificationNoise() = store { context, name ->
+        Store(context, name).use { s ->
+            assertTrue(s.queueNotification(SmsRecord("", "短信正在运行", "点按即可了解详情或停止应用", t, -1)))
+            assertTrue(s.queueNotification(SmsRecord("", "106900000000", "[3条]【天中驿城】合成正文", t + 1, -1)))
+            assertTrue(s.queueNotification(SmsRecord("", "10086", "合成正文", t + 2, -1)))
+            // Paired with a real SMS: the broadcast proves it is a message, keep it.
+            assertTrue(s.queueNotification(SmsRecord("", "10010", "[2条]合成正文", t + 3, -1)))
+            assertFalse(s.queue(SmsRecord("+8613800000000", "10010", "[2条]合成正文", t + 4, 7), 0))
+            assertEquals(4, s.pendingCount())
+            assertEquals(2, s.purgeNotificationNoise(s.writableDatabase))
+            assertEquals(listOf("10010", "10086"), s.localPending().map { it.sender }.sorted())
+            assertEquals(0, s.purgeNotificationNoise(s.writableDatabase))
+        }
+    }
 }

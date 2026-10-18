@@ -43,7 +43,18 @@ internal data class NotificationSnapshot(
     val postTime: Long,
     val whenTime: Long,
     val key: String = "",
+    val foregroundService: Boolean = false,
+    val category: String? = null,
 )
+
+internal enum class NotificationClass {
+    // Not an SMS notification: another app, or an SMS app's service/system notification.
+    IGNORED,
+    // An SMS app summarising several messages ("[3条]…"): its text is not any single SMS.
+    AGGREGATE,
+    // Carries individually identifiable messages.
+    MESSAGES,
+}
 
 internal data class SmsNotification(
     val sender: String,
@@ -62,12 +73,61 @@ internal data class NotificationCaptureInput(
 private val summaryText =
     Regex("^(\\d+\\s*条(新|未读)?(短信|信息|消息).*|\\d+\\s+(new|unread)\\s+messages?.*)$", RegexOption.IGNORE_CASE)
 
+// HyperOS Messages folds several SMS from one sender into "[3条]<latest body>"; other ROMs put
+// "(3条)" or "(3 messages)" next to the title. The count marker sits in brackets.
+private const val COUNT_MARKER =
+    "[\\[［(（]\\s*\\d+\\s*(条|new messages?|messages?)[^\\]］)）]{0,8}[\\]］)）]"
+private val countPrefix = Regex("^\\s*$COUNT_MARKER", RegexOption.IGNORE_CASE)
+private val countSuffix = Regex("$COUNT_MARKER\\s*$", RegexOption.IGNORE_CASE)
+
+// The framework's placeholder for a foreground service without its own notification is posted
+// under the service's package ("短信正在运行 · 点按即可了解详情或停止应用"). Flags identify it
+// on AOSP; the wording is the fallback for ROMs that repost it without them.
+private val runningTitle = Regex("(正在(后台)?运行|is running( in the background)?)$", RegexOption.IGNORE_CASE)
+private val runningText =
+    Regex("^((点按|点击|轻触)即可了解详情|tap for (more )?(details|info|information))", RegexOption.IGNORE_CASE)
+
+// Categories no SMS app uses for an incoming message. A missing category is common and allowed.
+private val nonMessageCategories =
+    setOf(
+        "service", "sys", "status", "progress", "err", "transport", "navigation", "call",
+        "missed_call", "alarm", "stopwatch", "workout", "location_sharing",
+    )
+
+internal fun aggregateNotificationText(title: String, body: String): Boolean =
+    summaryText.matches(body) || countPrefix.containsMatchIn(body) ||
+        countPrefix.containsMatchIn(title) || countSuffix.containsMatchIn(title)
+
+internal fun systemNotificationText(title: String, body: String): Boolean =
+    runningTitle.containsMatchIn(title.trim()) || runningText.containsMatchIn(body.trim())
+
+// True for a stored notification capture that never was a single SMS. Used to purge rows
+// captured before these notifications were filtered.
+internal fun notificationNoise(sender: String, body: String): Boolean =
+    systemNotificationText(sender, body) || aggregateNotificationText(sender, body)
+
+internal fun classifySmsNotification(
+    snapshot: NotificationSnapshot,
+    smsPackages: Set<String>,
+): NotificationClass {
+    if (snapshot.packageName !in smsPackages || snapshot.ongoing || snapshot.foregroundService ||
+        snapshot.category?.lowercase() in nonMessageCategories)
+        return NotificationClass.IGNORED
+    val title = (snapshot.title ?: snapshot.conversationTitle).orEmpty()
+    val body = (snapshot.bigText ?: snapshot.text).orEmpty()
+    if (systemNotificationText(title, body)) return NotificationClass.IGNORED
+    if (snapshot.groupSummary) return NotificationClass.AGGREGATE
+    if (snapshot.lines.isNotEmpty()) return NotificationClass.MESSAGES
+    return if (aggregateNotificationText(title, body)) NotificationClass.AGGREGATE
+    else NotificationClass.MESSAGES
+}
+
 internal fun parseSmsNotification(
     snapshot: NotificationSnapshot,
     smsPackages: Set<String>,
     since: Long,
 ): List<SmsNotification> {
-    if (snapshot.packageName !in smsPackages || snapshot.groupSummary || snapshot.ongoing)
+    if (classifySmsNotification(snapshot, smsPackages) != NotificationClass.MESSAGES)
         return emptyList()
     if (snapshot.lines.isNotEmpty()) {
         // MessagingStyle: a null sender is the device owner's own reply.
@@ -93,8 +153,7 @@ internal fun parseSmsNotification(
     val body = (snapshot.bigText ?: snapshot.text)?.trim().orEmpty()
     val sender = (snapshot.title ?: snapshot.conversationTitle)?.trim().orEmpty()
     val timestamp = if (snapshot.whenTime > 0) snapshot.whenTime else snapshot.postTime
-    if (body.isEmpty() || sender.isEmpty() || timestamp < since || summaryText.matches(body))
-        return emptyList()
+    if (body.isEmpty() || sender.isEmpty() || timestamp < since) return emptyList()
     return listOf(SmsNotification(sender, body, timestamp,
         sha256(JSONArray(listOf(snapshot.packageName, snapshot.key, "plain", sender, body, timestamp)).toString())))
 }
@@ -117,6 +176,8 @@ internal fun notificationSnapshot(sbn: StatusBarNotification): NotificationSnaps
         sbn.postTime,
         notification.`when`,
         sbn.key,
+        notification.flags and Notification.FLAG_FOREGROUND_SERVICE != 0,
+        notification.category,
     )
 }
 
