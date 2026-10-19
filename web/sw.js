@@ -7,8 +7,13 @@ const ASSETS = [
   "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",
+  "/icon-maskable-192.png",
   "/icon-maskable-512.png",
   "/apple-touch-icon.png",
+  "/apple-touch-icon-167.png",
+  "/apple-touch-icon-152.png",
+  "/favicon-32.png",
+  "/favicon-16.png",
 ];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));

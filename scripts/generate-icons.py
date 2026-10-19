@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Generate every derived web icon from the checked-in 512px master.
 
-Outputs: icon-192.png, apple-touch-icon.png (180px), icon-maskable-512.png (artwork
-scaled into the 80% safe zone on the master's background) and icon.svg, which embeds a
-128px copy because an SVG loaded as <img> or favicon cannot fetch other files.
+Outputs:
+- icon-192.png, icon-512.png (standard any icons)
+- icon-maskable-192.png, icon-maskable-512.png (80% safe zone for Android / Chromium PWA)
+- apple-touch-icon.png (180px, iPhone/default), apple-touch-icon-167.png (167px, iPad Pro),
+  apple-touch-icon-152.png (152px, iPad)
+- favicon-32.png, favicon-16.png (desktop browsers & Safari pinned tab fallback)
+- icon.svg (self-contained SVG embedding a 128px PNG, usable as <img> or SVG favicon)
 """
 from __future__ import annotations
 
@@ -156,8 +160,14 @@ if width != height:
     raise ValueError("icon master must be square")
 write_png(ROOT / "icon-192.png", 192, resize_rgb(pixels, width, 192))
 write_png(ROOT / "apple-touch-icon.png", 180, resize_rgb(pixels, width, 180))
+write_png(ROOT / "apple-touch-icon-167.png", 167, resize_rgb(pixels, width, 167))
+write_png(ROOT / "apple-touch-icon-152.png", 152, resize_rgb(pixels, width, 152))
+write_png(ROOT / "favicon-32.png", 32, resize_rgb(pixels, width, 32))
+write_png(ROOT / "favicon-16.png", 16, resize_rgb(pixels, width, 16))
 # Maskable icons may be cropped to a circle of 80% diameter; keep the artwork inside it.
-write_png(ROOT / "icon-maskable-512.png", width, pad_into_safe_zone(pixels, width, 0.8))
+padded_512 = pad_into_safe_zone(pixels, width, 0.8)
+write_png(ROOT / "icon-maskable-512.png", width, padded_512)
+write_png(ROOT / "icon-maskable-192.png", 192, resize_rgb(padded_512, width, 192))
 embedded = base64.b64encode(png_bytes(128, resize_rgb(pixels, width, 128))).decode("ascii")
 (ROOT / "icon.svg").write_text(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">\n'
@@ -167,4 +177,4 @@ embedded = base64.b64encode(png_bytes(128, resize_rgb(pixels, width, 128))).deco
     "</svg>\n",
     encoding="utf-8",
 )
-print("generated icon-192.png, apple-touch-icon.png, icon-maskable-512.png and icon.svg from web/icon-512.png")
+print("generated web icons: icon-192.png, apple-touch-icon*.png, favicon-*.png, icon-maskable-*.png, icon.svg")
