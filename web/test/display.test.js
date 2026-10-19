@@ -59,14 +59,27 @@ test("manifest keeps any and maskable icons separate and the shell caches them",
   const manifest = JSON.parse(read("manifest.webmanifest"));
   assert.ok(manifest.icons.every((icon) => icon.purpose === "any" || icon.purpose === "maskable"));
   const maskable = manifest.icons.filter((icon) => icon.purpose === "maskable");
-  assert.deepEqual(maskable.map((icon) => icon.src), ["/icon-maskable-512.png"]);
+  assert.deepEqual(maskable.map((icon) => icon.src), ["/icon-maskable-192.png", "/icon-maskable-512.png"]);
   const worker = read("sw.js");
   const build = read("build.mjs");
-  for (const file of ["icon-maskable-512.png", "apple-touch-icon.png"]) {
+  for (const file of [
+    "icon-maskable-192.png",
+    "icon-maskable-512.png",
+    "apple-touch-icon.png",
+    "apple-touch-icon-167.png",
+    "apple-touch-icon-152.png",
+    "favicon-32.png",
+    "favicon-16.png",
+  ]) {
     assert.ok(worker.includes(`"/${file}"`), `sw.js precaches ${file}`);
     assert.ok(build.includes(`"${file}"`), `build.mjs ships ${file}`);
   }
-  assert.ok(read("index.html").includes('rel="apple-touch-icon" href="/apple-touch-icon.png"'));
+  const html = read("index.html");
+  assert.ok(html.includes('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"'));
+  assert.ok(html.includes('rel="apple-touch-icon" sizes="167x167" href="/apple-touch-icon-167.png"'));
+  assert.ok(html.includes('rel="apple-touch-icon" sizes="152x152" href="/apple-touch-icon-152.png"'));
+  assert.ok(html.includes('name="apple-mobile-web-app-capable" content="yes"'));
+  assert.ok(html.includes('name="apple-mobile-web-app-title" content="鸿枢"'));
 });
 
 test("avatar initials match Android avatarInitial", async () => {
