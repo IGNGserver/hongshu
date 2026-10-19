@@ -65,6 +65,29 @@ MMS/RCS 不在补漏范围；不能据空查询断言“没有短信”或“验
 参考：https://developer.android.com/reference/android/provider/Telephony.Sms.Intents#SMS_RECEIVED_ACTION
 及 https://developer.android.com/about/versions/15/behavior-changes-all#otp-redaction。
 
+## 本机发出的短信
+
+系统不会把“已发送”广播给非默认短信应用，短信应用也不会为发出的短信发通知，所以**系统短信库是唯一来源**：
+默认短信应用发送后写入 `content://sms`（type=2 已发送）。鸿枢不申请默认短信应用、不代发，只用已有的 READ_SMS 读取。
+
+- 触发：`SmsInboxObserver` 监听整张 `content://sms`，发送写库会立即触发一次采集；另有 15 分钟周期维护兜底。
+  进程不在时只能靠周期任务，属于预期时延。
+- 扫描：`scanSentBox` 有自己的 provider 游标（meta `sent_provider_id`）与重试表 `incomplete_sent`，
+  不移动收件箱游标，也不参与广播/通知配对。type=2 立即采集；type=4/6（发送中/排队）和 5（失败）
+  先记入重试表，同一行 id 后续变成已发送时再采集，24 小时后放弃（没发出去的短信不同步）。草稿与其他类型跳过。
+- 去重：账本键 `sent:<provider id>`，确认后删除队列行但保留账本，重复读取、游标重置都不会重复上传。
+- 对端号码：优先采用同一 `thread_id` 中收件箱行的号码写法，其次采用本机已采集/已同步会话里规范化后相同的号码，
+  否则使用去掉空格和连字符后的原地址。这样回复与收到的短信落在中枢同一会话（会话键为 `sender`）。
+- 本机线路：`receiver` 是发出该短信的本机号码，按 `sub_id` 解析，规则与收件相同（需确认号码才上传）。
+- 开关：设置 → 采集方式 → “发出的短信”，**默认开启**。首次看到该开关的时间作为边界 `outgoing_since`；
+  “历史补齐”开启时读取整个已发送箱（边界前的标为 historical），关闭时只读边界之后发出的短信。
+  历史开关变化会让已发送扫描从头再读一遍，账本保证不重复上传。
+- 中枢兼容：只有 `/api/me` 的 `features` 含 `outgoing_sms` 时才上传 `direction:"out"`；旧中枢下这些行留在队列，
+  “未上传”页显示“发出的短信：当前中枢版本还不支持”，升级中枢后自动上传。
+- 展示与通知：发出的短信靠右显示，会话列表预览加“我：”；不计未读、不发新短信通知、不弹验证码胶囊、不做 AI 分类。
+- 不覆盖：彩信（`content://mms`）、RCS/5G 消息以及厂商私有库中的消息；第三方应用直接调用 `SmsManager` 发出的短信
+  只有在系统或该应用写入短信库时才可见。
+
 ## 并发与身份
 
 登录响应须在修改本地状态前完整校验，并提前完成 token 加密。URL、加密 token、设备 ID 和

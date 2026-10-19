@@ -242,6 +242,7 @@ fun LocalPendingPage(host: SettingsHost) {
                                 authorized,
                                 record.notificationOnly,
                                 record.notificationHeld,
+                                record.awaitingHub,
                             )
                         SettingsRow(record.key) {
                             PendingRecord(
@@ -327,7 +328,7 @@ private fun PendingRecord(
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                record.sender,
+                if (record.outgoing) "发给 ${record.sender}" else record.sender,
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
@@ -348,7 +349,7 @@ private fun PendingRecord(
         Text(
             buildString {
                 append(pendingStateLabel(state))
-                append(" · 接收号码 ")
+                append(if (record.outgoing) " · 发送号码 " else " · 接收号码 ")
                 append(record.receiver.ifEmpty { "待确认" })
                 if (record.historical) append(" · 历史补齐")
                 if (record.notificationUncertain) append(" · 通知身份或跨源关联不确定，已保留")

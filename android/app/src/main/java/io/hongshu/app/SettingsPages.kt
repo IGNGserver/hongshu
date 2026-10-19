@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.automirrored.filled.ManageSearch
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Outbox
@@ -195,6 +196,26 @@ fun CapturePage(host: SettingsHost) {
             }
     }
 
+    fun setOutgoing(enabled: Boolean) {
+        if (enabled)
+            host.enableWithPermission(
+                arrayOf(Manifest.permission.READ_SMS),
+                "未授予读取短信权限，发出的短信无法同步",
+            ) {
+                c.outgoingEnabled = true
+                SmsInboxObserver.ensure(activity)
+                syncNow(activity, manual = true)
+                if (c.historyEnabled) "已开启，将同时补齐以前发出的短信"
+                else "已开启，同步此后从这台手机发出的短信"
+            }
+        else
+            host.action {
+                c.outgoingEnabled = false
+                syncNow(activity, manual = true)
+                "已停止同步发出的短信，已上传的不受影响"
+            }
+    }
+
     fun setNotificationCapture(enabled: Boolean) {
         fun apply(readSms: Boolean) =
             host.action {
@@ -291,12 +312,26 @@ fun CapturePage(host: SettingsHost) {
                         )
                     }
                 )
-                if (c.upload && (c.recoveryEnabled || c.historyEnabled) && !f.readSms)
+                add(
+                    SettingsRow("outgoing") {
+                        SettingsSwitchItem(
+                            title = "发出的短信",
+                            summary =
+                                if (c.outgoingEnabled && c.upload) c.outgoingStatus
+                                else "把这台手机发出的短信也上传，和收到的放在同一会话；以前发出的跟随历史补齐",
+                            icon = Icons.AutoMirrored.Filled.Send,
+                            checked = c.outgoingEnabled,
+                            enabled = sourcesEnabled,
+                            onCheckedChange = ::setOutgoing,
+                        )
+                    }
+                )
+                if (c.upload && (c.recoveryEnabled || c.historyEnabled || c.outgoingEnabled) && !f.readSms)
                     add(
                         SettingsRow("grant-read") {
                             SettingsItem(
                                 title = "授予读取短信权限",
-                                summary = "漏收检查和历史补齐需要读取收件箱",
+                                summary = "漏收检查、历史补齐和发出的短信需要读取系统短信",
                                 icon = Icons.Default.Key,
                                 status = StatusLevel.Attention to "需要授权",
                                 onClick = {

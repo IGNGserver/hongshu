@@ -573,7 +573,7 @@ private fun ConversationRow(
     modifier: Modifier = Modifier,
 ) {
     val displayName = message.contact.ifEmpty { message.sender }
-    val otp = message.analysis.otp.ifEmpty { extractOtp(message.body).orEmpty() }.ifEmpty { null }
+    val otp = messageOtp(message)
     Row(
         modifier
             .fillMaxWidth()
@@ -619,7 +619,7 @@ private fun ConversationRow(
                     )
                 }
                 Text(
-                    if (message.local) "未上传 · ${message.body}" else message.body,
+                    (if (message.local) "未上传 · " else "") + (if (message.outgoing) "我：" else "") + message.body,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -755,7 +755,7 @@ private fun ConversationPane(
                         item(key = msg.id) {
                             MessageBubble(
                                 msg = msg,
-                                isOutgoing = msg.deviceId == deviceId && msg.sender != sender,
+                                isOutgoing = msg.outgoing,
                                 sourceDevice = if (msg.deviceId == deviceId) repo.config.deviceName.ifEmpty { "本机" } else "来源手机",
                                 onCopyCode = ::copyCode,
                                 aiEnabled = model.aiEnabled,
@@ -815,7 +815,7 @@ private fun MessageBubble(
     aiEnabled: Boolean = false,
     onChangeCategory: (String) -> Unit = {},
 ) {
-    val otp = msg.analysis.otp.ifEmpty { extractOtp(msg.body).orEmpty() }.ifEmpty { null }
+    val otp = messageOtp(msg)
     val shape =
         if (isOutgoing) RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp)
         else RoundedCornerShape(24.dp, 24.dp, 24.dp, 6.dp)
@@ -852,7 +852,8 @@ private fun MessageBubble(
             }
             }
         }
-        if (aiEnabled && otp == null) {
+        // The user's own messages are not classified.
+        if (aiEnabled && otp == null && !isOutgoing) {
             Text("${messageGroupLabels[msg.analysis.category] ?: "待分析"} · ${if (msg.local) "上传后分析" else msg.analysis.label()}", style = MaterialTheme.typography.labelSmall)
             if (!msg.local) {
                 var adjusting by remember(msg.id) { mutableStateOf(false) }
@@ -873,7 +874,9 @@ private fun MessageBubble(
                 append(formatClock(msg.timestamp))
                 append(" · ")
                 append(sourceDevice)
-                if (msg.receiver.isNotEmpty()) append(" · 接收号码 ${msg.receiver}")
+                if (msg.receiver.isNotEmpty())
+                    append(if (isOutgoing) " · 由 ${msg.receiver} 发出" else " · 接收号码 ${msg.receiver}")
+                if (isOutgoing) append(" · 已发送")
                 if (msg.historical) append(" · 历史补齐")
                 if (msg.local) append(" · 未上传到中枢")
             },

@@ -39,8 +39,13 @@ data class MessageAnalysis(
     }
 }
 
+// A code the user sent is not one they are waiting for.
+internal fun messageOtp(message: CachedMessage): String? =
+    if (message.outgoing) null
+    else message.analysis.otp.ifEmpty { extractOtp(message.body).orEmpty() }.ifEmpty { null }
+
 fun CachedMessage.matchesGroup(group: String): Boolean {
-    val otp = analysis.otp.ifEmpty { extractOtp(body).orEmpty() }
+    val otp = messageOtp(this).orEmpty()
     return when (group) {
         "", "all" -> true
         "otp" -> otp.isNotEmpty()

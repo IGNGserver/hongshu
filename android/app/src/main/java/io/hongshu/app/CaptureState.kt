@@ -29,6 +29,7 @@ enum class PendingState {
     NOTIFICATION_HELD,
     NOTIFICATION_ONLY,
     NEEDS_SIM,
+    AWAITING_HUB,
     INVALID,
     SERVER_DENIED,
     NEEDS_HUB,
@@ -44,8 +45,10 @@ data class PendingCounts(
     val collisions: Int = 0,
     // Notification rows briefly waiting for their inbox/broadcast copy; not a problem yet.
     val held: Int = 0,
+    // Sent messages waiting for a hub that can store their direction (older hub version).
+    val awaitingHub: Int = 0,
 ) {
-    val total: Int get() = ready + needsSim + invalid + collisions + held
+    val total: Int get() = ready + needsSim + invalid + collisions + held + awaitingHub
 
     // "Pending" means captured on this phone and not yet acknowledged by the hub.
     fun label(): String =
@@ -55,6 +58,7 @@ data class PendingCounts(
                 listOfNotNull(
                         "$ready 条等待上传".takeIf { ready > 0 },
                         "$held 条正在与收件箱核对".takeIf { held > 0 },
+                        "$awaitingHub 条发出的短信等待中枢升级".takeIf { awaitingHub > 0 },
                         "$needsSim 条需确认接收号码".takeIf { needsSim > 0 },
                         "$invalid 条无法上传".takeIf { invalid > 0 },
                         "$collisions 条通知身份碰撞需处理".takeIf { collisions > 0 },
@@ -67,6 +71,7 @@ data class PendingCounts(
             when {
                 collisions > 0 -> "，其中 $collisions 条通知身份碰撞需处理"
                 held == total -> "，正在与收件箱核对"
+                awaitingHub == total -> "，发出的短信需要中枢升级后才能上传"
                 needsSim > 0 && invalid > 0 -> "，其中 ${needsSim + invalid} 条需要你处理"
                 needsSim > 0 -> "，其中 $needsSim 条需要确认接收号码"
                 invalid > 0 -> "，其中 $invalid 条无法上传"
@@ -89,6 +94,10 @@ data class LocalPendingMessage(
     val notificationOnly: Boolean = false,
     // Still inside the pairing window (see NOTIFICATION_NUMBER_HOLD).
     val notificationHeld: Boolean = false,
+    // Sent from this phone (sender is the recipient); waits for a hub that supports it.
+    val outgoing: Boolean = false,
+    // ...and the connected hub cannot store a sent message yet.
+    val awaitingHub: Boolean = false,
 )
 
 fun pendingState(
@@ -100,6 +109,7 @@ fun pendingState(
     authorized: Boolean = true,
     notificationOnly: Boolean = false,
     notificationHeld: Boolean = false,
+    awaitingHub: Boolean = false,
 ): PendingState =
     when {
         blocked == "notification_collision" -> PendingState.NOTIFICATION_COLLISION
@@ -107,6 +117,7 @@ fun pendingState(
         notificationHeld -> PendingState.NOTIFICATION_HELD
         notificationOnly && (receiver.isEmpty() || blocked == "sim_not_confirmed") -> PendingState.NOTIFICATION_ONLY
         receiver.isEmpty() || blocked == "sim_not_confirmed" -> PendingState.NEEDS_SIM
+        awaitingHub -> PendingState.AWAITING_HUB
         !upload -> PendingState.PAUSED
         !authorized -> PendingState.NEEDS_HUB
         !serverAllowed -> PendingState.SERVER_DENIED
@@ -120,6 +131,7 @@ fun pendingStateLabel(state: PendingState): String =
         PendingState.NOTIFICATION_HELD -> "来自短信通知：正在等待收件箱或系统广播的同一条短信，用来核对号码与内容"
         PendingState.NOTIFICATION_ONLY -> "只在短信通知中出现：收件箱和系统广播都没有这条短信，也不知道是哪张卡收到的；请确认接收号码或放弃"
         PendingState.NEEDS_SIM -> "需确认接收号码：系统没有告知是哪张卡收到的"
+        PendingState.AWAITING_HUB -> "发出的短信：当前中枢版本还不支持，升级中枢后自动上传"
         PendingState.INVALID -> "无法上传：内容或格式被拒绝，可重试或放弃"
         PendingState.SERVER_DENIED -> "中枢已禁止本机上传"
         PendingState.NEEDS_HUB -> "未连接中枢或授权已失效"

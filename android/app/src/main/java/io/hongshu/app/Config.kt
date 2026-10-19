@@ -100,6 +100,49 @@ class Config(context: Context) {
     val recoverySince: Long
         get() = prefs.getLong("recovery_since", 0)
 
+    // Messages this phone sends. On by default; older sent messages follow the history switch,
+    // and without it only messages sent after the boundary below are captured.
+    var outgoingEnabled: Boolean
+        get() = prefs.getBoolean("outgoing_enabled", true)
+        set(value) {
+            synchronized(identityLock) {
+                if (value != outgoingEnabled)
+                    prefs
+                        .edit()
+                        .putBoolean("outgoing_enabled", value)
+                        .putLong("outgoing_since", if (value) System.currentTimeMillis() else 0)
+                        .putLong("outgoing_generation", outgoingGeneration + 1)
+                        .putBoolean("outgoing_pending", false)
+                        .commit()
+            }
+        }
+
+    // Set the first time the (default-on) switch is observed, so an upgrade does not upload
+    // the whole sent box unless the user also asked for history.
+    val outgoingSince: Long
+        get() =
+            synchronized(identityLock) {
+                prefs.getLong("outgoing_since", 0).takeIf { it > 0 }
+                    ?: System.currentTimeMillis().also {
+                        prefs.edit().putLong("outgoing_since", it).commit()
+                    }
+            }
+
+    val outgoingGeneration: Long
+        get() = prefs.getLong("outgoing_generation", 0)
+
+    var outgoingPending: Boolean
+        get() = prefs.getBoolean("outgoing_pending", false)
+        set(value) {
+            prefs.edit().putBoolean("outgoing_pending", value).commit()
+        }
+
+    var outgoingStatus: String
+        get() = prefs.getString("outgoing_status", "尚未读取已发送短信")!!
+        set(value) {
+            prefs.edit().putString("outgoing_status", value).apply()
+        }
+
     val recoveryGeneration: Long
         get() = prefs.getLong("recovery_generation", 0)
 

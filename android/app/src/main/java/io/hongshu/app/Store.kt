@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Sent-box rows that are still sending or failed are rechecked for this long.
+internal const val SENT_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000L
+
 // Notification post time and SMS provider/PDU time differ by seconds, rarely minutes.
 internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
 
@@ -30,6 +33,7 @@ internal object CaptureSource {
     const val NOTIFICATION = "notification"
     const val RECOVERY = "recovery"
     const val HISTORY = "history"
+    const val SENT = "sent"
 }
 
 private const val UNPAIRED_NOTIFICATION =
@@ -54,6 +58,8 @@ data class CachedMessage(
     val local: Boolean = false,
     val analysis: MessageAnalysis = MessageAnalysis(),
     val unreadCount: Int = 0,
+    // Sent from the source phone; sender is then the recipient (see SmsRecord.outgoing).
+    val outgoing: Boolean = false,
 )
 
 data class SimMapping(val sub: Int, val slot: Int, val phone: String, val label: String)
@@ -66,7 +72,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 13), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 14), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -133,6 +139,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createNotificationReceipts(db)
         createReliabilityExtras(db)
         createCaptureEvents(db)
+        createOutgoing(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -165,6 +172,159 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 11) createReliabilityExtras(db)
         if (oldVersion < 12) purgeNotificationNoise(db)
         if (oldVersion < 13) createCaptureEvents(db)
+        if (oldVersion < 14) createOutgoing(db)
+    }
+
+    // v14: messages this phone sent. Both queues and the synced cache carry a direction; every
+    // existing row was received. Sent rows have their own provider cursor and retry list, so
+    // they never move the inbox scan that broadcasts and notifications pair against.
+    private fun createOutgoing(db: SQLiteDatabase) {
+        for (table in listOf("outbox", "inbox")) {
+            val present = db.rawQuery("PRAGMA table_info($table)", null).use { c ->
+                generateSequence { if (c.moveToNext()) c.getString(1) else null }.any { it == "direction" }
+            }
+            if (!present) db.execSQL("ALTER TABLE $table ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'")
+        }
+        db.execSQL("CREATE TABLE IF NOT EXISTS incomplete_sent (id INTEGER PRIMARY KEY,first_seen INTEGER NOT NULL)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('sent_provider_id',0)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('hub_outgoing',0)")
+    }
+
+    fun sentWatermark(): Long = meta("sent_provider_id")
+
+    fun sentHistoryGeneration(): Long = meta("sent_history_generation")
+
+    // The dated scan (history off) steps over older rows; when the history switch changes the
+    // sent box is read again from the start. The capture ledger keeps that from re-uploading.
+    fun restartSentScan(historyGeneration: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("INSERT OR IGNORE INTO meta VALUES ('sent_history_generation',0)")
+            db.execSQL("UPDATE meta SET value=? WHERE key='sent_history_generation'", arrayOf(historyGeneration))
+            db.execSQL("UPDATE meta SET value=0 WHERE key='sent_provider_id'")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    // A wiped or restored provider can reuse low ids; start the sent cursor over. Captured rows
+    // keep their ledger keys, so a reused id that was already captured is not uploaded twice.
+    fun observeSentHead(head: Long) {
+        if (head < sentWatermark())
+            writableDatabase.execSQL("UPDATE meta SET value=0 WHERE key='sent_provider_id'")
+    }
+
+    // Rows still being sent (outbox/queued) or failed may turn into sent rows under the same id.
+    // They are revisited for a day, then given up: a message that never went out is not news.
+    fun incompleteSentIds(now: Long = System.currentTimeMillis()): List<Long> {
+        writableDatabase.execSQL(
+            "DELETE FROM incomplete_sent WHERE first_seen<?",
+            arrayOf(now - SENT_RETRY_WINDOW_MS),
+        )
+        return readableDatabase
+            .rawQuery("SELECT id FROM incomplete_sent ORDER BY id LIMIT 100", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+    }
+
+    // Records rows that are not (yet) sent messages and advances past them in one transaction.
+    fun skipSentRows(pending: List<Long>, ignored: List<Long>, now: Long = System.currentTimeMillis()) {
+        if (pending.isEmpty() && ignored.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (id in pending)
+                db.execSQL("INSERT OR IGNORE INTO incomplete_sent VALUES (?,?)", arrayOf(id, now))
+            for (id in ignored) db.delete("incomplete_sent", "id=?", arrayOf(id.toString()))
+            advanceSent(db, (pending + ignored).max())
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun advanceSent(db: SQLiteDatabase, id: Long) =
+        db.execSQL("UPDATE meta SET value=MAX(value,?) WHERE key='sent_provider_id'", arrayOf(id))
+
+    // Sent rows have exactly one capture interface (the provider), so they skip the
+    // broadcast/notification pairing and dedupe on their ledger key alone.
+    fun captureSent(records: List<Pair<Long, SmsRecord>>): Int {
+        if (records.isEmpty()) return 0
+        val db = writableDatabase
+        var added = 0
+        db.beginTransaction()
+        try {
+            for ((id, m) in records) {
+                require(m.outgoing)
+                val key = "sent:$id"
+                db.delete("incomplete_sent", "id=?", arrayOf(id.toString()))
+                val known = db.rawQuery("SELECT 1 FROM captures WHERE key=?", arrayOf(key)).use { it.moveToFirst() }
+                if (known) continue
+                db.insertOrThrow(
+                    "captures",
+                    null,
+                    ContentValues().apply {
+                        put("key", key)
+                        put("receiver", m.receiver)
+                        put("sender", m.sender)
+                        put("body", m.body)
+                        put("timestamp", m.timestamp)
+                        put("sub", m.subscriptionId)
+                        put("source", CaptureSource.SENT)
+                    },
+                )
+                db.insertOrThrow(
+                    "outbox",
+                    null,
+                    ContentValues().apply {
+                        put("key", key)
+                        put("receiver", m.receiver)
+                        put("sender", m.sender)
+                        put("body", m.body)
+                        put("timestamp", m.timestamp)
+                        put("sub", m.subscriptionId)
+                        put("slot", -1)
+                        put("historical", if (m.historical) 1 else 0)
+                        put("direction", "out")
+                    },
+                )
+                added++
+            }
+            advanceSent(db, records.maxOf { it.first })
+            recordCaptureEvent(CaptureSource.SENT, "added", added)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (added > 0) changes.value++
+        return added
+    }
+
+    fun hubSupportsOutgoing(): Boolean = meta("hub_outgoing") != 0L
+
+    fun rememberHubOutgoing(supported: Boolean) {
+        writableDatabase.execSQL(
+            "UPDATE meta SET value=? WHERE key='hub_outgoing'",
+            arrayOf(if (supported) 1 else 0),
+        )
+    }
+
+    // A recipient written the way this phone already files the conversation (a received
+    // message or a synced one), so a reply lands in the same thread. Only exact matches under
+    // sender normalisation count; anything else keeps the address as the SMS app stored it.
+    fun knownSenderFor(address: String): String? {
+        val digits = normalizeSender(address).takeLast(8)
+        if (digits.length < 3) return null
+        return readableDatabase
+            .rawQuery(
+                "SELECT sender FROM (SELECT sender,MAX(timestamp) t FROM outbox WHERE direction='in' AND sender LIKE ? GROUP BY sender UNION ALL SELECT sender,MAX(timestamp) t FROM inbox WHERE direction='in' AND sender LIKE ? GROUP BY sender) ORDER BY t DESC LIMIT 20",
+                arrayOf("%$digits", "%$digits"),
+            )
+            .use { c ->
+                buildList { while (c.moveToNext()) add(c.getString(0)) }
+            }
+            .firstOrNull { sameSender(it, address) }
     }
 
     // v13: a bounded, content-free log of what each capture source did, so a device report can
@@ -504,6 +664,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             FROM inbox i
             LEFT JOIN conversation_reads cr ON cr.sender=i.sender
             WHERE i.historical=0
+              AND i.direction='in'
               AND i.id > ?
               AND i.id > COALESCE(cr.last_read_message_id, 0)
             GROUP BY i.sender
@@ -531,7 +692,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     // Upgrade/old-server fallback, bounded and outside SQLiteOpenHelper migration/UI.
     fun backfillLocalRules() {
         val cursor = meta("local_rule_cursor")
-        val batch = readableDatabase.rawQuery("SELECT id,body FROM inbox WHERE id>? ORDER BY id LIMIT 200", arrayOf(cursor.toString())).use { c ->
+        val batch = readableDatabase.rawQuery("SELECT id,CASE WHEN direction='out' THEN '' ELSE body END FROM inbox WHERE id>? ORDER BY id LIMIT 200", arrayOf(cursor.toString())).use { c ->
             buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) }
         }
         val db = writableDatabase
@@ -599,9 +760,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     fun localPending(limit: Int = 100, offset: Int = 0, now: Long = System.currentTimeMillis()): List<LocalPendingMessage> {
         val resolver = receiverResolver(allowFallback = false)
+        val hubOutgoing = hubSupportsOutgoing()
         return readableDatabase
             .rawQuery(
-                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0),$UNPAIRED_NOTIFICATION,$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER) FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
+                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0),$UNPAIRED_NOTIFICATION,$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER),direction FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
                 arrayOf(now.toString(), limit.coerceIn(1, 200).toString(), offset.coerceAtLeast(0).toString()),
             )
             .use { c ->
@@ -623,6 +785,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                             c.getInt(10) != 0,
                             c.getInt(11) != 0,
                             c.getInt(12) != 0,
+                            outgoing = c.getString(13) == "out",
+                            awaitingHub = c.getString(13) == "out" && !hubOutgoing,
                         )
                     )
                 }
@@ -1443,13 +1607,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val lane =
             if (historical == null) ""
             else if (historical) " AND historical<>0" else " AND historical=0"
+        // Sent rows stay queued until the hub announces it can store their direction.
+        val directions = if (hubSupportsOutgoing()) "" else " AND direction='in'"
         val invalid = mutableListOf<String>()
         while (result.size < limit) {
             var scanned = 0
             val page = mutableListOf<Pair<String, SmsRecord>>()
             readableDatabase
                 .rawQuery(
-                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical FROM outbox WHERE blocked='' AND ($eligible)$lane AND NOT ($HELD_NOTIFICATION) AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
+                    "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,direction FROM outbox WHERE blocked='' AND ($eligible)$lane$directions AND NOT ($HELD_NOTIFICATION) AND (timestamp,key)>(?,?) ORDER BY timestamp,key LIMIT 100",
                     (subs + listOf(now.toString(), lastTime.toString(), lastKey))
                         .toTypedArray(),
                 )
@@ -1479,6 +1645,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                                     c.getLong(4),
                                     c.getInt(5),
                                     c.getInt(7) != 0,
+                                    outgoing = c.getString(8) == "out",
                                 )
                             val rawJsonSize = m.json().toString().toByteArray().size
                             if (
@@ -1565,9 +1732,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     fun pendingCounts(now: Long = System.currentTimeMillis()): PendingCounts {
         val resolver = receiverResolver(allowFallback = false)
+        val hubOutgoing = hubSupportsOutgoing()
         return readableDatabase
             .rawQuery(
-                "SELECT receiver,sub,blocked,COUNT(*),held FROM (SELECT receiver,sub,blocked,($HELD_NOTIFICATION) AS held FROM outbox) GROUP BY receiver,sub,blocked,held",
+                "SELECT receiver,sub,blocked,COUNT(*),held,direction FROM (SELECT receiver,sub,blocked,($HELD_NOTIFICATION) AS held,direction FROM outbox) GROUP BY receiver,sub,blocked,held,direction",
                 arrayOf(now.toString()),
             )
             .use { rows ->
@@ -1576,9 +1744,12 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 var invalid = 0
                 var collisions = 0
                 var held = 0
+                var awaitingHub = 0
                 while (rows.moveToNext()) {
                     val count = rows.getInt(3)
                     when {
+                        rows.getString(5) == "out" && !hubOutgoing && rows.getString(2).isEmpty() ->
+                            awaitingHub += count
                         rows.getString(2) == "notification_collision" -> collisions += count
                         rows.getString(2) == "invalid_message" -> invalid += count
                         rows.getInt(4) != 0 -> held += count
@@ -1588,7 +1759,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         else -> ready += count
                     }
                 }
-                PendingCounts(ready, needsSim, invalid, collisions, held)
+                PendingCounts(ready, needsSim, invalid, collisions, held, awaitingHub)
             }
     }
 
@@ -1634,9 +1805,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             for (key in keys) {
                 // Enrichment may race an HTTP request. Recheck the current wire identity
                 // before ACK can remove a newly colliding observation.
-                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub FROM outbox WHERE key=?", arrayOf(key)).use { c ->
+                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub,direction FROM outbox WHERE key=?", arrayOf(key)).use { c ->
                     if (!c.moveToFirst()) null else SmsRecord(c.getString(0).ifEmpty { resolver(c.getInt(4)) },
-                        c.getString(1), c.getString(2), c.getLong(3), c.getInt(4))
+                        c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), outgoing = c.getString(5) == "out")
                 }
                 if (current != null && confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
                 val unpaired = db.rawQuery("SELECT 1 FROM outbox WHERE key=? AND $UNPAIRED_NOTIFICATION", arrayOf(key)).use { it.moveToFirst() }
@@ -1752,10 +1923,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val sender = message.getString("sender")
         val body = message.getString("body")
         val timestamp = message.getLong("timestamp")
+        val outgoing = message.optString("direction") == "out"
         val keys =
             db.rawQuery(
-                    "SELECT key,receiver,sub FROM outbox WHERE sender=? AND body=? AND timestamp=?",
-                    arrayOf(sender, body, timestamp.toString()),
+                    "SELECT key,receiver,sub FROM outbox WHERE sender=? AND body=? AND timestamp=? AND direction=?",
+                    arrayOf(sender, body, timestamp.toString(), if (outgoing) "out" else "in"),
                 )
                 .use { c ->
                     buildList {
@@ -1768,7 +1940,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         }
                     }
                 }
-        val wireMessage = SmsRecord(receiver, sender, body, timestamp, -1)
+        val wireMessage = SmsRecord(receiver, sender, body, timestamp, -1, outgoing = outgoing)
         // A sync copy proves only the fingerprint owner's delivery, not another
         // notification occurrence with the same wire fields.
         val allowed = prepareUpload(keys.map { it to wireMessage }, fromSync = true).map { it.first }.toSet()
@@ -1805,6 +1977,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             var fresh = 0
             for (i in 0 until messages.length()) {
                 val m = messages.getJSONObject(i)
+                val outgoing = m.optString("direction") == "out"
                 reconcileSyncedOutbox(db, m, self, resolveReceiver)
                 val cv =
                     ContentValues().apply {
@@ -1816,11 +1989,12 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         put("timestamp", m.getLong("timestamp"))
                         put("contact", m.optString("contact"))
                         put("historical", if (m.optBoolean("historical")) 1 else 0)
+                        put("direction", if (outgoing) "out" else "in")
                     }
                 val inserted =
                     db.insertWithOnConflict("inbox", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
                 val analysis = m.optJSONObject("analysis")?.let { MessageAnalysis.from(it) }
-                    ?: MessageAnalysis(otp = extractOtp(m.getString("body")).orEmpty())
+                    ?: MessageAnalysis(otp = if (outgoing) "" else extractOtp(m.getString("body")).orEmpty())
                 saveAnalysis(db, m.getLong("id"), analysis)
                 if (inserted == -1L) continue
                 added.add(
@@ -1834,8 +2008,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         m.optString("contact"),
                         m.optBoolean("historical"),
                         analysis = analysis,
+                        outgoing = outgoing,
                     )
                 )
+                // The user wrote it: never a notification or a verification code prompt.
+                if (outgoing) continue
                 if (!shouldNotify(
                         m.getString("device_id"),
                         self,
@@ -1911,7 +2088,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         readableDatabase.rawQuery("SELECT CASE WHEN COALESCE(a.otp,'')<>'' THEN 'otp' WHEN COALESCE(a.category,'')<>'' THEN a.category ELSE 'pending' END g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
             while (c.moveToNext()) add(c.getString(0), c.getInt(1))
         }
-        for (m in localMessages(q = q, sim = sim)) add(if (extractOtp(m.body) != null) "otp" else "pending", 1)
+        for (m in localMessages(q = q, sim = sim)) add(if (messageOtp(m) != null) "otp" else "pending", 1)
         return result
     }
 
@@ -1954,7 +2131,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             args.addAll(listOf(q, q, q))
         }
         val enriched = "WITH enriched AS (SELECT inbox.*,COALESCE(a.otp,'') otp,COALESCE(a.expires_at,0) expires_at,COALESCE(a.category,'') category,COALESCE(a.manual,0) manual,COALESCE(a.state,'pending') state,COALESCE(a.error,'') error,COALESCE(a.revision,0) revision FROM inbox LEFT JOIN message_analysis a ON a.message_id=inbox.id)"
-        val columns = "id,device,receiver,sender,body,timestamp,contact,historical,otp,expires_at,category,manual,state,error,revision"
+        val columns = "id,device,receiver,sender,body,timestamp,contact,historical,otp,expires_at,category,manual,state,error,revision,direction"
         val sql = enriched +
             if (sender.isNotEmpty())
                 " SELECT $columns FROM enriched WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
@@ -1974,6 +2151,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         c.getString(6),
                         c.getInt(7) != 0,
                         analysis = MessageAnalysis(c.getString(8), c.getLong(9), c.getString(10), c.getInt(11) != 0, c.getString(12), c.getString(13), c.getLong(14)),
+                        outgoing = c.getString(15) == "out",
                     )
                 )
             }
@@ -1997,7 +2175,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
         return readableDatabase
             .rawQuery(
-                "SELECT o.rowid,o.receiver,o.sender,o.body,o.timestamp,o.sub,o.historical,COALESCE(n.name,'') FROM outbox o LEFT JOIN contact_snapshot n ON n.phone=o.sender WHERE $where ORDER BY o.timestamp DESC LIMIT 500",
+                "SELECT o.rowid,o.receiver,o.sender,o.body,o.timestamp,o.sub,o.historical,COALESCE(n.name,''),o.direction FROM outbox o LEFT JOIN contact_snapshot n ON n.phone=o.sender WHERE $where ORDER BY o.timestamp DESC LIMIT 500",
                 args.toTypedArray(),
             )
             .use { c ->
@@ -2016,6 +2194,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                                 c.getString(7),
                                 c.getInt(6) != 0,
                                 local = true,
+                                outgoing = c.getString(8) == "out",
                             )
                         )
                     }
@@ -2065,13 +2244,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (collision) return false
         return readableDatabase
             .rawQuery(
-                "SELECT 1 FROM inbox WHERE device=? AND receiver=? AND sender=? AND body=? AND timestamp=? LIMIT 1",
+                "SELECT 1 FROM inbox WHERE device=? AND receiver=? AND sender=? AND body=? AND timestamp=? AND direction=? LIMIT 1",
                 arrayOf(
                     config.deviceId,
                     local.receiver,
                     local.sender,
                     local.body,
                     local.timestamp.toString(),
+                    if (local.outgoing) "out" else "in",
                 ),
             )
             .use { it.moveToFirst() }
@@ -2192,3 +2372,4 @@ fun SmsRecord.json(): JSONObject =
         .put("timestamp", timestamp)
         .put("subscription_id", subscriptionId)
         .put("historical", historical)
+        .apply { if (outgoing) put("direction", "out") }
