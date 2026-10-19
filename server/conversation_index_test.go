@@ -19,7 +19,7 @@ func TestIntegrationConversationIndexQueryPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id := 1; id <= 2000; id++ {
-		if _, err = tx.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,TRUE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", fmt.Sprintf("synthetic-%d", id%10), "synthetic history", id, 7); err != nil {
+		if _, err = tx.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,TRUE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", fmt.Sprintf("synthetic-%d", id%10), "synthetic history", id, 7); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -61,7 +61,7 @@ func TestIntegrationConversationIndexBackfillsAndRepairsLegacyWriter(t *testing.
 		}
 	}
 	for id, stamp := range []int64{3000, 1000, 3000} {
-		if _, err = db.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,FALSE)", id+1, d.ID, strings.Repeat(string(rune('a'+id)), 64), "+123456789", "synthetic", "synthetic message", stamp, 7); err != nil {
+		if _, err = db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,FALSE)", id+1, d.ID, strings.Repeat(string(rune('a'+id)), 64), "+123456789", "synthetic", "synthetic message", stamp, 7); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,7 +80,7 @@ func TestIntegrationConversationIndexBackfillsAndRepairsLegacyWriter(t *testing.
 	}
 	check(3)
 	// A legacy writer ignores the derived index during rollback.
-	if _, err = db.Exec("INSERT INTO messages VALUES (4,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("d", 64), "+123456789", "synthetic", "legacy writer", 4000, 7); err != nil {
+	if _, err = db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (4,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("d", 64), "+123456789", "synthetic", "legacy writer", 4000, 7); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec("UPDATE sync_clock SET seq=4 WHERE id=1"); err != nil {

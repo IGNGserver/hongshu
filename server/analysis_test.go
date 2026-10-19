@@ -140,7 +140,7 @@ func TestAnalysisUpgradeBackfillAndRollback(t *testing.T) {
 	}
 	insert := func(id int) {
 		t.Helper()
-		if _, e := db.Exec("INSERT INTO messages VALUES (?,'synthetic',?,'+8613800000000','10086','验证码 482913',?,1,TRUE)", id, hash(strconv.Itoa(id)), id); e != nil {
+		if _, e := db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,'synthetic',?,'+8613800000000','10086','验证码 482913',?,1,TRUE)", id, hash(strconv.Itoa(id)), id); e != nil {
 			t.Fatal(e)
 		}
 	}

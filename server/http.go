@@ -113,7 +113,7 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "analysis_revision": s.Revision, "global_watermark_id": watermark, "unread_count": unread})
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "analysis_revision": s.Revision, "global_watermark_id": watermark, "unread_count": unread, "features": hubFeatures})
 }
 func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 	rows, e := a.db.QueryContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices ORDER BY created_at")

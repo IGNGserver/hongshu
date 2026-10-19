@@ -38,10 +38,10 @@ func analysisClaimFixture(t *testing.T, count int) (*app, Device) {
 		t.Fatal(err)
 	}
 	for id := 1; id <= count; id++ {
-		if _, err = tx.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,TRUE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic history", id, 1); err != nil {
+		if _, err = tx.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,TRUE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic history", id, 1); err != nil {
 			t.Fatal(err)
 		}
-		if err = insertAnalysis(context.Background(), tx, int64(id), "synthetic history", int64(id)); err != nil {
+		if err = insertAnalysis(context.Background(), tx, int64(id), "synthetic history", int64(id), false); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -10,14 +10,14 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | --- | --- |
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
-| GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch |
+| GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch；`features` 列出中枢支持的可选协议能力（当前 `outgoing_sms`） |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
 | GET /api/devices | 设备清单，不含 token |
 | PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；Android 连接后的保存改名复用现有身份；admin 不可通过此接口提权 |
 | DELETE /api/devices/{id} | 管理员撤销，保留消息；中枢密码可重新创建管理员 Web 身份 |
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
-| POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；按请求顺序返回等长 `{id,duplicate,error?,fingerprint}`。fingerprint 为既有幂等指纹（receiver、sender、timestamp、body 以 NUL 分隔的 UTF-8 SHA-256），每条成功/失败均回传，旧客户端可忽略新增字段。格式非法的消息只拒绝该条 `invalid_message`，同批有效短信仍提交；已存在的相同 fingerprint 优先返回 duplicate，即使当前 SIM 注册后来丢失；其他未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端先验证整组 ACK，再按指纹关联；旧中枢无此字段时按请求顺序关联，不能检测重排。异常响应保留队列；旧中枢整批 invalid_message 可二分隔离，单条失败只阻塞该条。历史导入设 historical=true，不生成新短信通知 |
+| POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；按请求顺序返回等长 `{id,duplicate,error?,fingerprint}`。fingerprint 为既有幂等指纹（receiver、sender、timestamp、body 以 NUL 分隔的 UTF-8 SHA-256），每条成功/失败均回传，旧客户端可忽略新增字段。格式非法的消息只拒绝该条 `invalid_message`，同批有效短信仍提交；已存在的相同 fingerprint 优先返回 duplicate，即使当前 SIM 注册后来丢失；其他未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端先验证整组 ACK，再按指纹关联；旧中枢无此字段时按请求顺序关联，不能检测重排。异常响应保留队列；旧中枢整批 invalid_message 可二分隔离，单条失败只阻塞该条。历史导入设 historical=true，不生成新短信通知。可选 `direction`：省略或 `"in"` 为本机 SIM 收到的短信，`"out"` 为本机发出的短信，其他值按该条 `invalid_message` 拒绝；见下文“收发方向” |
 | POST /api/messages/read | `{sender?, message_id?, all?}` 标记已读；all=true 推进全局已读水位线为最新消息；指定 sender 则推进该会话已读游标。显式正数 message_id 必须是该 sender 已提交的消息，否则返回 400；负数无效，省略或 0 保留“当前整个会话已读”的兼容语义，自动标读客户端必须提交实际展示的 ID。返回 `{ok, global_watermark_id, unread_count}` |
 | GET /api/read-state?epoch=&since=&head=&limit= | 授权设备共享已读状态，返回 `{items:[{sender,message_id}],global_watermark_id,revision,head,epoch,more,next}`。首请求可带已同步的 since 修订、head 及 epoch，修订和消息头均相同则返回空 items；后续页用 `after=next&revision=首屏修订&head=首屏消息头&epoch=首屏代次`，不可同时使用 since。每页最多 200 条，修订或消息头变化返回 409 read_state_changed，epoch 不匹配返回 409 epoch_changed，409 后从首屏重试。客户端逐页合并，只有完整读取后才保存修订与消息头，不把下行合并再次加入上报队列；旧非法水位仅下发 0，部署者仍须显式修复存量异常 |
 | GET /api/sync?after=N&limit=L | `{messages, cursor, more, epoch}`，按 ID 升序；不得跨过未处理页面。epoch 与客户端已记录的值不同表示数据库已回档，必须丢弃已同步缓存并从 0 重拉；未上传队列保留。`after` 大于当前 sequence 返回 `epoch_changed`，旧客户端不得把空页当成已经同步完成 |
@@ -61,3 +61,20 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
 - `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other。`GET /api/conversations` 返回项包含 `unread_count` 会话未读数。
 - `GET /api/analysis/counts`：接受 q/sim/device/sender 筛选，返回消息数 counts（不是会话数）。
 - `/api/me` 新增 ai_enabled、analysis_revision、global_watermark_id、unread_count。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；原消息 ID 与 /sync 不因分类更新而改变。
+
+## 收发方向（outgoing_sms）
+
+- 消息新增 `direction`：`"in"` 表示上传手机的 SIM 收到，`"out"` 表示从该手机发出。两种方向下
+  `sender` 都是**对端号码**（会话键），`receiver` 都是**本机线路号码**（须先经 `/api/sims` 注册），
+  因此同一对端的收发短信属于同一会话，`?sender=` 筛选与已读游标同时覆盖两个方向。
+- 指纹：`"in"` 保持既有算法不变（已排队的旧消息仍能去重）；`"out"` 在既有四段之后追加 `\x00out`
+  再做 SHA-256，所以同号码、同时间、同正文的收发两条不会互相去重。跨端向量：
+  receiver `+8613800000000`、sender `10086`、timestamp `1700000000000`、body `测试`、direction `out`
+  → `d56c4a02e82f207e4a4436d1c2ef37c27e942d3883e7232b770334b13bff0adc`。
+- 发出的短信不计入 `unread_count` / 会话 `unread_count`，不生成 Web Push 任务，不提取验证码，
+  也不进入 AI 分类队列（analysis 直接为 `state=complete`、`otp=""`）。它仍推进 sync 游标并触发实时变更通知。
+- 能力协商：Android 只在 `/api/me` 的 `features` 含 `outgoing_sms` 时上传 `direction:"out"`。
+  旧中枢会忽略未知字段，把发出的短信当作“从收件人收到的短信”保存，所以不能无条件上传。
+- 旧客户端读取新中枢时看不到 `direction`，会把发出的短信显示为收到的短信；Web 与 Android 需随中枢一起升级。
+- 回滚迁移 011 会**删除**所有 `direction='out'` 的消息（而不是改成收到），手机端仍保留系统短信库中的原件，
+  重新升级后可再次上传。

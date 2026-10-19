@@ -122,6 +122,17 @@ test("messages cluster by device, five-minute gap and day", async () => {
   assert.deepEqual(clusterMessages([]), []);
 });
 
+test("sent and received messages never share a cluster", async () => {
+  const { clusterMessages, isOutgoing } = await import("../app.js");
+  const base = new Date(2026, 9, 17, 12, 0).getTime();
+  const m = (id, t, direction) => ({ id, timestamp: base + t, device_id: 1, direction });
+  const clusters = clusterMessages([m(1, 0), m(2, 1e3, "in"), m(3, 2e3, "out"), m(4, 3e3, "out"), m(5, 4e3, "in")]);
+  assert.deepEqual(clusters.map((c) => c.messages.map((x) => x.id)), [[1, 2], [3, 4], [5]]);
+  assert.deepEqual(clusters.map((c) => c.outgoing), [false, true, false]);
+  assert.equal(isOutgoing({}), false, "older hubs omit direction: received");
+  assert.equal(isOutgoing({ direction: "out" }), true);
+});
+
 test("theme choice falls back to system and picks the matching theme-color", async () => {
   const { normalizeTheme, themeColorFor, THEME_COLORS } = await import("../app.js");
   assert.equal(normalizeTheme("dark"), "dark");

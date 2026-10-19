@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Direction is "in" when the uploading phone's SIM received the message and "out" when it
+// was sent from that phone. Sender is the other party either way, so one conversation holds
+// both directions, and Receiver is always this phone's own line.
 type Message struct {
 	ID             int64    `json:"id"`
 	DeviceID       string   `json:"device_id"`
@@ -20,6 +23,7 @@ type Message struct {
 	SubscriptionID int      `json:"subscription_id"`
 	Contact        string   `json:"contact"`
 	Historical     bool     `json:"historical"`
+	Direction      string   `json:"direction"`
 	Analysis       Analysis `json:"analysis"`
 }
 
@@ -34,15 +38,38 @@ type Incoming struct {
 	Timestamp      int64  `json:"timestamp"`
 	SubscriptionID int    `json:"subscription_id"`
 	Historical     bool   `json:"historical"`
+	Direction      string `json:"direction,omitempty"` // absent = "in": older phones keep their fingerprints
+}
+
+const (
+	directionIn  = "in"
+	directionOut = "out"
+)
+
+// Features this hub understands, announced by /me. A phone uploads sent messages only when
+// "outgoing_sms" is present: an older hub ignores the direction field and would store them
+// as messages received from their recipient.
+var hubFeatures = []string{"outgoing_sms"}
+
+func direction(m Incoming) string {
+	if m.Direction == "" {
+		return directionIn
+	}
+	return m.Direction
 }
 
 var phonePattern = regexp.MustCompile(`^\+?[0-9]{3,20}$`)
 
 func fingerprint(m Incoming) string {
-	return hash(fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Receiver, m.Sender, m.Timestamp, m.Body))
+	base := fmt.Sprintf("%s\x00%s\x00%d\x00%s", m.Receiver, m.Sender, m.Timestamp, m.Body)
+	// Received messages keep the original identity so existing queues still deduplicate.
+	if direction(m) == directionOut {
+		base += "\x00out"
+	}
+	return hash(base)
 }
 func validMessage(m Incoming) bool {
-	return phonePattern.MatchString(m.Receiver) && len(m.Sender) > 0 && len(m.Sender) <= 100 && len(m.Body) > 0 && len(m.Body) <= 64000 && !strings.ContainsRune(m.Sender, 0) && !strings.ContainsRune(m.Body, 0) && m.Timestamp >= 0 && m.Timestamp <= time.Now().Add(24*time.Hour).UnixMilli()
+	return phonePattern.MatchString(m.Receiver) && len(m.Sender) > 0 && len(m.Sender) <= 100 && len(m.Body) > 0 && len(m.Body) <= 64000 && !strings.ContainsRune(m.Sender, 0) && !strings.ContainsRune(m.Body, 0) && (m.Direction == "" || m.Direction == directionIn || m.Direction == directionOut) && m.Timestamp >= 0 && m.Timestamp <= time.Now().Add(24*time.Hour).UnixMilli()
 }
 func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	d := device(r)
@@ -123,7 +150,7 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seq++
-		_, e = tx.ExecContext(r.Context(), "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?)", seq, d.ID, fp, m.Receiver, m.Sender, m.Body, m.Timestamp, m.SubscriptionID, m.Historical)
+		_, e = tx.ExecContext(r.Context(), "INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical,direction) VALUES (?,?,?,?,?,?,?,?,?,?)", seq, d.ID, fp, m.Receiver, m.Sender, m.Body, m.Timestamp, m.SubscriptionID, m.Historical, direction(m))
 		if e != nil {
 			fail(w, 503, "database_unavailable")
 			return
@@ -133,11 +160,12 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		if e = insertAnalysis(r.Context(), tx, seq, m.Body, m.Timestamp); e != nil {
+		if e = insertAnalysis(r.Context(), tx, seq, m.Body, m.Timestamp, direction(m) == directionOut); e != nil {
 			fail(w, 503, "database_unavailable")
 			return
 		}
-		if !m.Historical {
+		// A message this user sent is never news to them: no push, wherever they read.
+		if !m.Historical && direction(m) == directionIn {
 			_, e = tx.ExecContext(r.Context(), "INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) SELECT ?,d.id,?,0 FROM devices d JOIN push_subscriptions p ON p.device_id=d.id WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE", seq, time.Now().UnixMilli(), d.ID)
 		}
 		if e != nil {
@@ -158,13 +186,13 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"acks": acks, "cursor": seq})
 }
 
-const messageColumns = "m.id,m.device_id,m.receiver,m.sender,m.body,m.timestamp,m.subscription_id,COALESCE(c.name,''),m.historical," + analysisFields
+const messageColumns = "m.id,m.device_id,m.receiver,m.sender,m.body,m.timestamp,m.subscription_id,COALESCE(c.name,''),m.historical,m.direction," + analysisFields
 
 func scanMessages(rows *sql.Rows) ([]Message, error) {
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if e := rows.Scan(&m.ID, &m.DeviceID, &m.Receiver, &m.Sender, &m.Body, &m.Timestamp, &m.SubscriptionID, &m.Contact, &m.Historical, &m.Analysis.OTP, &m.Analysis.ExpiresAt, &m.Analysis.Category, &m.Analysis.Manual, &m.Analysis.State, &m.Analysis.Error, &m.Analysis.Revision); e != nil {
+		if e := rows.Scan(&m.ID, &m.DeviceID, &m.Receiver, &m.Sender, &m.Body, &m.Timestamp, &m.SubscriptionID, &m.Contact, &m.Historical, &m.Direction, &m.Analysis.OTP, &m.Analysis.ExpiresAt, &m.Analysis.Category, &m.Analysis.Manual, &m.Analysis.State, &m.Analysis.Error, &m.Analysis.Revision); e != nil {
 			return nil, e
 		}
 		out = append(out, m)

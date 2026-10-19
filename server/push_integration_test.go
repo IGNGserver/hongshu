@@ -50,7 +50,7 @@ func pushFixture(t *testing.T) (*app, Device) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec("INSERT INTO messages VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic SMS", time.Now().UnixMilli(), 1)
+	_, err = db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic SMS", time.Now().UnixMilli(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func pushFixture(t *testing.T) (*app, Device) {
 func addPushJobs(t *testing.T, a *app, d Device, total int) {
 	t.Helper()
 	for id := 2; id <= total; id++ {
-		if _, err := a.db.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic SMS", id, 1); err != nil {
+		if _, err := a.db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic SMS", id, 1); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := a.db.Exec("INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) VALUES (?,?,0,0)", id, d.ID); err != nil {
