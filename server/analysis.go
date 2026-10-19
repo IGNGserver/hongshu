@@ -132,14 +132,20 @@ func analysisRevision(ctx context.Context, tx *sql.Tx) (int64, error) {
 	_, e := tx.ExecContext(ctx, "UPDATE ai_settings SET revision=? WHERE id=1", v)
 	return v, e
 }
-func insertAnalysis(ctx context.Context, tx *sql.Tx, id int64, body string, ts int64) error {
-	code, expires := extractOTP(body, ts)
+
+// A sent message is never a code this user is waiting for, and classifying the user's own
+// writing is not worth an AI call: it is stored as already analysed, with no OTP.
+func insertAnalysis(ctx context.Context, tx *sql.Tx, id int64, body string, ts int64, sent bool) error {
+	code, expires := "", int64(0)
+	if !sent {
+		code, expires = extractOTP(body, ts)
+	}
 	rev, e := analysisRevision(ctx, tx)
 	if e != nil {
 		return e
 	}
 	state := "pending"
-	if code != "" {
+	if code != "" || sent {
 		state = "complete"
 	}
 	_, e = tx.ExecContext(ctx, "INSERT IGNORE INTO message_analysis (message_id,otp,expires_at,rule_version,state,revision) VALUES (?,?,?,?,?,?)", id, code, expires, otpRuleVersion, state, rev)
@@ -484,13 +490,13 @@ func (a *app) changeCategory(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "ai_disabled")
 		return
 	}
-	var body string
+	var body, dir string
 	var ts int64
-	if tx.QueryRowContext(r.Context(), "SELECT body,timestamp FROM messages WHERE id=?", id).Scan(&body, &ts) != nil {
+	if tx.QueryRowContext(r.Context(), "SELECT body,timestamp,direction FROM messages WHERE id=?", id).Scan(&body, &ts, &dir) != nil {
 		fail(w, 404, "message_not_found")
 		return
 	}
-	if e = insertAnalysis(r.Context(), tx, id, body, ts); e != nil {
+	if e = insertAnalysis(r.Context(), tx, id, body, ts, dir == directionOut); e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
@@ -600,10 +606,10 @@ func (a *app) backfillAnalysis(ctx context.Context) error {
 	if e = tx.QueryRowContext(ctx, "SELECT backfill_id,backfill_before FROM ai_settings WHERE id=1 FOR UPDATE").Scan(&cursor, &before); e != nil {
 		return e
 	}
-	query := "SELECT m.id,m.body,m.timestamp,x.message_id FROM messages m LEFT JOIN message_analysis x ON x.message_id=m.id WHERE m.id>? ORDER BY m.id LIMIT 100"
+	query := "SELECT m.id,m.body,m.timestamp,m.direction,x.message_id FROM messages m LEFT JOIN message_analysis x ON x.message_id=m.id WHERE m.id>? ORDER BY m.id LIMIT 100"
 	bound := cursor
 	if before > 0 {
-		query = "SELECT m.id,m.body,m.timestamp,x.message_id FROM messages m LEFT JOIN message_analysis x ON x.message_id=m.id WHERE m.id<? ORDER BY m.id DESC LIMIT 100"
+		query = "SELECT m.id,m.body,m.timestamp,m.direction,x.message_id FROM messages m LEFT JOIN message_analysis x ON x.message_id=m.id WHERE m.id<? ORDER BY m.id DESC LIMIT 100"
 		bound = before
 	}
 	rows, e := tx.QueryContext(ctx, query, bound)
@@ -611,14 +617,14 @@ func (a *app) backfillAnalysis(ctx context.Context) error {
 		return e
 	}
 	type entry struct {
-		id, ts int64
-		body   string
-		exists sql.NullInt64
+		id, ts    int64
+		body, dir string
+		exists    sql.NullInt64
 	}
 	items := []entry{}
 	for rows.Next() {
 		var m entry
-		if e = rows.Scan(&m.id, &m.body, &m.ts, &m.exists); e != nil {
+		if e = rows.Scan(&m.id, &m.body, &m.ts, &m.dir, &m.exists); e != nil {
 			rows.Close()
 			return e
 		}
@@ -631,7 +637,7 @@ func (a *app) backfillAnalysis(ctx context.Context) error {
 	}
 	for _, m := range items {
 		if !m.exists.Valid {
-			if e = insertAnalysis(ctx, tx, m.id, m.body, m.ts); e != nil {
+			if e = insertAnalysis(ctx, tx, m.id, m.body, m.ts, m.dir == directionOut); e != nil {
 				return e
 			}
 		}

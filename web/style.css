@@ -502,6 +502,15 @@ input.search::-webkit-search-cancel-button { display: none; }
   user-select: text;
 }
 .bubble-group .message-item:first-child .bubble { border-top-left-radius: var(--hs-shape-bubble); }
+/* Messages the source phone sent sit on the other side, mirrored. */
+.bubble-group.outgoing { align-self: flex-end; align-items: flex-end; }
+.bubble-group.outgoing .message-item { align-items: flex-end; }
+.bubble-out {
+  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
+  border-radius: var(--hs-shape-bubble) var(--hs-shape-bubble-joined) var(--hs-shape-bubble-joined) var(--hs-shape-bubble);
+}
+.bubble-group.outgoing .message-item:first-child .bubble-out { border-top-left-radius: var(--hs-shape-bubble); border-top-right-radius: var(--hs-shape-bubble); }
+.bubble-out .bubble-actions { left: auto; right: calc(100% + 4px); }
 .bubble-new { animation: m3e-bubble-enter var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-emphasized-decelerate); }
 @keyframes m3e-bubble-enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .bubble a { color: var(--md-sys-color-primary); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }

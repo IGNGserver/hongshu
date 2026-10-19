@@ -113,14 +113,16 @@ export function avatarColor(identifier) {
 // Consecutive messages from the same device on the same day, at most five minutes apart,
 // share one cluster so time and source are shown once.
 export const CLUSTER_GAP_MS = 5 * 60 * 1000;
+// A message the source phone sent. Hubs before outgoing support omit the field: received.
+export const isOutgoing = (m) => m?.direction === "out";
 const localDay = (t) => new Date(t).toDateString();
 export function clusterMessages(messages) {
   const clusters = [];
   let current = null;
   for (const message of messages) {
-    if (!current || message.device_id !== current.device_id ||
+    if (!current || message.device_id !== current.device_id || isOutgoing(message) !== current.outgoing ||
         message.timestamp - current.end > CLUSTER_GAP_MS || localDay(message.timestamp) !== localDay(current.end)) {
-      current = { device_id: message.device_id, start: message.timestamp, end: message.timestamp, messages: [] };
+      current = { device_id: message.device_id, outgoing: isOutgoing(message), start: message.timestamp, end: message.timestamp, messages: [] };
       clusters.push(current);
     }
     current.messages.push(message);
@@ -1188,8 +1190,8 @@ function renderConversations({ arrivals = false } = {}) {
       el("time", "", `${simLabel(m.receiver)} · ${formatRelativeTime(m.timestamp)}`),
     );
     const bottom = el("div", "preview-bottom");
-    if (m.analysis?.otp) bottom.append(el("span", "otp-tag", "验证码"));
-    bottom.append(el("p", "", m.body));
+    if (m.analysis?.otp && !isOutgoing(m)) bottom.append(el("span", "otp-tag", "验证码"));
+    bottom.append(el("p", "", isOutgoing(m) ? `我：${m.body}` : m.body));
     if (m.unread_count > 0) {
       bottom.append(el("span", "unread-badge", m.unread_count > 99 ? "99+" : String(m.unread_count)));
     }
@@ -1453,7 +1455,7 @@ function renderDetail() {
       inner.append(divider);
       lastDay = dayStr;
     }
-    const group = el("div", "bubble-group");
+    const group = el("div", "bubble-group" + (cluster.outgoing ? " outgoing" : ""));
     for (const msg of cluster.messages) {
       const fresh = isFreshArrival(msg.id, seenId);
       if (fresh) freshCount++;
@@ -1492,17 +1494,21 @@ function updateJumpButton(announceNew = false) {
 
 function messageStamp(msg) {
   const deviceName = state.devices.find((device) => device.id === msg.device_id)?.name || "来源手机";
-  const receiver = msg.receiver ? `${simLabel(msg.receiver)}${simLabel(msg.receiver) === msg.receiver ? "" : " " + msg.receiver}` : "接收号码未知";
-  return el("div", "message-stamp", [formatClock(msg.timestamp), deviceName, receiver, msg.historical ? "历史补齐" : ""].filter(Boolean).join(" · "));
+  const line = msg.receiver ? `${simLabel(msg.receiver)}${simLabel(msg.receiver) === msg.receiver ? "" : " " + msg.receiver}` : "";
+  // The phone's own line is the recipient of a received message and the sender of a sent one.
+  const receiver = isOutgoing(msg) ? (line ? `由 ${line} 发出` : "发送号码未知") : (line || "接收号码未知");
+  return el("div", "message-stamp", [formatClock(msg.timestamp), deviceName, receiver, isOutgoing(msg) ? "已发送" : "", msg.historical ? "历史补齐" : ""].filter(Boolean).join(" · "));
 }
 
 function bubble(msg, fresh) {
-  const b = el("div", "bubble" + (fresh ? " bubble-new" : ""));
-  const otp = msg.analysis?.otp;
+  const outgoing = isOutgoing(msg);
+  const b = el("div", "bubble" + (outgoing ? " bubble-out" : "") + (fresh ? " bubble-new" : ""));
+  const otp = outgoing ? "" : msg.analysis?.otp;
   if (otp) b.append(otpCard(msg));
   b.append(linkedText(msg.body));
 
-  if (state.me?.ai_enabled && !otp) {
+  // The user's own messages are not classified, so they get no analysis state or menu.
+  if (state.me?.ai_enabled && !otp && !outgoing) {
     const a = msg.analysis;
     // A plain automatic result needs no label; pending, failed and manual states do.
     if (!a || a.state !== "complete" || a.manual) {
@@ -1515,7 +1521,7 @@ function bubble(msg, fresh) {
     await copyText(msg.body);
     toast("已复制短信");
   }));
-  if (state.me?.ai_enabled && !otp) {
+  if (state.me?.ai_enabled && !otp && !outgoing) {
     const correction = el("details", "category-actions");
     const summary = el("summary");
     summary.innerHTML = ICONS.label;

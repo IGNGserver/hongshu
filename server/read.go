@@ -20,7 +20,7 @@ func (a *app) getUnreadState(r *http.Request) (int64, int64, error) {
 	var unreadCount int64
 	query := `SELECT COUNT(*) FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender=m.sender
-WHERE m.historical=FALSE AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`
+WHERE m.historical=FALSE AND m.direction='in' AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`
 	err = a.db.QueryRowContext(r.Context(), query, watermark).Scan(&unreadCount)
 	if err != nil {
 		return watermark, 0, err
@@ -155,6 +155,7 @@ SELECT m.sender, COUNT(*)
 FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender = m.sender
 WHERE m.historical = FALSE
+  AND m.direction = 'in'
   AND m.id > ?
   AND m.id > COALESCE(cr.last_read_message_id, 0)
   AND m.sender IN (?`+strings.Repeat(",?", len(ms)-1)+`)

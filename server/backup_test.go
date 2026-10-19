@@ -104,7 +104,7 @@ func TestIntegrationBackupRestore(t *testing.T) {
 			t.Fatal(e)
 		}
 		for id := 2; id <= 3; id++ {
-			if _, e = target.Exec("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(strconv.Itoa(id)+strconv.Itoa(generation)), "+1234567890", "synthetic", "new restore namespace", 1700000000000+id, 1); e != nil {
+			if _, e = target.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(strconv.Itoa(id)+strconv.Itoa(generation)), "+1234567890", "synthetic", "new restore namespace", 1700000000000+id, 1); e != nil {
 				t.Fatal(e)
 			}
 		}

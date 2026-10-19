@@ -277,7 +277,7 @@ func TestIntegrationWebSocketRevocation(t *testing.T) {
 		t.Fatal("initial socket state missing", e, initial)
 	}
 	// Positive control: the still-authorized socket must receive a real change.
-	if _, e = db.Exec("INSERT INTO messages VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic WS fixture", time.Now().UnixMilli(), 1); e != nil {
+	if _, e = db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (1,?,?,?,?,?,?,?,FALSE)", d.ID, strings.Repeat("0", 64), "+123456789", "synthetic", "synthetic WS fixture", time.Now().UnixMilli(), 1); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = db.Exec("UPDATE sync_clock SET seq=1 WHERE id=1"); e != nil {
