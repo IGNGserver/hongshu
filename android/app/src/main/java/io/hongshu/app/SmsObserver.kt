@@ -9,8 +9,12 @@ import android.provider.Telephony
 
 internal const val INBOX_CHANGE_DEBOUNCE_MS = 3000L
 
-internal fun inboxChangeTriggersScan(upload: Boolean, recovery: Boolean, history: Boolean) =
-    upload && (recovery || history)
+internal fun inboxChangeTriggersScan(
+    upload: Boolean,
+    recovery: Boolean,
+    history: Boolean,
+    outgoing: Boolean = false,
+) = upload && (recovery || history || outgoing)
 
 // While the process is alive, a provider change runs the inbox catch-up within seconds
 // instead of waiting for the periodic worker. It does not depend on SMS_RECEIVED, so it
@@ -23,7 +27,8 @@ internal object SmsInboxObserver {
     private val scan = Runnable {
         val context = app ?: return@Runnable
         val config = Config(context)
-        if (inboxChangeTriggersScan(config.upload, config.recoveryEnabled, config.historyEnabled))
+        // The observer watches the whole SMS table, so a message just sent also lands here.
+        if (inboxChangeTriggersScan(config.upload, config.recoveryEnabled, config.historyEnabled, config.outgoingEnabled))
             requestCapture(context)
     }
 

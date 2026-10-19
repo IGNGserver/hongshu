@@ -59,6 +59,7 @@ fun captureEventLabel(event: CaptureEvent): String {
             CaptureSource.NOTIFICATION -> "短信通知"
             CaptureSource.RECOVERY -> "漏收检查"
             CaptureSource.HISTORY -> "历史补齐"
+            CaptureSource.SENT -> "已发送短信"
             else -> event.source
         }
     val times = if (event.count > 1) " ×${event.count}" else ""
@@ -73,7 +74,9 @@ fun captureEventLabel(event: CaptureEvent): String {
             "paired_broadcast" -> "已与系统广播关联$times"
             "paired_late" -> "补读后关联 ${event.count} 条"
             "uploaded_unpaired" -> "${event.count} 条未找到对应短信，按通知内容上传"
-            "added" -> "从收件箱新增 ${event.count} 条"
+            "added" ->
+                if (event.source == CaptureSource.SENT) "从已发送箱新增 ${event.count} 条"
+                else "从收件箱新增 ${event.count} 条"
             else -> event.outcome + times
         }
     return "${formatTimestamp(event.at)} · $source · $outcome"

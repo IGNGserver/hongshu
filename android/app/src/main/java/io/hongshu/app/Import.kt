@@ -274,3 +274,199 @@ internal fun scanInbox(
     }
     return count
 }
+
+// Telephony.Sms.TYPE values a sending app writes. Only a sent row is a message that left the
+// phone; outbox/queued rows are still sending and failed rows may be retried under the same id.
+internal enum class SentRow { CAPTURE, PENDING, SKIP }
+
+internal fun classifySentRow(type: Int): SentRow =
+    when (type) {
+        Telephony.Sms.MESSAGE_TYPE_SENT -> SentRow.CAPTURE
+        Telephony.Sms.MESSAGE_TYPE_OUTBOX,
+        Telephony.Sms.MESSAGE_TYPE_QUEUED,
+        Telephony.Sms.MESSAGE_TYPE_FAILED -> SentRow.PENDING
+        else -> SentRow.SKIP
+    }
+
+private const val SENT_TYPES = "type IN (2,4,5,6)"
+
+// The recipient written the way this phone already files the conversation: the inbox row of
+// the same provider thread, else a sender already queued or synced, else the stored address.
+internal fun sentRecipient(address: String, threadAddress: String?, known: () -> String?): String =
+    threadAddress?.takeIf { sameSender(it, address) } ?: known() ?: normalizeSimNumber(address)
+
+// Sent messages are not broadcast and post no notification to other apps, so the system SMS
+// database is the only source. Default SMS apps write the row; READ_SMS reads it. Older rows
+// (before the switch was first seen) are read only when history import is on.
+fun scanSentBox(context: Context, databaseName: String = "hongshu.db"): String =
+    synchronized(inboxScanLock) {
+        val config = Config(context)
+        val generation: Long
+        val outgoingGeneration: Long
+        val historyGeneration: Long
+        val since: Long
+        val boundary: Long
+        synchronized(identityLock) {
+            if (!config.upload || !config.outgoingEnabled) {
+                config.outgoingPending = false
+                return if (!config.upload) "未启用本机采集" else "已发送短信同步已关闭"
+            }
+            generation = config.captureGeneration
+            outgoingGeneration = config.outgoingGeneration
+            historyGeneration = config.historyGeneration
+            boundary = config.outgoingSince
+            since = if (config.historyEnabled) 0L else boundary
+        }
+        fun current() =
+            config.upload &&
+                config.outgoingEnabled &&
+                config.captureGeneration == generation &&
+                config.outgoingGeneration == outgoingGeneration &&
+                config.historyGeneration == historyGeneration
+        if (!hasPermission(context, Manifest.permission.READ_SMS)) {
+            config.outgoingPending = false
+            return "缺少读取短信权限 · 无法读取已发送短信"
+        }
+        try {
+            Store(context, databaseName).use { store ->
+                // Turning history on must revisit rows the dated scan stepped over.
+                if (store.sentHistoryGeneration() != historyGeneration)
+                    store.restartSentScan(historyGeneration)
+                val count = scanSent(context, store, since, boundary, ::current)
+                return "最近读取 ${formatTimestamp(System.currentTimeMillis())} · 新增 $count 条已发送短信"
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            config.outgoingPending = false
+            return "已发送短信读取失败 · 不影响接收短信"
+        }
+    }
+
+private fun scanSent(
+    context: Context,
+    store: Store,
+    since: Long,
+    boundary: Long,
+    current: () -> Boolean,
+): Int {
+    if (!current()) return 0
+    val resolver = context.contentResolver
+    val head =
+        // Head of the whole table: deleting the newest sent message alone must not restart.
+        resolver.query(Telephony.Sms.CONTENT_URI, arrayOf("_id"), null, null, "_id DESC")
+            ?.use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
+            ?: error("SMS provider unavailable")
+    store.observeSentHead(head)
+    val retry = store.incompleteSentIds()
+    val idClause = if (retry.isEmpty()) "_id>?" else "(_id>? OR _id IN (${retry.joinToString(",")}))"
+    val selection = "$SENT_TYPES AND $idClause AND date>=?"
+    val args = arrayOf(store.sentWatermark().toString(), since.toString())
+    val cursor =
+        try {
+            resolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf("_id", "address", "body", "date", "type", "thread_id", "sub_id"),
+                selection,
+                args,
+                "_id ASC",
+            )
+        } catch (_: IllegalArgumentException) {
+            // Some vendor providers do not expose sub_id; keep the line unresolved.
+            resolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf("_id", "address", "body", "date", "type", "thread_id"),
+                selection,
+                args,
+                "_id ASC",
+            )
+        } ?: error("SMS provider unavailable")
+    val receiver = store.receiverResolver()
+    val threads = mutableMapOf<Long, String?>()
+    fun threadAddress(thread: Long): String? =
+        threads.getOrPut(thread) {
+            if (thread <= 0) null
+            else
+                runCatching {
+                        resolver.query(
+                            Telephony.Sms.Inbox.CONTENT_URI,
+                            arrayOf("address"),
+                            "thread_id=?",
+                            arrayOf(thread.toString()),
+                            "_id DESC",
+                        )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                    }
+                    .getOrNull()
+        }
+    var count = 0
+    val batch = mutableListOf<Pair<Long, SmsRecord>>()
+    val pending = mutableListOf<Long>()
+    val ignored = mutableListOf<Long>()
+    fun flush(): Boolean =
+        synchronized(identityLock) {
+            if (!current()) return@synchronized false
+            store.skipSentRows(pending, ignored)
+            count += store.captureSent(batch)
+            batch.clear()
+            pending.clear()
+            ignored.clear()
+            true
+        }
+    cursor.use { c ->
+        val idIndex = c.getColumnIndexOrThrow("_id")
+        val addressIndex = c.getColumnIndexOrThrow("address")
+        val bodyIndex = c.getColumnIndexOrThrow("body")
+        val dateIndex = c.getColumnIndexOrThrow("date")
+        val typeIndex = c.getColumnIndexOrThrow("type")
+        val threadIndex = c.getColumnIndexOrThrow("thread_id")
+        val subIndex = c.getColumnIndex("sub_id")
+        var visited = 0
+        var stopped = false
+        while (c.moveToNext()) {
+            if (!current()) {
+                stopped = true
+                break
+            }
+            if (visited++ == 1000) break
+            val id = c.getLong(idIndex)
+            val address = c.getString(addressIndex)
+            val body = c.getString(bodyIndex)
+            when (classifySentRow(c.getInt(typeIndex))) {
+                SentRow.PENDING -> pending += id
+                SentRow.SKIP -> ignored += id
+                SentRow.CAPTURE ->
+                    if (address.isNullOrBlank() || body.isNullOrEmpty()) ignored += id
+                    else {
+                        val sub = if (subIndex >= 0 && !c.isNull(subIndex)) c.getInt(subIndex) else -1
+                        val date = c.getLong(dateIndex)
+                        val recipient =
+                            sentRecipient(
+                                address,
+                                threadAddress(c.getLong(threadIndex)),
+                                { store.knownSenderFor(address) },
+                            )
+                        batch +=
+                            id to
+                                SmsRecord(
+                                    receiver(sub),
+                                    recipient,
+                                    body,
+                                    date,
+                                    sub,
+                                    historical = date < boundary,
+                                    outgoing = true,
+                                )
+                    }
+            }
+            if (batch.size + pending.size + ignored.size >= 100 && !flush()) {
+                stopped = true
+                break
+            }
+        }
+        if (!stopped) flush()
+        synchronized(identityLock) {
+            if (current()) Config(context).outgoingPending = visited > 1000
+        }
+    }
+    return count
+}

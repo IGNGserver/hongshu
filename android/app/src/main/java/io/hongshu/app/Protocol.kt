@@ -13,12 +13,22 @@ data class SmsRecord(
     // implausible network time was replaced by the local receive time. Nullable so that
     // copy(timestamp = ...) never carries a stale identity.
     val networkTime: Long? = null,
+    // Sent from this phone rather than received by it. Receiver is then this phone's line and
+    // sender the recipient, so both directions share the hub's conversation key.
+    val outgoing: Boolean = false,
 ) {
     val identityTime: Long
         get() = networkTime ?: timestamp
 
-    fun fingerprint(): String = sha256("$receiver\u0000$sender\u0000$timestamp\u0000$body")
+    // Received messages keep the original identity; sent ones append a direction marker so a
+    // reply with the same text and time never deduplicates against the received message.
+    fun fingerprint(): String =
+        sha256("$receiver\u0000$sender\u0000$timestamp\u0000$body" + if (outgoing) "\u0000out" else "")
 }
+
+// Optional hub capability (GET /me "features"). An older hub ignores the direction field and
+// would store a sent message as one received from its recipient, so sent rows wait for it.
+internal const val HUB_FEATURE_OUTGOING = "outgoing_sms"
 
 fun sha256(value: String): String =
     MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString(

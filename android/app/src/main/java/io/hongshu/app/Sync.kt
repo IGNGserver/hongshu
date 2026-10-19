@@ -172,6 +172,14 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             } catch (_: Exception) {
                 config.historyState = HistoryState.FAILED
             }
+            // Independent of the inbox passes: a failure there must not hold back sent messages.
+            try {
+                config.outgoingStatus = scanSentBox(applicationContext)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                config.outgoingPending = false
+            }
             // Wake upload without enqueueing another capture worker in a completion loop.
             Store(applicationContext).use {
                 if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
@@ -181,7 +189,8 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             if (
                 config.upload &&
                     ((config.historyEnabled && config.inboxScanPending) ||
-                        (config.recoveryEnabled && config.recoveryPending))
+                        (config.recoveryEnabled && config.recoveryPending) ||
+                        (config.outgoingEnabled && config.outgoingPending))
             )
                 enqueueCaptureContinuation(applicationContext)
             Result.success()
@@ -355,6 +364,7 @@ object SyncEngine {
                     val me = session.getJSONObject("device")
                     val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
                     c.serverUploadAllowed = serverUpload
+                    store.rememberHubOutgoing(hubFeatures(session).contains(HUB_FEATURE_OUTGOING))
                     if (me.has("name")) c.deviceName = me.getString("name")
                     if (store.captureSince() == 0L) {
                         store.initializeCaptureSince(me.getLong("created_at"))
@@ -497,6 +507,11 @@ object SyncEngine {
                 }
             }
         }
+}
+
+internal fun hubFeatures(session: JSONObject): Set<String> {
+    val features = session.optJSONArray("features") ?: return emptySet()
+    return (0 until features.length()).mapNotNull { features.optString(it).takeIf(String::isNotEmpty) }.toSet()
 }
 
 internal fun applyMessagePage(context: Context, config: Config, store: Store, data: JSONObject, pairedAt: Long) {
