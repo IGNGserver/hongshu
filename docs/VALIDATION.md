@@ -67,7 +67,17 @@ PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用�
 
 本地构建副本与测试输出：`~/.build/hongshu/local-contact-display/`，共享 Gradle/Go 缓存
 也位于 `~/.build/`；运行前可用空间 125 GiB，未在项目卷生成依赖或构建产物。
-全量 APK、真实 MySQL、API 28/33/35 instrumentation 由任务分支 CI 验证，不在本机重复全仓打包。
+全量 APK、真实 MySQL、API 28/33/35 instrumentation 已由任务分支 CI 验证，不在本机重复全仓打包。
+
+完整 CI：[Hongshu validation 39435442646](https://github.com/IGNGserver/hongshu/actions/runs/39435442646)，
+验证代码提交 `2c95fed`，全部成功，总历时 8m45s。
+`verify` 8s；`web` 7s（测试、语法检查和构建）；`server` 2m54s（真实 MySQL、race/vet/build、
+原有浏览器集成和本机联系人 Chromium 流程）；`android (28/33/35)` 分别 8m05s、8m37s、8m38s
+（全量单测、lint、debug APK/测试 APK 与对应 API 模拟器 instrumentation）。
+另有 [push 快速检查 39435403514](https://github.com/IGNGserver/hongshu/actions/runs/39435403514) 成功，
+仅运行 `verify`/`web`。仓库为 public，本轮占用私有仓库月度分钟数为 0。
+本机任务 scratch 保留 33 MiB 的构建副本、测试输出和审计记录，未淘汰共享缓存；
+物理手机/系统 Picker 验收仍按以下边界单列，不能用 CI 成功代替。
 
 未完成环境验收：物理 Android 手机的授权弹窗、厂商 ROM 通讯录变更/权限撤销/照片访问，
 以及真实手机浏览器系统 Contact Picker；合成 provider/Picker 测试不等于上述真机验收。
