@@ -16,35 +16,46 @@ const ASSETS = [
   "/favicon-16.png",
 ];
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
-  self.skipWaiting();
+  // Icons of every platform/size must not compete with the first useful view.
+  const core = ASSETS.filter(path => path === "/" || /(?:app\.js|style\.css|icon\.svg|manifest\.webmanifest)$/.test(path));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(core)));
+});
+self.addEventListener("message", e => {
+  if (e.data?.type === "ACTIVATE_UPDATE") self.skipWaiting();
 });
 self.addEventListener("activate", (e) =>
-  e.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(
-          keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
-        ),
-      )
-      .then(() => self.clients.claim()),
-  ),
+  // Open old tabs still refer to their immutable files. Do not delete their
+  // complete shell when a newer worker takes control after user consent.
+  e.waitUntil(self.clients.claim()),
 );
 // Never cache API responses or SMS content, even when offline.
 self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  const immutable = /^\/assets\/[a-f0-9]{16}-[^/]+$/.test(url.pathname);
   if (
     e.request.method !== "GET" ||
-    new URL(e.request.url).origin !== self.location.origin ||
-    !ASSETS.includes(new URL(e.request.url).pathname)
+    url.origin !== self.location.origin || url.search ||
+    url.pathname.startsWith("/api/") ||
+    (!ASSETS.includes(url.pathname) && !immutable && url.pathname !== "/index.html")
   )
     return;
-  e.respondWith(fetch(e.request).then(async response => {
-    if (response.ok) {
-      try { await (await caches.open(CACHE)).put(e.request, response.clone()); } catch { /* online shell still usable if quota is exhausted */ }
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const key = url.pathname === "/index.html" ? "/" : e.request;
+    const cached = await cache.match(key);
+    if (cached) return cached;
+    // Hashed files from older open documents are safe across shell versions.
+    if (immutable) {
+      const old = await caches.match(e.request);
+      if (old) return old;
+    }
+    const response = await fetch(e.request);
+    if (response.ok && (ASSETS.includes(url.pathname) || immutable)) {
+      const update = cache.put(key, response.clone()).catch(() => {});
+      e.waitUntil(update);
     }
     return response;
-  }).catch(() => caches.match(e.request)));
+  })());
 });
 self.addEventListener("push", (e) => {
   e.waitUntil(

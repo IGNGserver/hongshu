@@ -148,7 +148,7 @@ class OutgoingSmsTest {
                 db.version = 13
             }
             Store(context, legacy).use { upgraded ->
-                assertEquals(14, upgraded.readableDatabase.version)
+                assertEquals(15, upgraded.readableDatabase.version)
                 for (table in listOf("outbox", "inbox"))
                     upgraded.readableDatabase.rawQuery("SELECT direction FROM $table", null).use {
                         assertTrue(it.moveToFirst())

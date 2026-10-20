@@ -20,7 +20,7 @@ function runtime() {
 }
 const run = (ctx, code) => vm.runInContext(code, ctx);
 
-test("metadata failure retains both new head and classification revalidation until retry", async () => {
+test("metadata failure cannot block new head and classification revalidation, and retries independently", async () => {
   const ctx = runtime();
   run(ctx, `
     failOnce=true;refreshes=[];
@@ -31,7 +31,8 @@ test("metadata failure retains both new head and classification revalidation unt
     };
     refreshInbox=async options=>{refreshes.push(options);return true};
   `);
-  await assert.rejects(run(ctx, "catchUp()"), /503/);
+  await run(ctx, "catchUp()");
+  assert.equal(run(ctx, "refreshes.length"), 1, "content did not wait for failed metadata");
   await run(ctx, "catchUp()");
   assert.equal(run(ctx, "refreshes.length"), 1);
   assert.equal(run(ctx, "refreshes[0].revalidateHistory && refreshes[0].revalidateConversations"), true);
@@ -73,7 +74,7 @@ test("realtime refresh overtaking a SIM switch cannot retain the previous query'
     reloadMetadata=()=>new Promise(r=>releaseMetadata=r);
     api=async p=>p.startsWith('/conversations')?{conversations:Array.from({length:100},(_,i)=>({sender:'B-'+i,timestamp:1000-i,receiver:'B'}))}:
       p.startsWith('/analysis/counts')?{counts:{}}:{messages:[{id:2,timestamp:2,sender:'s',receiver:'B'}]};
-    filterRefresh=refreshInbox();
+    filterRefresh=refreshInbox({metadata:true});
   `);
   await run(ctx, "refreshInbox({metadata:false,preserveHistory:true})");
   run(ctx, "releaseMetadata()");

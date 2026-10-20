@@ -5,6 +5,7 @@
 手机本机发出的短信从系统短信库的已发送箱采集后上传（只同步，不代发），协议见 [API.md](API.md)“收发方向”。
 
 验证码、可选 AI 分组、持久队列和独立元数据同步见 [MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)。
+多端分层加载、公共壳缓存、元数据修订与最近展示快照见 [LOADING_PERFORMANCE.md](LOADING_PERFORMANCE.md)。
 
 ## 可靠性与业务标识
 

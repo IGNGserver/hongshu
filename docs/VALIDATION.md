@@ -1,3 +1,29 @@
+# 2026-10-20 多端加载与弱网优化
+
+基线 `585b5ee`（`0.2.0-alpha.12`），任务分支 `agent/loading-performance`；版本不变，不自动发布、部署、建 PR 或合并。
+实现契约与运行方式见 [LOADING_PERFORMANCE.md](LOADING_PERFORMANCE.md)。
+
+- Web/PWA/桌面安装 PWA：认证后立即呈现壳，列表不等统计/联系人/AI 队列；元数据修订与 single-flight，超时不误登出；有界内存详情缓存和会话节点复用。
+- 公共壳：内容 hash、immutable、静态 gzip；核心集合安装、缓存优先和用户同意更新，保留旧页面资源；敏感 API 不入 SW/CDN 缓存。
+- Android：按可见页面读取、搜索防抖、本地 v15 派生会话头和批量去重；每轮最多四页下载/一批上传，低速上传字节预算；最近展示预览不推进可靠游标，不触发历史通知，可靠重叠页仍处理通知。
+- 中枢：迁移 012，元数据修订与写事务共同提交；只读一致性最近快照；epoch/head/read-revision 键控未读缓存；WS 仍只查 singleton，额外观察元数据与 epoch。
+
+本地验证（源码副本和产物均在 `~/.build/hongshu/loading-performance/`；开始 df 可用 127Gi，后续 125Gi）：
+
+| 命令/检查 | 实际结果 |
+| --- | --- |
+| `TMPDIR=本机scratch bash scripts/verify-repository.sh` | 通过，12 项运维测试；在任务 worktree 执行以包含真实 Git 跟踪检查 |
+| `git diff --check` | 通过 |
+| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 78 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离 |
+| scratch Go `go test -race ./... && go vet ./...` | 通过；本机未提供 TEST_MYSQL_DSN，真实 MySQL 集成不计入本机结论 |
+| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 首轮新增回归通过（8m20s，含冷 Gradle 下载）；后续扩大覆盖后继续复核 |
+
+全套 Go/MySQL、Chromium、Android API 28/33/35 构建/模拟器使用现有 workflow_dispatch 验证任务分支，运行结果另行记录，不能以本地跳过真库测试代替。
+
+P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
+
+回滚边界：迁移 012 只增派生时钟，旧服务可保留该表但不能混合写服务；Android v15 升级保留 outbox 与采集证据，旧 APK 不能直接降级打开新版库。壳为保护老标签页保留旧版本缓存，长期多次升级的缓存回收策略需结合目标浏览器配额继续观察。
+
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 
 依赖中枢 PR #74（`direction` 列与 `features: ["outgoing_sms"]`）。

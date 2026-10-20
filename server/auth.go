@@ -40,6 +40,8 @@ type app struct {
 	pushSuppressed                    atomic.Int64
 	pushDropped                       atomic.Int64
 	wsCheckInterval                   time.Duration
+	unreadMu                          sync.Mutex
+	unreadSnapshot                    unreadSnapshot
 }
 type attempt struct {
 	count int
@@ -282,6 +284,9 @@ func insertDevice(ctx context.Context, tx *sql.Tx, name, kind string, admin bool
 	d := Device{ID: random(16), Name: name, Kind: kind, Admin: admin, Notify: true, Created: time.Now().UnixMilli()}
 	token := random(32)
 	_, e := tx.ExecContext(ctx, "INSERT INTO devices (id,name,kind,token_hash,admin,notify,created_at) VALUES (?,?,?,?,?,TRUE,?)", d.ID, d.Name, d.Kind, hash(token), admin, d.Created)
+	if e == nil {
+		_, e = tx.ExecContext(ctx, "UPDATE metadata_clock SET revision=revision+1 WHERE id=1")
+	}
 	return d, token, e
 }
 func validName(s string) bool {

@@ -21,6 +21,8 @@ import (
 type wsQueryStore struct {
 	mu       sync.Mutex
 	revision int64
+	metadata int64
+	epoch    int64
 	states   int
 	denied   []string
 }
@@ -46,12 +48,12 @@ func (c *wsQueryConn) QueryContext(_ context.Context, query string, _ []driver.N
 		return &wsQueryRows{columns: []string{"id", "name", "kind", "admin", "upload", "notify", "revoked", "created_at"}, values: []driver.Value{"synthetic", "Synthetic", "web", true, false, true, false, int64(0)}}, nil
 	}
 	lower := strings.ToLower(query)
-	if strings.Contains(lower, "messages") || strings.Contains(lower, "conversation_reads") || strings.Contains(lower, "count(") || !strings.Contains(lower, "read_state") || !strings.Contains(lower, "updated_at") || !strings.Contains(lower, "sync_clock") || !strings.Contains(lower, "ai_settings") {
+	if strings.Contains(lower, "messages") || strings.Contains(lower, "conversation_reads") || strings.Contains(lower, "count(") || !strings.Contains(lower, "read_state") || !strings.Contains(lower, "updated_at") || !strings.Contains(lower, "sync_clock") || !strings.Contains(lower, "ai_settings") || !strings.Contains(lower, "metadata_clock") {
 		c.store.denied = append(c.store.denied, query)
 		return nil, errors.New("websocket must query singleton state only")
 	}
 	c.store.states++
-	return &wsQueryRows{columns: []string{"seq", "revision", "updated_at"}, values: []driver.Value{int64(10), int64(20), c.store.revision}}, nil
+	return &wsQueryRows{columns: []string{"seq", "revision", "updated_at", "metadata_revision", "epoch"}, values: []driver.Value{int64(10), int64(20), c.store.revision, c.store.metadata, c.store.epoch}}, nil
 }
 
 type wsQueryRows struct {
@@ -99,6 +101,17 @@ func TestWebSocketReadHintsNeverScanMessages(t *testing.T) {
 			t.Fatal("websocket computed unread count instead of a change hint")
 		}
 	}
+	readHint()
+	// Cosmetic changes and restores must invalidate clients without changing the
+	// SMS head, and without introducing scans into each socket's polling loop.
+	store.mu.Lock()
+	store.metadata++
+	store.mu.Unlock()
+	a.broadcastChange()
+	readHint()
+	store.mu.Lock()
+	store.epoch++
+	store.mu.Unlock()
 	readHint()
 	store.mu.Lock()
 	store.revision++

@@ -72,7 +72,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 14), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 15), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -140,6 +140,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createReliabilityExtras(db)
         createCaptureEvents(db)
         createOutgoing(db)
+        createLoadingState(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -173,6 +174,32 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 12) purgeNotificationNoise(db)
         if (oldVersion < 13) createCaptureEvents(db)
         if (oldVersion < 14) createOutgoing(db)
+        if (oldVersion < 15) createLoadingState(db)
+    }
+
+    // Derived heads only: migration never drops captured SMS or resets cursors.
+    private fun createLoadingState(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_conversation_heads (sender TEXT PRIMARY KEY,message_id INTEGER NOT NULL,timestamp INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS local_heads_timeline ON local_conversation_heads(timestamp,message_id)")
+        db.execSQL("INSERT OR REPLACE INTO local_conversation_heads SELECT i.sender,MAX(i.id),i.timestamp FROM inbox i JOIN (SELECT sender,MAX(timestamp) t FROM inbox GROUP BY sender) l ON l.sender=i.sender AND l.t=i.timestamp GROUP BY i.sender,i.timestamp")
+        db.execSQL("CREATE TABLE IF NOT EXISTS preview_messages (id INTEGER PRIMARY KEY)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('preview_head',0)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('contacts_revision',0)")
+        db.execSQL("INSERT OR IGNORE INTO meta VALUES ('contacts_checked_at',0)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS inbox_local_identity ON inbox(device,receiver,sender,timestamp,direction)")
+    }
+
+    fun previewHead(): Long = meta("preview_head")
+    fun contactsRevision(): Long = meta("contacts_revision")
+    fun contactsCheckedAt(): Long = meta("contacts_checked_at")
+
+    fun applyRecent(data: JSONObject) {
+        val epoch = data.getLong("epoch")
+        check(epochSeen() && epoch() == epoch) { "Snapshot epoch changed" }
+        val messages = data.getJSONArray("messages")
+        val head = data.getLong("head")
+        check(head >= 0 && messages.length() <= 200 && (0 until messages.length()).all { messages.getJSONObject(it).getLong("id") in 1..head }) { "Invalid display snapshot" }
+        applySync(messages, head, pageEpoch = epoch, preview = true)
     }
 
     // v14: messages this phone sent. Both queues and the synced cache carry a direction; every
@@ -1953,6 +1980,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         self: String = "",
         pairedAt: Long = 0,
         pageEpoch: Long? = null,
+        preview: Boolean = false,
     ): List<CachedMessage> = synchronized(identityLock) {
         val db = writableDatabase
         val added = mutableListOf<CachedMessage>()
@@ -1978,7 +2006,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             for (i in 0 until messages.length()) {
                 val m = messages.getJSONObject(i)
                 val outgoing = m.optString("direction") == "out"
-                reconcileSyncedOutbox(db, m, self, resolveReceiver)
+                if (!preview) reconcileSyncedOutbox(db, m, self, resolveReceiver)
                 val cv =
                     ContentValues().apply {
                         put("id", m.getLong("id"))
@@ -1996,7 +2024,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 val analysis = m.optJSONObject("analysis")?.let { MessageAnalysis.from(it) }
                     ?: MessageAnalysis(otp = if (outgoing) "" else extractOtp(m.getString("body")).orEmpty())
                 saveAnalysis(db, m.getLong("id"), analysis)
-                if (inserted == -1L) continue
+                db.execSQL("INSERT OR REPLACE INTO local_conversation_heads SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM local_conversation_heads WHERE sender=? AND (timestamp>? OR (timestamp=? AND message_id>?)))",
+                    arrayOf(m.getString("sender"), m.getLong("id"), m.getLong("timestamp"), m.getString("sender"), m.getLong("timestamp"), m.getLong("timestamp"), m.getLong("id")))
+                if (preview) {
+                    if (inserted != -1L) db.execSQL("INSERT OR IGNORE INTO preview_messages VALUES (?)", arrayOf(m.getLong("id")))
+                    continue
+                }
+                val wasPreview = db.delete("preview_messages", "id=?", arrayOf(m.getLong("id").toString())) > 0
+                if (inserted == -1L && !wasPreview) continue
                 added.add(
                     CachedMessage(
                         m.getLong("id"),
@@ -2053,16 +2088,19 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     "UPDATE meta SET value=value+? WHERE key='notify_pending'",
                     arrayOf(fresh),
                 )
-            db.execSQL("UPDATE meta SET value=MAX(value,?) WHERE key='cursor'", arrayOf(cursor))
-            db.execSQL(
+            if (preview) db.execSQL("UPDATE meta SET value=? WHERE key='preview_head'", arrayOf(cursor))
+            else {
+              db.execSQL("UPDATE meta SET value=MAX(value,?) WHERE key='cursor'", arrayOf(cursor))
+              db.execSQL(
                 "UPDATE meta SET value=1 WHERE key='initial_complete' AND EXISTS (SELECT 1 FROM meta WHERE key='initial_head' AND value>=0 AND value<=?)",
                 arrayOf(cursor),
-            )
+              )
+            }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        changes.value++
+        if (messages.length() > 0) changes.value++
         added
     }
 
@@ -2135,6 +2173,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val sql = enriched +
             if (sender.isNotEmpty())
                 " SELECT $columns FROM enriched WHERE $where ORDER BY timestamp DESC,id DESC LIMIT ?"
+            else if (q.isEmpty() && sim.isEmpty() && before == Long.MAX_VALUE && group in listOf("", "all"))
+                " SELECT " + columns.split(',').joinToString(",") { "e.$it" } + " FROM local_conversation_heads h JOIN enriched e ON e.id=h.message_id ORDER BY h.timestamp DESC,h.message_id DESC LIMIT ?"
             else
                 ", matched AS (SELECT * FROM enriched WHERE $where), latest AS (SELECT sender,MAX(timestamp) event_time FROM matched GROUP BY sender), chosen AS (SELECT MAX(m.id) id FROM matched m JOIN latest l ON m.sender=l.sender AND m.timestamp=l.event_time GROUP BY m.sender) SELECT $columns FROM enriched WHERE id IN (SELECT id FROM chosen) ORDER BY timestamp DESC,id DESC LIMIT ?"
         args.add(limit.coerceAtLeast(1).toString())
@@ -2210,10 +2250,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         group: String = "all",
     ): List<CachedMessage> {
         val remote = messages(sender, q, sim, limit = limit, group = group)
-        val local =
-            localMessages(sender, q, sim)
-                .filter { it.matchesGroup(group) }
-                .filterNot(::hasSyncedLocalCopy)
+        val candidates = localMessages(sender, q, sim).filter { it.matchesGroup(group) }
+        val synced = syncedLocalIds(candidates)
+        val local = candidates.filterNot { it.id in synced }
         val unreadMap = if (sender.isEmpty()) unreadCounts() else emptyMap()
         if (local.isEmpty()) {
             return if (unreadMap.isEmpty()) remote else remote.map {
@@ -2236,25 +2275,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             .take(limit)
     }
 
-    private fun hasSyncedLocalCopy(local: CachedMessage): Boolean {
-        val collision = readableDatabase.rawQuery(
-            "SELECT 1 FROM outbox WHERE rowid=? AND blocked='notification_collision'",
-            arrayOf((-local.id).toString()),
-        ).use { it.moveToFirst() }
-        if (collision) return false
-        return readableDatabase
-            .rawQuery(
-                "SELECT 1 FROM inbox WHERE device=? AND receiver=? AND sender=? AND body=? AND timestamp=? AND direction=? LIMIT 1",
-                arrayOf(
-                    config.deviceId,
-                    local.receiver,
-                    local.sender,
-                    local.body,
-                    local.timestamp.toString(),
-                    if (local.outgoing) "out" else "in",
-                ),
-            )
-            .use { it.moveToFirst() }
+    private fun syncedLocalIds(messages: List<CachedMessage>): Set<Long> = buildSet {
+        // Six bindings per row, below API 26 SQLite's 999-variable limit. Use
+        // resolved receiver snapshots, not an unresolved outbox.receiver value.
+        for (batch in messages.chunked(100)) {
+            val args = batch.flatMap { listOf(it.id.toString(), it.receiver, it.sender, it.body, it.timestamp.toString(), if (it.outgoing) "out" else "in") } + config.deviceId
+            val values = batch.joinToString(",") { "(?,?,?,?,?,?)" }
+            readableDatabase.rawQuery("WITH candidates(id,receiver,sender,body,timestamp,direction) AS (VALUES $values) SELECT c.id FROM candidates c JOIN inbox i ON i.receiver=c.receiver AND i.sender=c.sender AND i.body=c.body AND i.timestamp=CAST(c.timestamp AS INTEGER) AND i.direction=c.direction WHERE i.device=? AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.rowid=-CAST(c.id AS INTEGER) AND o.blocked='notification_collision')", args.toTypedArray()).use { c ->
+                while (c.moveToNext()) add(c.getLong(0))
+            }
+        }
     }
 
     fun resetForNewIdentity(
@@ -2266,6 +2296,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            db.delete("local_conversation_heads", null, null)
+            db.delete("preview_messages", null, null)
             db.delete("message_analysis", null, null)
             db.delete("contact_snapshot", null, null)
             db.delete("conversation_reads", null, null)
@@ -2296,13 +2328,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            db.delete("local_conversation_heads", null, null)
+            db.delete("preview_messages", null, null)
             db.delete("message_analysis", null, null)
             db.delete("conversation_reads", null, null)
             db.delete("read_outbox", null, null)
             revoked += revokeOtpIntents(db, null, Long.MAX_VALUE)
             db.execSQL("UPDATE meta SET value=0 WHERE key='global_watermark_id'")
             db.execSQL("UPDATE meta SET value=0 WHERE key='read_state_seen'")
-            db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor','ai_enabled')")
+            db.execSQL("UPDATE meta SET value=0 WHERE key IN ('analysis_cursor','local_rule_cursor','ai_enabled','preview_head','contacts_revision')")
             db.execSQL("UPDATE meta SET value=0 WHERE key='cursor'")
             db.execSQL("UPDATE meta SET value=? WHERE key='epoch'", arrayOf(epoch))
             db.execSQL("UPDATE meta SET value=1 WHERE key='epoch_seen'")
@@ -2327,8 +2361,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         } finally { db.endTransaction() }
     }
 
-    fun applyContacts(names: JSONObject) {
+    fun applyContacts(names: JSONObject, revision: Long? = null, checkedAt: Long = 0) {
         val db = writableDatabase
+        var changed = false
         db.beginTransaction()
         try {
             val desired = names.keys().asSequence().associateWith { names.getString(it) }
@@ -2339,6 +2374,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             for (phone in current.keys + desired.keys) {
                 val next = desired[phone] ?: ""
                 if (current[phone].orEmpty() != next) {
+                    changed = true
                     db.execSQL(
                         "UPDATE inbox SET contact=? WHERE sender=? AND contact<>?",
                         arrayOf(next, phone, next),
@@ -2356,11 +2392,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         )
                 }
             }
+            if (revision != null) db.execSQL("UPDATE meta SET value=? WHERE key='contacts_revision'", arrayOf(revision))
+            if (checkedAt > 0) db.execSQL("UPDATE meta SET value=? WHERE key='contacts_checked_at'", arrayOf(checkedAt))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        changes.value++
+        if (changed) changes.value++
     }
 }
 

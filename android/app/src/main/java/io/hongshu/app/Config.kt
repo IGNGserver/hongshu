@@ -25,6 +25,7 @@ class Config(context: Context) {
     }
 
     internal fun completeIdentity(identity: LoginIdentity, encryptedToken: String, keepUpload: Boolean) {
+        loadingNetwork.reset()
         val saved = prefs.edit()
             .putString("url", identity.origin)
             .putString("token", encryptedToken)
@@ -80,6 +81,10 @@ class Config(context: Context) {
 
     val historyGeneration: Long
         get() = prefs.getLong("history_generation", 0)
+
+    var lowSpeed: Boolean
+        get() = prefs.getBoolean("low_speed", false)
+        set(value) { prefs.edit().putBoolean("low_speed", value).apply() }
 
     var recoveryEnabled: Boolean
         get() = prefs.getBoolean("recovery_enabled", false)

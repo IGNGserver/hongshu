@@ -199,6 +199,42 @@ async function request(path, token, method = "GET", body) {
       return false;
     });
     assert.equal(cachedAPI, false);
+    // Loading regression uses only synthetic identities/data. Hold cosmetic
+    // requests indefinitely: content must not depend on their completion.
+    const loadingContext = await browser.newContext();
+    await loadingContext.addCookies(await page.context().cookies());
+    const loadingPage = await loadingContext.newPage();
+    const loadingErrors = [];
+    loadingPage.on("pageerror", e => loadingErrors.push(e.message));
+    let releaseAncillary;
+    const ancillaryGate = new Promise(resolve => { releaseAncillary = resolve; });
+    let metadataStarted;
+    const metadataReady = new Promise(resolve => { metadataStarted = resolve; });
+    await loadingPage.route("**/api/**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/metadata" || path === "/api/analysis/counts") {
+        if (path === "/api/metadata") metadataStarted();
+        await ancillaryGate;
+      }
+      await route.continue();
+    });
+    try {
+      await loadingPage.goto(origin, { waitUntil: "domcontentloaded" });
+      await metadataReady;
+      await loadingPage.locator(".conversation").first().waitFor({ timeout: 5000 });
+      releaseAncillary();
+      await loadingPage.evaluate(() => navigator.serviceWorker.ready);
+      await loadingPage.waitForFunction(() => !!navigator.serviceWorker.controller);
+      await loadingContext.setOffline(true);
+      await loadingPage.reload({ waitUntil: "domcontentloaded" });
+      await loadingPage.getByText("暂时无法连接中枢", { exact: true }).waitFor();
+      assert.equal(await loadingPage.getByRole("button", { name: "登录", exact: true }).count(), 0, "offline is not logout");
+      assert.deepEqual(loadingErrors, []);
+      console.log("Loading regression: ancillary requests cannot block content; cached PWA shell works offline");
+    } finally {
+      releaseAncillary();
+      await loadingContext.close();
+    }
     // End-to-end grouping uses a local synthetic classifier, never a real AI provider.
     await request("/messages", token, "POST", {messages:[
       "验证码为 482913，5分钟内有效", "fixture-personal", "fixture-promotion", "fixture-spam", "fixture-unknown",
