@@ -2135,7 +2135,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         readableDatabase.rawQuery("SELECT CASE WHEN COALESCE(a.otp,'')<>'' THEN 'otp' WHEN COALESCE(a.category,'')<>'' THEN a.category ELSE 'pending' END g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
             while (c.moveToNext()) add(c.getString(0), c.getInt(1))
         }
-        for (m in localMessages(q = q, sim = sim, localContactSenders = localContactSenders).filterNot(::hasSyncedLocalCopy)) add(if (messageOtp(m) != null) "otp" else "pending", 1)
+        val local = localMessages(q = q, sim = sim, localContactSenders = localContactSenders)
+        val synced = syncedLocalIds(local)
+        for (m in local.filterNot { it.id in synced }) add(if (messageOtp(m) != null) "otp" else "pending", 1)
         return result
     }
 
@@ -2260,7 +2262,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         group: String = "all",
         localContactSenders: Set<String> = emptySet(),
     ): List<CachedMessage> {
-        val remote = messages(sender, q, sim, limit = limit, group = group)
+        val remote = messages(sender, q, sim, limit = limit, group = group, localContactSenders = localContactSenders)
         val candidates = localMessages(sender, q, sim, localContactSenders).filter { it.matchesGroup(group) }
         val synced = syncedLocalIds(candidates)
         val local = candidates.filterNot { it.id in synced }

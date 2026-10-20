@@ -150,12 +150,16 @@ export class BrowserContacts {
       const saved = await this.storage.read();
       if (version !== this.version || owner !== this.owner) return;
       this.generation = saved?.generation || 0;
-      if (!saved || saved.owner !== owner || !Array.isArray(saved.records)) return;
+      if (!saved || saved.owner !== owner || !Array.isArray(saved.records)) {
+        this.version++;
+        return;
+      }
       // Validate disk data as carefully as newly picked data; never use arbitrary URLs.
       const records = saved.records.filter(r => r && contactNumber(r.phone) === r.phone &&
         (r.ambiguous === true || (typeof r.name === "string" && r.name.trim() && r.name.length <= 200)));
       this.records = mergeSelectedContacts([], records.slice(0, MAX_CONTACTS));
       this.enabled = saved.enabled === true;
+      this.version++;
     });
   }
   save(records, enabled) {
@@ -170,6 +174,7 @@ export class BrowserContacts {
       this.records = records;
       this.enabled = enabled;
       this.generation = nextGeneration ?? generation + 1;
+      this.version++;
       return true;
     });
   }

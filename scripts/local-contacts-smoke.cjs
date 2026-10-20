@@ -68,7 +68,9 @@ async function saved(page) {
     server = createServer(async (req, res) => {
       const path = new URL(req.url, "http://localhost").pathname;
       const file = path === "/" ? "index.html" : path.slice(1);
-      if (!["index.html", "app.js", "local-contacts.js", "style.css", "sw.js", "manifest.webmanifest"].includes(file) && !/^(?:icon|favicon|apple-touch-icon)[a-z0-9.-]*\.(?:svg|png)$/.test(file)) { res.writeHead(404).end(); return; }
+      const sourceAsset = ["index.html", "app.js", "local-contacts.js", "style.css", "sw.js", "manifest.webmanifest"].includes(file) || /^(?:icon|favicon|apple-touch-icon)[a-z0-9.-]*\.(?:svg|png)$/.test(file);
+      const builtAsset = /^assets\/[a-f0-9]{16}-(?:app\.js|local-contacts\.js|style\.css|manifest\.webmanifest|icon(?:-192|-512|-maskable-192|-maskable-512)?\.png|icon\.svg|apple-touch-icon(?:-(?:167|152))?\.png|favicon-(?:16|32)\.png)$/.test(file);
+      if (!sourceAsset && !builtAsset) { res.writeHead(404).end(); return; }
       try {
         res.setHeader("Content-Type", file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : file.endsWith(".html") ? "text/html" : "application/octet-stream");
         res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; img-src 'self' data: blob:; connect-src 'self'; style-src 'self'");
@@ -83,7 +85,10 @@ async function saved(page) {
     const page = await context.newPage();
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(origin);
-    await page.locator(".conversation strong").filter({ hasText: "中枢别名" }).waitFor();
+    try { await page.locator(".conversation strong").filter({ hasText: "中枢别名" }).waitFor({ timeout: 10000 }); }
+    catch (error) {
+      throw new Error(`${error.message}\nAPI calls: ${calls.map(call => call.url).join("\n")}\nPage: ${(await page.locator("body").innerText()).slice(0, 1000)}\nBrowser errors: ${errors.join("; ")}`);
+    }
     await settings(page);
     await page.getByRole("button", { name: "选择或更新联系人", exact: true }).click();
     await page.getByText("已选择 1 个号码。", { exact: false }).waitFor();
@@ -161,4 +166,8 @@ async function saved(page) {
     await browser?.close();
     if (server) await new Promise(resolve => server.close(resolve));
   }
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().catch(error => {
+  console.error(error);
+  console.error("API calls:", calls.map(call => call.url));
+  process.exitCode = 1;
+});

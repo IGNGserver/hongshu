@@ -1359,7 +1359,7 @@ function renderConversations({ arrivals = false } = {}) {
   state.conversations.forEach((m) => {
     const isSelected = state.sender === m.sender;
     const key = conversationKey(m);
-    const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], simLabel(m.receiver), fresh.has(key)]);
+    const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], browserContacts.version, simLabel(m.receiver), fresh.has(key)]);
     const cached = conversationNodes.get(key);
     if (cached?.signature === signature) { list.append(cached.node); return; }
     const b = el(

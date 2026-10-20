@@ -41,7 +41,8 @@ for (const file of assets)
 // immutable bytes. Hash dependencies first so a shell cannot mix release files.
 await mkdir(resolve(out, "assets"), { recursive: true });
 const paths = {};
-const rewrite = text => Object.entries(paths).reduce((s, [name, path]) => s.replaceAll("/" + name, path), text);
+const rewrite = text => Object.entries(paths).reduce((s, [name, path]) =>
+  s.replaceAll("./" + name, path).replaceAll("/" + name, path), text);
 for (const file of assets.filter(f => !["index.html", "sw.js", "app.js", "style.css", "manifest.webmanifest"].includes(f)).concat(["style.css", "manifest.webmanifest", "app.js"])) {
   let bytes = await readFile(resolve(root, file));
   if (["app.js", "style.css", "manifest.webmanifest"].includes(file)) bytes = Buffer.from(rewrite(bytes.toString()));

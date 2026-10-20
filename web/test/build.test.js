@@ -29,6 +29,11 @@ test("content-only upgrade pins immutable dependencies, keeps old tabs and works
       const bytes = await readFile(join(temp, "v2", path.slice(1)));
       assert.equal(path.split("/").at(-1).slice(0, 16), createHash("sha256").update(bytes).digest("hex").slice(0, 16));
     }
+    const appPath = paths.find(path => path.endsWith("-app.js"));
+    const app = await readFile(join(temp, "v2", appPath.slice(1)), "utf8");
+    const contactPath = app.match(/from "(\/assets\/[a-f0-9]{16}-local-contacts\.js)"/)?.[1];
+    assert.ok(contactPath, "hashed modules must import their absolute immutable dependency");
+    await readFile(join(temp, "v2", contactPath.slice(1)));
     const oldName = oldWorker.match(/const CACHE = "([^"]+)"/)[1];
     const stores = new Map([[oldName, new Map([["/app.js", { value: "old" }]])]]);
     const runtime = workerRuntime(worker, stores, async path => ({
@@ -40,7 +45,6 @@ test("content-only upgrade pins immutable dependencies, keeps old tabs and works
     await runtime.activate();
     assert.equal(stores.size, 2, "old version remains usable for old open pages");
     runtime.offline = true;
-    const appPath = paths.find(path => path.endsWith("-app.js"));
     assert.ok((await runtime.request(appPath)).value.includes("synthetic shell upgrade"));
     assert.ok((await runtime.request("/")).value.includes(appPath));
     for (const store of stores.values()) assert.ok([...store.keys()].every(path => !path.startsWith("/api")));
