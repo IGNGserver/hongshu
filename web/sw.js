@@ -2,6 +2,7 @@ const CACHE = "hongshu-shell-__HONGSHU_SHELL_VERSION__";
 const ASSETS = [
   "/",
   "/app.js",
+  "/local-contacts.js",
   "/style.css",
   "/icon.svg",
   "/manifest.webmanifest",

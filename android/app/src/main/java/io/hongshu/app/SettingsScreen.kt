@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Outbox
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sms
@@ -145,6 +146,7 @@ fun SettingsScreen(
         SettingsPage.Analysis -> AnalysisSettingsPage(host)
         SettingsPage.Capture -> CapturePage(host)
         SettingsPage.Sims -> SimsPage(host)
+        SettingsPage.Contacts -> ContactsPage(host)
         SettingsPage.Notifications -> NotificationsPage(host)
         SettingsPage.Background -> BackgroundPage(host)
         SettingsPage.Pending -> LocalPendingPage(host)
@@ -199,6 +201,14 @@ private fun SettingsOverviewPage(host: SettingsHost) {
             "phone",
             "这台手机",
             listOf(
+                SettingsRow("contacts") {
+                    SettingsItem(
+                        title = "本机联系人",
+                        summary = "仅本机显示姓名和头像，不上传或同步",
+                        icon = Icons.Default.Person,
+                        onClick = { host.navigate(SettingsPage.Contacts) },
+                    )
+                },
                 SettingsRow("capture") {
                     SettingsItem(
                         title = "短信采集",

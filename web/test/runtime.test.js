@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {workerRuntime} from './sw-harness.js';
+import { runtimeSource } from './runtime-source.js';
 
 function runtime() {
   const ctx=vm.createContext({URLSearchParams,Uint8Array,AbortController,DOMException,console});
-  vm.runInContext(readFileSync(new URL('../app.js',import.meta.url),'utf8').replace(/^export /gm,''),ctx);
+  vm.runInContext(runtimeSource(),ctx);
   vm.runInContext(`document={querySelector:()=>null};setBusy=()=>{};renderDetail=()=>{};
     state.me={cursor:200,epoch:1};state.cursor=200;state.epoch=1;state.epochSeen=true;
      state.sender='synthetic';

@@ -102,7 +102,7 @@ func (a *app) routes(web string) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		if a.requestSecure(r) {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
@@ -147,7 +147,7 @@ func acceptsGzip(header string) bool {
 
 func shellAsset(name string) bool {
 	switch name {
-	case "index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png", "apple-touch-icon-167.png", "apple-touch-icon-152.png", "favicon-32.png", "favicon-16.png":
+	case "index.html", "app.js", "local-contacts.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png", "apple-touch-icon-167.png", "apple-touch-icon-152.png", "favicon-32.png", "favicon-16.png":
 		return true
 	}
 	return false

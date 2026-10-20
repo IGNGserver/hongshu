@@ -49,6 +49,29 @@
 P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
 
 回滚边界：迁移 012 只增派生时钟，旧服务可保留该表但不能混合写服务；Android v15 升级保留 outbox 与采集证据，旧 APK 不能直接降级打开新版库。壳为保护老标签页保留旧版本缓存，长期多次升级的缓存回收策略需结合目标浏览器配额继续观察。
+# 2026-10-20 本机联系人（Android 与可选 Web/PWA）
+
+契约见 [LOCAL_CONTACTS.md](LOCAL_CONTACTS.md)。Android 默认关闭，主动授权后只在本机
+显示姓名/缩略头像及按姓名搜索本地短信；监听通讯录变化，撤权、关闭、退后台失效缓存。
+PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用、清除与退出清除；跨标签页
+使用 IndexedDB 事务代次防止旧保存复活已清除数据。既有中枢联系人映射不接收本机通讯录。
+服务端仅允许新静态模块和本地 blob 图片，无联系人 API/数据库/上传协议变更，版本号不变。
+
+| 本机实际验证 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`test -z "$(gofmt -l server/*.go server/cmd/vapid/*.go)"` | 通过；12 项运维测试 |
+| scratch `web`：`npm test`、`npm run check` | 79 项测试通过；新增本机号码匹配、Picker 降级、存储失败/清除/竞态、UI 数据隔离与迟到查询保护 |
+| `PLAYWRIGHT_MODULE=… CHROMIUM_EXECUTABLE=… node scripts/local-contacts-smoke.cjs` | 本机 Chromium 通过：真实 IndexedDB/刷新恢复、blob 头像/CSP、本地姓名输入无请求、原始号码保留、多标签页停用/清除、配额失败、清除后旧写入拒绝、退出清除和不支持 Picker 的降级；Picker 返回值及 API 均为合成夹具 |
+| scratch Android JDK 17：`./gradlew --no-daemon --project-cache-dir … :app:testDebugUnitTest --tests io.hongshu.app.LocalContactsTest --tests io.hongshu.app.PendingDisplayTest --tests io.hongshu.app.MessageAnalysisTest --tests io.hongshu.app.ProtocolTest :app:lintDebug` | 40 项针对性测试通过（新增 9 项联系人测试）；lint 通过，最终耗时 1m27s；照片测试使用原生图形模式与完整初始化的合成 ContentProvider，不以 mock 空流假装照片读取成功 |
+| scratch `server`：`go test -race ./...`、`go vet ./...` | 通过；未设置 `TEST_MYSQL_DSN`，真实数据库测试跳过；静态模块可访问与仅图片 CSP 放行 blob 的合同已执行 |
+
+本地构建副本与测试输出：`~/.build/hongshu/local-contact-display/`，共享 Gradle/Go 缓存
+也位于 `~/.build/`；运行前可用空间 125 GiB，未在项目卷生成依赖或构建产物。
+全量 APK、真实 MySQL、API 28/33/35 instrumentation 由任务分支 CI 验证，不在本机重复全仓打包。
+
+未完成环境验收：物理 Android 手机的授权弹窗、厂商 ROM 通讯录变更/权限撤销/照片访问，
+以及真实手机浏览器系统 Contact Picker；合成 provider/Picker 测试不等于上述真机验收。
+大量会话时，PWA 点击本机联系人需按页查找原始会话头；没有持久短信缓存，离线不能读取未加载历史。
 
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 

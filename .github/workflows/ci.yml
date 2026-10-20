@@ -72,6 +72,8 @@ jobs:
         env:
           TEST_MYSQL_PORT: "3306"
           WEB_BUILD_DIR: "${{ runner.temp }}/hongshu-web"
+      - name: Verify device-only contact Picker and IndexedDB presentation
+        run: PLAYWRIGHT_MODULE="$RUNNER_TEMP/browser-tools/node_modules/playwright" WEB_BUILD_DIR="$RUNNER_TEMP/hongshu-web" node scripts/local-contacts-smoke.cjs
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 10

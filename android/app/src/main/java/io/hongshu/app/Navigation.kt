@@ -52,6 +52,7 @@ enum class SettingsPage(val title: String) {
     Analysis("AI 短信分组"),
     Capture("短信采集"),
     Sims("SIM 卡与号码"),
+    Contacts("本机联系人"),
     Notifications("通知"),
     Background("后台运行"),
     Pending("未上传到中枢的短信"),

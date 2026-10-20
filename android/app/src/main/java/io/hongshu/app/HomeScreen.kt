@@ -15,6 +15,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -100,6 +101,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -538,7 +541,13 @@ private fun EmptyState(model: HomeModel, actions: HomeActions, searching: Boolea
 
 /** Contact avatar: initial on a coloured circle, or a cookie shape for service short codes. */
 @Composable
-fun Avatar(contact: String, sender: String, size: Dp) {
+fun Avatar(contact: String, sender: String, size: Dp, photo: String? = null) {
+    val source = LocalContactSource.current
+    val revision = LocalContactRevision.current
+    var bitmap by remember(source, photo, revision) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(source, photo, revision) {
+        if (photo != null) bitmap = withContext(Dispatchers.IO) { source?.photo(photo) }
+    }
     val initial = remember(contact, sender) { avatarInitial(contact, sender) }
     val service = contact.isEmpty() && isServiceNumber(sender)
     val shape = if (service) MaterialShapes.Cookie9Sided.toShape() else CircleShape
@@ -546,7 +555,9 @@ fun Avatar(contact: String, sender: String, size: Dp) {
         Modifier.size(size).clip(shape).background(avatarColorFor(sender)),
         contentAlignment = Alignment.Center,
     ) {
-        if (initial != null) {
+        if (bitmap != null && source?.available() == true) {
+            Image(bitmap!!.asImageBitmap(), contentDescription = null, modifier = Modifier.size(size), contentScale = ContentScale.Crop)
+        } else if (initial != null) {
             Text(
                 initial,
                 color = Color.White,
@@ -572,7 +583,9 @@ private fun ConversationRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val displayName = message.contact.ifEmpty { message.sender }
+    val localContact = rememberLocalContact(message.sender)
+    val contact = localContact?.name ?: message.contact
+    val displayName = contact.ifEmpty { message.sender }
     val otp = messageOtp(message)
     Row(
         modifier
@@ -587,7 +600,7 @@ private fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Avatar(message.contact, message.sender, 48.dp)
+        Avatar(contact, message.sender, 48.dp, localContact?.photo)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -676,7 +689,8 @@ private fun ConversationPane(
     }
     val deviceId = repo.config.deviceId
     val loaded = messages.orEmpty()
-    val contactName = loaded.firstOrNull()?.contact.orEmpty()
+    val localContact = rememberLocalContact(sender)
+    val contactName = localContact?.name ?: loaded.firstOrNull()?.contact.orEmpty()
     val displayName = contactName.ifEmpty { sender }
     val receiverCount = loaded.map { it.receiver }.filter { it.isNotEmpty() }.distinct().size
     val subtitle =
@@ -710,7 +724,7 @@ private fun ConversationPane(
             },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(contactName, sender, 40.dp)
+                    Avatar(contactName, sender, 40.dp, localContact?.photo)
                     Spacer(Modifier.width(12.dp))
                     Column {
                         Text(

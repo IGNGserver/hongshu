@@ -18,6 +18,7 @@ await mkdir(out, { recursive: true });
 const assets = [
   "index.html",
   "app.js",
+  "local-contacts.js",
   "style.css",
   "sw.js",
   "manifest.webmanifest",

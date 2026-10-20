@@ -2109,13 +2109,22 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             .rawQuery("SELECT DISTINCT receiver FROM inbox ORDER BY receiver", null)
             .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
 
-    fun groupCounts(q: String = "", sim: String = ""): Map<String, Int> {
+    fun contactSearchSenders(): List<String> = readableDatabase
+        .rawQuery("SELECT sender FROM inbox UNION SELECT sender FROM outbox", null)
+        .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+    // Escaped literals avoid SQLite's bind-variable limit for large contact search results.
+    // These are original local SMS addresses, never written to any persistent contact table.
+    private fun contactSearchClause(column: String, senders: Set<String>): String =
+        if (senders.isEmpty()) "" else " OR $column IN (${senders.joinToString(",") { android.database.DatabaseUtils.sqlEscapeString(it) }})"
+
+    fun groupCounts(q: String = "", sim: String = "", localContactSenders: Set<String> = emptySet()): Map<String, Int> {
         val result = messageGroupLabels.keys.associateWith { 0 }.toMutableMap()
         val args = mutableListOf<String>()
         var where = "1=1"
         if (sim.isNotEmpty()) { where += " AND i.receiver=?"; args += sim }
         if (q.isNotEmpty()) {
-            where += " AND (instr(lower(i.body),lower(?))>0 OR instr(lower(i.sender),lower(?))>0 OR instr(lower(i.contact),lower(?))>0)"
+            where += " AND (instr(lower(i.body),lower(?))>0 OR instr(lower(i.sender),lower(?))>0 OR instr(lower(i.contact),lower(?))>0${contactSearchClause("i.sender", localContactSenders)})"
             args.addAll(listOf(q, q, q))
         }
         fun add(group: String, n: Int) {
@@ -2126,7 +2135,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         readableDatabase.rawQuery("SELECT CASE WHEN COALESCE(a.otp,'')<>'' THEN 'otp' WHEN COALESCE(a.category,'')<>'' THEN a.category ELSE 'pending' END g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
             while (c.moveToNext()) add(c.getString(0), c.getInt(1))
         }
-        for (m in localMessages(q = q, sim = sim)) add(if (messageOtp(m) != null) "otp" else "pending", 1)
+        for (m in localMessages(q = q, sim = sim, localContactSenders = localContactSenders).filterNot(::hasSyncedLocalCopy)) add(if (messageOtp(m) != null) "otp" else "pending", 1)
         return result
     }
 
@@ -2137,6 +2146,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         before: Long = Long.MAX_VALUE,
         limit: Int = 200,
         group: String = "all",
+        localContactSenders: Set<String> = emptySet(),
     ): List<CachedMessage> {
         var where = "1=1"
         val args = mutableListOf<String>()
@@ -2165,7 +2175,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
         if (q.isNotEmpty()) {
             where +=
-                " AND (instr(lower(body),lower(?))>0 OR instr(lower(sender),lower(?))>0 OR instr(lower(contact),lower(?))>0)"
+                " AND (instr(lower(body),lower(?))>0 OR instr(lower(sender),lower(?))>0 OR instr(lower(contact),lower(?))>0${contactSearchClause("sender", localContactSenders)})"
             args.addAll(listOf(q, q, q))
         }
         val enriched = "WITH enriched AS (SELECT inbox.*,COALESCE(a.otp,'') otp,COALESCE(a.expires_at,0) expires_at,COALESCE(a.category,'') category,COALESCE(a.manual,0) manual,COALESCE(a.state,'pending') state,COALESCE(a.error,'') error,COALESCE(a.revision,0) revision FROM inbox LEFT JOIN message_analysis a ON a.message_id=inbox.id)"
@@ -2200,7 +2210,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     // Captured SMS still waiting for the hub, shaped like synced messages so the conversation
     // views show them immediately. After the ACK the synced copy replaces them.
-    fun localMessages(sender: String = "", q: String = "", sim: String = ""): List<CachedMessage> {
+    fun localMessages(sender: String = "", q: String = "", sim: String = "", localContactSenders: Set<String> = emptySet()): List<CachedMessage> {
         val resolver = receiverResolver(allowFallback = false)
         var where = "1=1"
         val args = mutableListOf<String>()
@@ -2210,7 +2220,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
         if (q.isNotEmpty()) {
             where +=
-                " AND (instr(lower(o.body),lower(?))>0 OR instr(lower(o.sender),lower(?))>0 OR instr(lower(COALESCE(n.name,'')),lower(?))>0)"
+                " AND (instr(lower(o.body),lower(?))>0 OR instr(lower(o.sender),lower(?))>0 OR instr(lower(COALESCE(n.name,'')),lower(?))>0${contactSearchClause("o.sender", localContactSenders)})"
             args.addAll(listOf(q, q, q))
         }
         return readableDatabase
@@ -2248,9 +2258,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         sim: String = "",
         limit: Int = 200,
         group: String = "all",
+        localContactSenders: Set<String> = emptySet(),
     ): List<CachedMessage> {
         val remote = messages(sender, q, sim, limit = limit, group = group)
-        val candidates = localMessages(sender, q, sim).filter { it.matchesGroup(group) }
+        val candidates = localMessages(sender, q, sim, localContactSenders).filter { it.matchesGroup(group) }
         val synced = syncedLocalIds(candidates)
         val local = candidates.filterNot { it.id in synced }
         val unreadMap = if (sender.isEmpty()) unreadCounts() else emptyMap()
