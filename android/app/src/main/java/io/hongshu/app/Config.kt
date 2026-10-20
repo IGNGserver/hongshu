@@ -13,6 +13,10 @@ import javax.crypto.spec.GCMParameterSpec
 class Config(context: Context) {
     private val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
 
+    var localContacts: Boolean
+        get() = prefs.getBoolean("local_contacts", false)
+        set(value) { prefs.edit().putBoolean("local_contacts", value).apply() }
+
     internal val identityChanging: Boolean
         get() = prefs.getBoolean("identity_changing", false)
 

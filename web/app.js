@@ -1,3 +1,12 @@
+import { BrowserContacts, contactNumber, contactPickerProperties } from "./local-contacts.js";
+
+const browserContacts = new BrowserContacts();
+let pickerProperties = [];
+let contactsBusy = false;
+let contactsChannel;
+let contactsReload = 0;
+let contactSearchRequest = 0;
+
 export const query = (values) =>
   new URLSearchParams(
     Object.entries(values).filter(([, v]) => v !== "" && v !== undefined),
@@ -323,7 +332,108 @@ function avatar(contact, sender, extraClass = "") {
   else node.innerHTML = service ? ICONS.sms : ICONS.person;
   node.setAttribute("role", "img");
   node.setAttribute("aria-label", `${contact || sender}头像`);
+  const photo = browserContacts.photo(sender);
+  if (photo) {
+    const image = el("img", "contact-photo");
+    image.alt = "";
+    image.src = photo;
+    image.onerror = () => image.remove(); // Keep the generated avatar beneath a broken photo.
+    node.append(image);
+  }
   return node;
+}
+
+function displayContact(sender, fallback = "") {
+  return browserContacts.find(sender)?.name || state.contacts[sender] || fallback;
+}
+
+function contactsChanged(broadcast = true) {
+  if (broadcast) contactsChannel?.postMessage("changed"); // No contact data crosses the channel.
+  if (!state.me) return;
+  if (state.page === "settings") {
+    const old = $(".local-contacts-settings");
+    if (old) old.replaceWith(localContactsSettings());
+  } else {
+    const stream = $(".messages");
+    const top = stream?.scrollTop;
+    renderConversations();
+    renderDetail();
+    if (top !== undefined && $(".messages")) $(".messages").scrollTop = top;
+    $(".local-contact-search")?.replaceWith(localContactSearch());
+  }
+}
+
+async function reloadLocalContacts() {
+  const generation = state.generation;
+  const reload = ++contactsReload;
+  await browserContacts.load(state.me?.device?.id || "");
+  if (reload === contactsReload && generation === state.generation) contactsChanged(false);
+}
+
+// Name filtering is entirely local. Only a clicked phone number is used to locate SMS.
+function localContactSearch() {
+  const box = el("details", "local-contact-search");
+  box.hidden = !browserContacts.enabled;
+  box.append(el("summary", "", "本机联系人（姓名搜索不上传）"));
+  const input = el("input", "local-contact-query");
+  input.type = "search";
+  input.placeholder = "搜索本机联系人";
+  input.setAttribute("aria-label", "搜索本机联系人");
+  const results = el("div", "local-contact-results");
+  results.setAttribute("aria-live", "polite");
+  const render = () => {
+    const records = browserContacts.search(input.value);
+    results.replaceChildren();
+    for (const record of records.slice(0, 50)) {
+      const row = button(`${record.name} · ${record.phone}`, () => openLocalContact(record.phone), "text-button");
+      results.append(row);
+    }
+    if (!records.length) results.append(el("p", "muted", "没有匹配的本机联系人，可在设置中重新选择"));
+    if (records.length > 50) results.append(el("p", "muted", "结果较多，请输入姓名或号码缩小范围"));
+  };
+  input.oninput = () => { contactSearchRequest++; render(); };
+  box.ontoggle = () => { if (box.open) render(); };
+  box.append(input, results);
+  return box;
+}
+
+async function openLocalContact(phone) {
+  if (!browserContacts.find(phone) || !state.me) return;
+  const request = ++contactSearchRequest;
+  const generation = state.generation;
+  const version = browserContacts.version;
+  // Scan conversation heads only on explicit selection. No name, photo, contact ID or
+  // address-book number is sent to the hub; retain each original sender as its own thread.
+  const matches = [];
+  for (let offset = 0; ; offset += CONVERSATION_PAGE) {
+    const d = await api("/conversations?" + query({ limit: CONVERSATION_PAGE, offset }));
+    if (request !== contactSearchRequest || state.page !== "inbox" || generation !== state.generation || version !== browserContacts.version || !browserContacts.find(phone)) return;
+    matches.push(...d.conversations.filter(c => contactNumber(c.sender) === phone));
+    if (d.conversations.length < CONVERSATION_PAGE) break;
+  }
+  const unique = [...new Map(matches.map(c => [c.sender, c])).values()];
+  if (!unique.length) { toast("此联系人暂无短信会话"); return; }
+  if (unique.length > 1) {
+    const list = $(".local-contact-results");
+    list?.replaceChildren(...unique.map(c => button(`${displayContact(c.sender)} · ${c.sender}`, () => openContactConversation(c.sender), "text-button")));
+    return;
+  }
+  await openContactConversation(unique[0].sender);
+}
+
+async function openContactConversation(sender) {
+  contactSearchRequest++;
+  state.q = state.sim = state.device = "";
+  state.group = "all";
+  state.sender = sender;
+  state.messages = [];
+  state.messagesQuery = "";
+  state.seenMessageId = 0;
+  state.historyLoading = true;
+  setDetailOpen(true);
+  enterDetailHistory();
+  shell();
+  await refreshInbox();
 }
 
 function simLabel(phone) {
@@ -418,6 +528,7 @@ function leaveDetailHistory() {
 }
 function closeDetail() {
   rememberDetail();
+  contactSearchRequest++;
   const wasOpen = Boolean(state.sender);
   state.sender = "";
   state.messages = [];
@@ -674,6 +785,7 @@ function authView() {
 // -------------------------------------------------------------
 const SETTINGS_HISTORY = "hongshuSettings";
 async function openSettings() {
+  contactSearchRequest++;
   state.page = "settings";
   history.pushState({ [SETTINGS_HISTORY]: true }, "");
   shell();
@@ -795,13 +907,14 @@ function inboxView() {
   searchContainer.innerHTML = `<span class="search-icon">${ICONS.search}</span>`;
   const search = el("input", "search");
   search.type = "search";
-  search.placeholder = "搜索短信、号码或联系人";
+  search.placeholder = "搜索短信、号码或中枢别名";
   search.setAttribute("aria-label", "搜索短信");
   search.value = state.q;
   const clearBtn = iconButton(
     ICONS.close,
     "清空搜索",
     () => {
+      contactSearchRequest++;
       search.value = "";
       state.q = "";
       clearBtn.classList.remove("visible");
@@ -812,9 +925,11 @@ function inboxView() {
   );
   let timer;
   search.oninput = () => {
+    contactSearchRequest++;
     clearBtn.classList.toggle("visible", Boolean(search.value));
     clearTimeout(timer);
     timer = setTimeout(() => {
+      if (!search.isConnected || state.page !== "inbox") return;
       state.q = search.value;
       refreshInbox().catch((e) => toast(e.message));
     }, 250);
@@ -849,7 +964,7 @@ function inboxView() {
       void loadMoreConversations().catch((e) => toast(e.message));
     }
   }, { passive: true });
-  inbox.append(header, searchContainer, chipRow, el("p", "analysis-status"), list);
+  inbox.append(header, searchContainer, localContactSearch(), chipRow, el("p", "analysis-status"), list);
   layout.append(inbox, el("article", "detail"));
   if (state.returning) playReturn(layout);
   main.append(layout);
@@ -1244,7 +1359,7 @@ function renderConversations({ arrivals = false } = {}) {
   state.conversations.forEach((m) => {
     const isSelected = state.sender === m.sender;
     const key = conversationKey(m);
-    const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], simLabel(m.receiver), fresh.has(key)]);
+    const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], browserContacts.version, simLabel(m.receiver), fresh.has(key)]);
     const cached = conversationNodes.get(key);
     if (cached?.signature === signature) { list.append(cached.node); return; }
     const b = el(
@@ -1258,6 +1373,7 @@ function renderConversations({ arrivals = false } = {}) {
     attachRipple(b);
 
     b.onclick = async () => {
+      contactSearchRequest++;
       if (!isSelected) {
         rememberDetail();
         state.sender = m.sender;
@@ -1276,7 +1392,7 @@ function renderConversations({ arrivals = false } = {}) {
       await loadHistory(false, { preserve: true });
     };
 
-    const contact = state.contacts[m.sender] || m.contact || "";
+    const contact = displayContact(m.sender, m.contact || "");
     const preview = el("div", "preview");
     const top = el("div", "preview-top");
     top.append(
@@ -1503,7 +1619,7 @@ function renderDetail() {
     else closeDetail();
   }, "back"));
 
-  const contact = state.contacts[state.sender] || state.messages.at(-1)?.contact || "";
+  const contact = displayContact(state.sender, state.messages.at(-1)?.contact || "");
   const receiverCount = new Set(state.messages.map((message) => message.receiver).filter(Boolean)).size;
   const titleBox = el("div", "detail-head-info");
   const infoText = el("div");
@@ -1816,6 +1932,8 @@ async function disablePush() {
 }
 
 async function logout() {
+  try { await browserContacts.clear(); }
+  finally { contactsChanged(); }
   await api("/logout", "POST", {});
   disconnect();
   authView();
@@ -1939,6 +2057,51 @@ async function revokeDevice(id) {
 // -------------------------------------------------------------
 // Settings View
 // -------------------------------------------------------------
+function localContactsSettings() {
+  const { section, group } = settingsGroup("本机联系人");
+  section.classList.add("local-contacts-settings");
+  const toggle = createSwitch(browserContacts.enabled, async enabled => {
+    if (contactsBusy) return;
+    contactsBusy = true;
+    try { await browserContacts.toggle(enabled); }
+    catch (error) { toast(error.message); }
+    finally { contactsBusy = false; contactsChanged(); }
+  });
+  toggle.setAttribute("aria-label", "使用本机联系人");
+  toggle.setDisabled(contactsBusy || !browserContacts.records.length);
+  group.append(settingsRow({ icon: ICONS.person, title: "使用本机联系人",
+    summary: `已选择 ${browserContacts.records.length} 个号码。姓名和头像只保存在本浏览器，不上传、不跨设备同步。`, trailing: toggle }));
+  const actions = el("div", "local-contact-actions");
+  const pick = button("选择或更新联系人", async () => {
+    if (contactsBusy || !pickerProperties.length) return;
+    const generation = state.generation;
+    const version = browserContacts.version;
+    contactsBusy = true;
+    try {
+      // Must run directly from the click, before any storage/network await.
+      const selected = await navigator.contacts.select(pickerProperties, { multiple: true });
+      if (!selected.length || generation !== state.generation || version !== browserContacts.version || !state.me) return;
+      const saved = await browserContacts.select(selected);
+      if (saved && generation === state.generation) toast("本机联系人已保存；通讯录变更后请重新选择更新");
+    } catch (error) {
+      if (error.name !== "AbortError") toast("联系人未保存：" + error.message);
+    } finally { contactsBusy = false; contactsChanged(); }
+  }, "text-button");
+  pick.disabled = contactsBusy || !pickerProperties.length;
+  const clear = button("清除本机联系人", async () => {
+    if (contactsBusy) return;
+    contactsBusy = true;
+    try { await browserContacts.clear(); toast("本机联系人已清除"); }
+    finally { contactsBusy = false; contactsChanged(); }
+  }, "text-button");
+  clear.disabled = contactsBusy;
+  actions.append(pick, clear);
+  group.append(settingsRow({ icon: ICONS.info, title: "仅本地显示",
+    summary: pickerProperties.length ? "浏览器不会持续读取通讯录；照片不受支持或无法读取时使用默认头像。退出登录会清除所选联系人。" : "当前浏览器不支持联系人选择，或没有使用 HTTPS/localhost；已有本地数据仍可停用或清除。",
+    trailing: actions, cls: "settings-wrap" }));
+  return section;
+}
+
 function settingsView() {
   const main = $(".main");
   const container = el("div", "page-container settings-container");
@@ -1971,6 +2134,7 @@ function settingsView() {
     settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: status, trailing: toggle }),
     settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
   ]).section);
+  inner.append(localContactsSettings());
 
   const ai = settingsGroup("中枢 AI 分组");
   inner.append(ai.section);
@@ -2183,6 +2347,8 @@ async function reloadMetadata({ force = false } = {}) {
 }
 
 function disconnect() {
+  contactsReload++;
+  browserContacts.reset();
   state.loggedOut = true;
   state.generation++;
   metadataTask = null; metadataRevision = null; metadataUpdatedAt = 0;
@@ -2340,6 +2506,7 @@ async function start() {
   loadingMark("authenticated");
   shell();
   loadingMark("shell");
+  void reloadLocalContacts().catch(error => toast(error.message));
   void reloadMetadata().then(() => {
     if (sessionGeneration !== state.generation || !state.me) return;
     renderFilterMenu(); renderConversations();
@@ -2351,6 +2518,16 @@ async function start() {
 }
 
 if (typeof document !== "undefined") {
+  void contactPickerProperties(navigator, window.isSecureContext, window.top === window).then(properties => {
+    pickerProperties = properties;
+    if (state.page === "settings") contactsChanged(false);
+  });
+  if (typeof BroadcastChannel === "function") {
+    contactsChannel = new BroadcastChannel("hongshu-local-contacts");
+    contactsChannel.onmessage = () => {
+      if (state.me) void reloadLocalContacts().catch(error => toast(error.message));
+    };
+  }
   applyTheme(readTheme());
   try { networkProfile.manual = localStorage.getItem(LOW_SPEED_KEY) === "true"; } catch { /* default */ }
   void registerShell();
@@ -2370,6 +2547,7 @@ if (typeof document !== "undefined") {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.me) {
+      if (!contactsBusy) void reloadLocalContacts().catch(error => toast(error.message));
       void catchUp().catch(() => {});
     }
   });

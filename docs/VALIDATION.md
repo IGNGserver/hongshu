@@ -49,6 +49,55 @@
 P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
 
 回滚边界：迁移 012 只增派生时钟，旧服务可保留该表但不能混合写服务；Android v15 升级保留 outbox 与采集证据，旧 APK 不能直接降级打开新版库。壳为保护老标签页保留旧版本缓存，长期多次升级的缓存回收策略需结合目标浏览器配额继续观察。
+# 2026-10-20 本机联系人（Android 与可选 Web/PWA）
+
+契约见 [LOCAL_CONTACTS.md](LOCAL_CONTACTS.md)。Android 默认关闭，主动授权后只在本机
+显示姓名/缩略头像及按姓名搜索本地短信；监听通讯录变化，撤权、关闭、退后台失效缓存。
+PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用、清除与退出清除；跨标签页
+使用 IndexedDB 事务代次防止旧保存复活已清除数据。既有中枢联系人映射不接收本机通讯录。
+服务端仅允许新静态模块和本地 blob 图片，无联系人 API/数据库/上传协议变更；本次准备递增至 `0.2.0-alpha.14`。
+
+| 本机实际验证 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`test -z "$(gofmt -l server/*.go server/cmd/vapid/*.go)"` | 通过；12 项运维测试 |
+| scratch `web`：`npm test`、`npm run check` | 79 项测试通过；新增本机号码匹配、Picker 降级、存储失败/清除/竞态、UI 数据隔离与迟到查询保护 |
+| `PLAYWRIGHT_MODULE=… CHROMIUM_EXECUTABLE=… node scripts/local-contacts-smoke.cjs` | 本机 Chromium 通过：真实 IndexedDB/刷新恢复、blob 头像/CSP、本地姓名输入无请求、原始号码保留、多标签页停用/清除、配额失败、清除后旧写入拒绝、退出清除和不支持 Picker 的降级；Picker 返回值及 API 均为合成夹具 |
+| scratch Android JDK 17：`./gradlew --no-daemon --project-cache-dir … :app:testDebugUnitTest --tests io.hongshu.app.LocalContactsTest --tests io.hongshu.app.PendingDisplayTest --tests io.hongshu.app.MessageAnalysisTest --tests io.hongshu.app.ProtocolTest :app:lintDebug` | 40 项针对性测试通过（新增 9 项联系人测试）；lint 通过，最终耗时 1m27s；照片测试使用原生图形模式与完整初始化的合成 ContentProvider，不以 mock 空流假装照片读取成功 |
+| scratch `server`：`go test -race ./...`、`go vet ./...` | 通过；未设置 `TEST_MYSQL_DSN`，真实数据库测试跳过；静态模块可访问与仅图片 CSP 放行 blob 的合同已执行 |
+
+本地构建副本与测试输出：`~/.build/hongshu/local-contact-display/`，共享 Gradle/Go 缓存
+也位于 `~/.build/`；运行前可用空间 125 GiB，未在项目卷生成依赖或构建产物。
+全量 APK、真实 MySQL、API 28/33/35 instrumentation 已由任务分支 CI 验证，不在本机重复全仓打包。
+
+完整 CI：[Hongshu validation 39435442646](https://github.com/IGNGserver/hongshu/actions/runs/39435442646)，
+验证代码提交 `2c95fed`，全部成功，总历时 8m45s。
+`verify` 8s；`web` 7s（测试、语法检查和构建）；`server` 2m54s（真实 MySQL、race/vet/build、
+原有浏览器集成和本机联系人 Chromium 流程）；`android (28/33/35)` 分别 8m05s、8m37s、8m38s
+（全量单测、lint、debug APK/测试 APK 与对应 API 模拟器 instrumentation）。
+另有 [push 快速检查 39435403514](https://github.com/IGNGserver/hongshu/actions/runs/39435403514) 成功，
+仅运行 `verify`/`web`。仓库为 public，本轮占用私有仓库月度分钟数为 0。
+本机任务 scratch 保留 33 MiB 的构建副本、测试输出和审计记录，未淘汰共享缓存；
+物理手机/系统 Picker 验收仍按以下边界单列，不能用 CI 成功代替。
+
+未完成环境验收：物理 Android 手机的授权弹窗、厂商 ROM 通讯录变更/权限撤销/照片访问，
+以及真实手机浏览器系统 Contact Picker；合成 provider/Picker 测试不等于上述真机验收。
+大量会话时，PWA 点击本机联系人需按页查找原始会话头；没有持久短信缓存，离线不能读取未加载历史。
+
+## Rebase 后与 v0.2.0-alpha.14 发布候选
+
+将本机联系人功能重放到 `v0.2.0-alpha.13` 后，处理了 Android 本地姓名搜索过滤未应用到已同步短信、浏览器已保存联系人加载后会话节点未刷新的问题；生产 Web 构建也修复了相对模块导入未改写为带哈希绝对资源路径的问题。`VERSION` 与中文发布说明已准备为 `0.2.0-alpha.14`，不是 stable。
+
+| 实际验证 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`test -z "$(gofmt -l server/*.go server/cmd/vapid/*.go)"` | 通过，12 项运维测试 |
+| scratch Web：`HONGSHU_TEST_TMP="$HOME/.build/hongshu/local-contact-display/test-tmp" npm test`、`npm run check`、`WEB_BUILD_DIR="$HOME/.build/hongshu/local-contact-display/web-build" npm run build` | 90 项通过；语法检查与生产构建通过，包含 hashed module import 回归 |
+| 本机 Chromium：`PLAYWRIGHT_MODULE="$HOME/.build/guanlan-playwright/node_modules/playwright" CHROMIUM_EXECUTABLE="$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-x64/chrome-headless-shell" WEB_BUILD_DIR="$HOME/.build/hongshu/local-contact-display/web-build" node scripts/local-contacts-smoke.cjs` | 通过：合成 Picker、IndexedDB/刷新、照片 CSP、本机搜索无 API 请求、跨标签页清除/竞态及不支持浏览器降级 |
+| scratch `server/`：`GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go test -race ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go vet ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go build -trimpath -o "$HOME/.build/hongshu/local-contact-display/hongshu" .` | 通过；未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成仍由 PR CI 承担 |
+| scratch Android（JDK 17）：`./gradlew --no-daemon --project-cache-dir "$HOME/.build/hongshu/local-contact-display/project-cache" :app:testDebugUnitTest :app:lintDebug` | 265 项 JVM 测试，254 执行、11 项截图测试按设计跳过、0 失败；lint 通过。APK 与 instrumentation 构建交给 PR CI |
+
+上述副本、测试输出与构建产物位于本机 `$HOME/.build/hongshu/local-contact-display/`；验证前后 scratch 约 46 MiB，`$HOME/.build` 可用空间 124 GiB，未在项目卷生成依赖或构建产物。
+
+本次 PR #82 的 [Hongshu validation run 39442513560](https://github.com/IGNGserver/hongshu/actions/runs/39442513560) 最终全部通过：`verify` 9s、`web` 7s、`server` 2m25s（隔离 MySQL/race/vet/build/Chromium）、`android (28)` 9m35s、`android (33)` 7m10s、`android (35)` 7m23s（含 APK 构建和 instrumentation）。API 28 首次执行的 `NetworkTest.largeHistoryQueueContinuesAndRegistersCapturedNumbersAfterSIMChange` 报 pending 数量期望 1805、实际 1605，日志同时有启动期 adb `device offline` 告警；未改代码、测试或断言，仅重跑该失败 job 后 API 28 全部通过。此记录保留首次结果，不把重跑写成首次通过。另有 [push 快速检查](https://github.com/IGNGserver/hongshu/actions/runs/39442439613) 的 `verify`/`web` 通过。该仓库为 public；本次完整 run、失败尝试、job 重跑和 push 检查合计约 34.6 job 分钟，占私仓月度配额 0 分钟。
 
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 

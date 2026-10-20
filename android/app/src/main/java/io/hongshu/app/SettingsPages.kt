@@ -128,6 +128,33 @@ private suspend fun SettingsHost.patchDevice(field: String, value: Boolean) {
 }
 
 @Composable
+fun ContactsPage(host: SettingsHost) {
+    val granted = hasPermission(host.activity, Manifest.permission.READ_CONTACTS)
+    SettingsScaffold(SettingsPage.Contacts.title, host.back, host.busy) {
+        settingsItem("switch") {
+            MasterSwitchCard(
+                title = "使用本机联系人",
+                summary = if (host.config.localContacts && !granted) "通讯录权限已撤销，当前显示号码；开启可重新授权" else "仅用于本机显示联系人名称和头像，不上传至中枢，也不在设备间同步",
+                checked = host.config.localContacts && granted,
+                enabled = !host.busy,
+                onCheckedChange = { enabled ->
+                    if (enabled) host.enableWithPermission(arrayOf(Manifest.permission.READ_CONTACTS), "未授予通讯录权限，联系人显示没有开启") {
+                        host.config.localContacts = true
+                        "本机联系人显示已开启"
+                    } else host.action {
+                        host.config.localContacts = false
+                        "本机联系人显示已关闭"
+                    }
+                },
+            )
+        }
+        settingsItem("help") {
+            ExpandableHelp("只读取这台设备的通讯录。会话列表、详情和姓名搜索使用本机姓名；详情仍保留原始号码。同一个联系人的不同号码不会合并会话。关闭后恢复原显示，不修改系统通讯录。通讯录改动会自动刷新；照片无法读取时使用默认头像。")
+        }
+    }
+}
+
+@Composable
 fun CapturePage(host: SettingsHost) {
     val c = host.config
     val f = host.facts

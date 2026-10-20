@@ -21,6 +21,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -133,6 +134,9 @@ fun HongshuUI(activity: MainActivity) {
     val health by RuntimeHealth.connection.collectAsState()
     val preferenceVersion = rememberPreferenceVersion(activity)
     val resumeCount = rememberResumeCount()
+    val localContacts = remember { LocalContacts(activity.applicationContext) }
+    ObserveLocalContacts(localContacts, repo.config.localContacts, hasPermission(activity, android.Manifest.permission.READ_CONTACTS))
+    val contactRevision by localContacts.revision.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     var simFilter by remember { mutableStateOf("") }
@@ -218,19 +222,27 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
-    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, destination, visible) {
+    val searchSenders by produceState<Set<String>>(emptySet(), changes, searchQuery, contactRevision) {
+        value = emptySet()
+        value = withContext(Dispatchers.IO) {
+            if (searchQuery.isBlank() || !localContacts.available()) emptySet()
+            else localContacts.matchingSenders(searchQuery, repo.store.readUnlessClosed(emptyList()) { contactSearchSenders() })
+        }
+    }
+
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, searchSenders, destination, visible) {
         if (!visible || destination != AppDestination.Search) return@LaunchedEffect
         kotlinx.coroutines.delay(250)
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
-                    messagesWithLocal("", searchQuery, simFilter, limit = messageLimit, group = group)
+                    messagesWithLocal("", searchQuery, simFilter, limit = messageLimit, group = group, localContactSenders = searchSenders)
                 }
             }
     }
 
     val lists by
-        produceState(HomeLists(), changes, simFilter, searchQuery, visible, destination) {
+        produceState(HomeLists(), changes, simFilter, searchQuery, searchSenders, visible, destination) {
             if (!visible || destination is AppDestination.Settings) return@produceState
             value =
                 withContext(Dispatchers.IO) {
@@ -241,7 +253,7 @@ fun HongshuUI(activity: MainActivity) {
                             sims = sims,
                             pending = pendingCounts(),
                             aiEnabled = aiEnabled(),
-                            groupCounts = groupCounts(searchQuery, simFilter),
+                            groupCounts = groupCounts(searchQuery, simFilter, searchSenders),
                         )
                     }
                 }
@@ -348,57 +360,59 @@ fun HongshuUI(activity: MainActivity) {
             },
         )
 
-    Box(Modifier.fillMaxSize()) {
-        AppNavigationHost(
-            stack = navigationStack,
-            twoPane = isExpanded,
-            onPop = ::popNavigation,
-            onRootBack = { activity.leaveForBackground() },
-        ) { destination ->
-            when (destination) {
-                is AppDestination.Settings ->
-                    SettingsScreen(
-                        activity = activity,
-                        repo = repo,
-                        busy = busy,
-                        page = destination.page,
-                        onNavigate = { page -> push(AppDestination.Settings(page)) },
-                        onBack = ::popNavigation,
-                        onRequestPermissions = permissionRequest,
-                        onAction = ::action,
-                        onMessage = ::showMessage,
-                    )
-                else ->
-                    MainSurface(
-                        destination = destination,
-                        model =
-                            HomeModel(
-                                repo = repo,
-                                messages =
-                                    if (destination == AppDestination.Search) loadedSearchMessages
-                                    else loadedHomeMessages,
-                                searchQuery = searchQuery,
-                                simFilter = simFilter,
-                                receivers = lists.receivers,
-                                sims = lists.sims,
-                                facts = facts,
-                                messageLimit = messageLimit,
-                                changes = changes,
-                                busy = busy,
-                                refreshing = refreshing,
-                                setup = setup,
-                                group = group,
-                                aiEnabled = aiEnabled,
-                                groupCounts = lists.groupCounts,
-                            ),
-                        actions = homeActions,
-                        twoPane = isExpanded,
-                    )
+    CompositionLocalProvider(LocalContactSource provides localContacts, LocalContactRevision provides contactRevision) {
+        Box(Modifier.fillMaxSize()) {
+            AppNavigationHost(
+                stack = navigationStack,
+                twoPane = isExpanded,
+                onPop = ::popNavigation,
+                onRootBack = { activity.leaveForBackground() },
+            ) { destination ->
+                when (destination) {
+                    is AppDestination.Settings ->
+                        SettingsScreen(
+                            activity = activity,
+                            repo = repo,
+                            busy = busy,
+                            page = destination.page,
+                            onNavigate = { page -> push(AppDestination.Settings(page)) },
+                            onBack = ::popNavigation,
+                            onRequestPermissions = permissionRequest,
+                            onAction = ::action,
+                            onMessage = ::showMessage,
+                        )
+                    else ->
+                        MainSurface(
+                            destination = destination,
+                            model =
+                                HomeModel(
+                                    repo = repo,
+                                    messages =
+                                        if (destination == AppDestination.Search) loadedSearchMessages
+                                        else loadedHomeMessages,
+                                    searchQuery = searchQuery,
+                                    simFilter = simFilter,
+                                    receivers = lists.receivers,
+                                    sims = lists.sims,
+                                    facts = facts,
+                                    messageLimit = messageLimit,
+                                    changes = changes,
+                                    busy = busy,
+                                    refreshing = refreshing,
+                                    setup = setup,
+                                    group = group,
+                                    aiEnabled = aiEnabled,
+                                    groupCounts = lists.groupCounts,
+                                ),
+                            actions = homeActions,
+                            twoPane = isExpanded,
+                        )
+                }
             }
+            SnackbarHost(
+                snackbar,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding(),
+            )
         }
-        SnackbarHost(
-            snackbar,
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding(),
-        )
     }
 }

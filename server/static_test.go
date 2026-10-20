@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,10 @@ func TestShellAssetsServed(t *testing.T) {
 		routes.ServeHTTP(w, httptest.NewRequest("GET", asset[1], nil))
 		if w.Code != 200 {
 			t.Errorf("precached %s returned %d", asset[1], w.Code)
+		}
+		policy := w.Header().Get("Content-Security-Policy")
+		if !strings.Contains(policy, "img-src 'self' data: blob:;") || !strings.Contains(policy, "connect-src 'self';") || !strings.Contains(policy, "script-src 'self';") {
+			t.Errorf("local avatars must allow blob images without relaxing script/connect policy: %s", policy)
 		}
 	}
 	for _, hidden := range []string{"/package.json", "/build.mjs", "/test/display.test.js"} {

@@ -9,11 +9,13 @@
 
 - **Android**：Kotlin、Compose、Material 3 Expressive，会话、对话、搜索、SIM 筛选；
   原生 SMS 广播、多段合并、双 SIM 映射、持久 outbox、失败重试、历史导入、展示中枢联系人名称。
+  可选使用本机通讯录姓名、照片与本地姓名搜索，联系人数据不上传或跨设备同步。
   上传和通知独立开关；普通查看设备无需短信权限。
 - **中枢**：Go + MySQL，单一中枢密码（无用户名）、统一密钥认证、独立设备凭据、设备撤销；
   事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
 - **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
   WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；不离线持久保存短信正文。
+  支持 Contact Picker 的安全浏览器可手动选择联系人，仅保存在当前浏览器，支持停用及清除。
 - **运维**：Docker Compose 中枢/数据库/每日一致性备份、审计迁移、HTTPS 反向代理和恢复指南。
 
 短信不会自动清理；验证码/正文不会出现在默认通知中；来源手机不重复接收自己的消息通知。
@@ -46,6 +48,7 @@ Android 构建/使用：[android/README.md](android/README.md)。GitHub Release 
 
 - [架构与故障恢复语义](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
+- [本机联系人与隐私边界](docs/LOCAL_CONTACTS.md)
 - [Android 兼容性调研](docs/ANDROID_COMPATIBILITY.md)
 - [验证记录](docs/VALIDATION.md)
 - [工作区规范](AGENTS.md) / [贡献指南](CONTRIBUTING.md)
