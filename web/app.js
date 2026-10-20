@@ -110,8 +110,10 @@ export function avatarColor(identifier) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-// Consecutive messages from the same device on the same day, at most five minutes apart,
-// share one cluster so time and source are shown once.
+// Consecutive messages from the same party (incoming from the same device, or outgoing
+// by the user) on the same day, at most five minutes apart, share one cluster so time
+// and source are shown once. Outgoing messages cluster across devices because all sent
+// SMS represent the user themselves.
 export const CLUSTER_GAP_MS = 5 * 60 * 1000;
 // A message the source phone sent. Hubs before outgoing support omit the field: received.
 export const isOutgoing = (m) => m?.direction === "out";
@@ -120,9 +122,11 @@ export function clusterMessages(messages) {
   const clusters = [];
   let current = null;
   for (const message of messages) {
-    if (!current || message.device_id !== current.device_id || isOutgoing(message) !== current.outgoing ||
+    const outgoing = isOutgoing(message);
+    const sameParty = current && (outgoing ? current.outgoing : (!current.outgoing && message.device_id === current.device_id));
+    if (!current || !sameParty ||
         message.timestamp - current.end > CLUSTER_GAP_MS || localDay(message.timestamp) !== localDay(current.end)) {
-      current = { device_id: message.device_id, outgoing: isOutgoing(message), start: message.timestamp, end: message.timestamp, messages: [] };
+      current = { device_id: message.device_id, outgoing, start: message.timestamp, end: message.timestamp, messages: [] };
       clusters.push(current);
     }
     current.messages.push(message);
