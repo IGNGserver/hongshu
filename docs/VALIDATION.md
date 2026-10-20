@@ -95,7 +95,9 @@ PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用�
 | scratch `server/`：`GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go test -race ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go vet ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go build -trimpath -o "$HOME/.build/hongshu/local-contact-display/hongshu" .` | 通过；未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成仍由 PR CI 承担 |
 | scratch Android（JDK 17）：`./gradlew --no-daemon --project-cache-dir "$HOME/.build/hongshu/local-contact-display/project-cache" :app:testDebugUnitTest :app:lintDebug` | 265 项 JVM 测试，254 执行、11 项截图测试按设计跳过、0 失败；lint 通过。APK 与 instrumentation 构建交给 PR CI |
 
-上述副本、测试输出与构建产物位于本机 `$HOME/.build/hongshu/local-contact-display/`；验证前后 scratch 约 46 MiB，`$HOME/.build` 可用空间 124 GiB，未在项目卷生成依赖或构建产物。PR 全量 MySQL、Chromium 和 Android API 28/33/35 验证尚待本次重放提交的 CI 运行；旧 commit 的 CI 不替代这次验证。
+上述副本、测试输出与构建产物位于本机 `$HOME/.build/hongshu/local-contact-display/`；验证前后 scratch 约 46 MiB，`$HOME/.build` 可用空间 124 GiB，未在项目卷生成依赖或构建产物。
+
+本次 PR #82 的 [Hongshu validation run 39442513560](https://github.com/IGNGserver/hongshu/actions/runs/39442513560) 最终全部通过：`verify` 9s、`web` 7s、`server` 2m25s（隔离 MySQL/race/vet/build/Chromium）、`android (28)` 9m35s、`android (33)` 7m10s、`android (35)` 7m23s（含 APK 构建和 instrumentation）。API 28 首次执行的 `NetworkTest.largeHistoryQueueContinuesAndRegistersCapturedNumbersAfterSIMChange` 报 pending 数量期望 1805、实际 1605，日志同时有启动期 adb `device offline` 告警；未改代码、测试或断言，仅重跑该失败 job 后 API 28 全部通过。此记录保留首次结果，不把重跑写成首次通过。另有 [push 快速检查](https://github.com/IGNGserver/hongshu/actions/runs/39442439613) 的 `verify`/`web` 通过。该仓库为 public；本次完整 run、失败尝试、job 重跑和 push 检查合计约 34.6 job 分钟，占私仓月度配额 0 分钟。
 
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 
