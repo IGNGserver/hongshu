@@ -1,6 +1,6 @@
 # 2026-10-20 多端加载与弱网优化
 
-基线 `585b5ee`（`0.2.0-alpha.12`），任务分支 `agent/loading-performance`；版本不变，不自动发布、部署、建 PR 或合并。
+基线 `585b5ee`（`0.2.0-alpha.12`），任务分支 `agent/loading-performance`；发布工作流目标版本 `0.2.0-alpha.13`（预览版，非 stable）。
 实现契约与运行方式见 [LOADING_PERFORMANCE.md](LOADING_PERFORMANCE.md)。
 
 - Web/PWA/桌面安装 PWA：认证后立即呈现壳，列表不等统计/联系人/AI 队列；元数据修订与 single-flight，超时不误登出；有界内存详情缓存和会话节点复用。
