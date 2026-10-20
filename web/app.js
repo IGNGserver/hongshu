@@ -196,7 +196,7 @@ const conversationNodes = new Map();
 function rememberDetail() {
   if (!state.messages.length || state.messagesQuery !== historyQueryKey()) return;
   detailCache.delete(state.messagesQuery);
-  detailCache.set(state.messagesQuery, { messages: state.messages.slice(), more: state.historyHasMore });
+  detailCache.set(state.messagesQuery, { messages: state.messages.slice(-50), more: state.messages.length > 50 || state.historyHasMore });
   while (detailCache.size > 4) detailCache.delete(detailCache.keys().next().value);
 }
 const state = {
@@ -678,10 +678,16 @@ async function openSettings() {
   history.pushState({ [SETTINGS_HISTORY]: true }, "");
   shell();
   const generation = state.generation;
-  await reloadMetadata({ force: true });
-  if (generation === state.generation && state.page === "settings") {
-    const rows = $(".device-settings-rows");
-    if (rows) rows.replaceChildren(...deviceRows());
+  $(".device-settings-rows")?.setAttribute("aria-busy", "true");
+  try {
+    await reloadMetadata({ force: true });
+    if (generation === state.generation && state.page === "settings") {
+      $(".device-settings-rows")?.replaceChildren(...deviceRows());
+    }
+  } catch (error) {
+    if (generation === state.generation && error.name !== "AbortError") toast("设备信息暂未刷新，请重试");
+  } finally {
+    if (generation === state.generation) $(".device-settings-rows")?.setAttribute("aria-busy", "false");
   }
 }
 function closeSettings() {
@@ -1067,7 +1073,7 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
   const epoch = state.epoch;
   try {
     setBusy(true);
-    if (metadata) void reloadMetadata().catch(() => {});
+    if (metadata) void reloadMetadata({ force: true }).catch(() => {});
     if (signal.aborted) return false;
 
     invalidateQueryData();
@@ -1926,7 +1932,7 @@ async function revokeDevice(id) {
   await api("/devices/" + encodeURIComponent(id), "DELETE");
   if (generation !== state.generation) return;
   if (current) { disconnect(); authView(); return; }
-  await reloadMetadata();
+  await reloadMetadata({ force: true });
   if (generation === state.generation && state.me) shell();
 }
 
@@ -2146,7 +2152,13 @@ async function reloadMetadata({ force = false } = {}) {
   const epoch = state.epoch;
   const revision = state.me?.metadata_revision;
   if (!force && metadataUpdatedAt && (revision != null ? revision === metadataRevision : Date.now() - metadataUpdatedAt < 60000)) return;
-  if (metadataTask?.generation === generation && metadataTask.epoch === epoch) return metadataTask.promise;
+  if (metadataTask?.generation === generation && metadataTask.epoch === epoch) {
+    if (!force) return metadataTask.promise;
+    // A mutation needs a read that starts after its commit, not an older in-flight snapshot.
+    try { await metadataTask.promise; } catch { /* explicit refresh retries */ }
+    if (generation !== state.generation || epoch !== state.epoch || !state.me) return;
+    return reloadMetadata({ force: true });
+  }
   const task = { generation, epoch };
   task.promise = (async () => {
     let d, s, c;
@@ -2239,6 +2251,7 @@ async function catchUp() {
     const me = await api("/me");
     if (generation !== state.generation || !state.me) return;
     const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled || me.ai_paused !== state.me.ai_paused;
+    if (analysisChanged) detailCache.clear();
     const unreadChanged = me.unread_count !== state.me.unread_count;
     const cursorChanged = me.cursor !== state.cursor;
     const changed = analysisChanged || unreadChanged || cursorChanged || epochReset(state.epochSeen, state.epoch, me.epoch);

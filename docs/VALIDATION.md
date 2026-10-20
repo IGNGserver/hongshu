@@ -14,11 +14,12 @@
 | --- | --- |
 | `TMPDIR=本机scratch bash scripts/verify-repository.sh` | 通过，12 项运维测试；在任务 worktree 执行以包含真实 Git 跟踪检查 |
 | `git diff --check` | 通过 |
-| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 78 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离 |
+| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 80 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离，以及写后强制刷新与有界详情内存 |
 | scratch Go `go test -race ./... && go vet ./...` | 通过；本机未提供 TEST_MYSQL_DSN，真实 MySQL 集成不计入本机结论 |
-| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 首轮新增回归通过（8m20s，含冷 Gradle 下载）；后续扩大覆盖后继续复核 |
+| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 首轮通过（8m20s，含冷 Gradle 下载）；扩大覆盖后 14 项通过、0 skip/失败（1m57s），含进程重启后的预览/可靠页重叠通知 |
 
-全套 Go/MySQL、Chromium、Android API 28/33/35 构建/模拟器使用现有 workflow_dispatch 验证任务分支，运行结果另行记录，不能以本地跳过真库测试代替。
+全套 Go/MySQL、Chromium、Android API 28/33/35 构建/模拟器使用现有 workflow_dispatch 验证任务分支，不能以本地跳过真库测试代替。
+首轮 [39423200026](https://github.com/IGNGserver/hongshu/actions/runs/39423200026) 的 Go race/真 MySQL/vet/build、Web/verify 通过；浏览器设备断言在异步刷新完成前读取旧列表，Android 共享迁移合同仍断言 v14，导致本轮整体失败、未执行 instrumentation。修正浏览器等待目标设备及显式 aria-busy、写后强制请求不复用旧快照，并同步共享迁移版本断言为 v15；保留撤销设备数量、采集/水位/队列数据和通知的全部断言。
 
 P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
 

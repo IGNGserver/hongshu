@@ -174,6 +174,8 @@ async function request(path, token, method = "GET", body) {
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("heading", { name: "设置", exact: true }).waitFor();
     await page.getByText("Synthetic Phone", { exact: true }).waitFor();
+    // Settings paints its cached rows immediately, then refreshes metadata.
+    await page.getByText("Revocation fixture", { exact: true }).waitFor();
     assert.equal(await page.getByText("Web browser", { exact: true }).count(), 1, "administrator can see the current browser identity");
     assert.equal(await page.locator(".device-card button").count(), 3, "administrator can revoke Android and Web identities");
     const revocableCard = page.locator(".device-card").filter({hasText: "Revocation fixture"});

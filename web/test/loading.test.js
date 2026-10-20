@@ -113,3 +113,24 @@ test("metadata from an earlier epoch is ignored even if a hub reuses the revisio
   assert.equal(run(ctx, "state.devices.length"), 0);
   assert.equal(run(ctx, "metadataUpdatedAt"), 0);
 });
+
+test("post-mutation refresh cannot join a pre-mutation metadata snapshot", async () => {
+  const ctx = runtime();
+  run(ctx, "api=p=>{calls.push(p);return new Promise(r=>release=r)};first=reloadMetadata();fresh=reloadMetadata({force:true});release({revision:1,devices:[],sims:[],contacts:{}})");
+  await run(ctx, "first");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert.equal(run(ctx, "calls.length"), 2);
+  run(ctx, "release({revision:2,devices:[{id:'updated'}],sims:[],contacts:{}})");
+  await run(ctx, "fresh");
+  assert.equal(run(ctx, "state.devices[0].id"), "updated");
+});
+
+test("detail memory retains at most four recent threads and fifty messages each", () => {
+  const ctx = runtime();
+  run(ctx, `for(let i=0;i<10;i++){
+    state.sender='synthetic-'+i;state.messagesQuery=historyQueryKey();
+    state.messages=Array.from({length:200},(_,j)=>({id:j}));state.historyHasMore=false;rememberDetail();
+  }`);
+  assert.equal(run(ctx, "detailCache.size"), 4);
+  assert.equal(run(ctx, "[...detailCache.values()].every(c=>c.messages.length===50&&c.more&&c.messages[0].id===150)"), true);
+});
