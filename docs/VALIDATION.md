@@ -55,7 +55,7 @@ P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络
 显示姓名/缩略头像及按姓名搜索本地短信；监听通讯录变化，撤权、关闭、退后台失效缓存。
 PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用、清除与退出清除；跨标签页
 使用 IndexedDB 事务代次防止旧保存复活已清除数据。既有中枢联系人映射不接收本机通讯录。
-服务端仅允许新静态模块和本地 blob 图片，无联系人 API/数据库/上传协议变更，版本号不变。
+服务端仅允许新静态模块和本地 blob 图片，无联系人 API/数据库/上传协议变更；本次准备递增至 `0.2.0-alpha.14`。
 
 | 本机实际验证 | 结果 |
 | --- | --- |
@@ -82,6 +82,20 @@ PWA 仅保存用户主动选择的联系人，提供独立本机搜索、停用�
 未完成环境验收：物理 Android 手机的授权弹窗、厂商 ROM 通讯录变更/权限撤销/照片访问，
 以及真实手机浏览器系统 Contact Picker；合成 provider/Picker 测试不等于上述真机验收。
 大量会话时，PWA 点击本机联系人需按页查找原始会话头；没有持久短信缓存，离线不能读取未加载历史。
+
+## Rebase 后与 v0.2.0-alpha.14 发布候选
+
+将本机联系人功能重放到 `v0.2.0-alpha.13` 后，处理了 Android 本地姓名搜索过滤未应用到已同步短信、浏览器已保存联系人加载后会话节点未刷新的问题；生产 Web 构建也修复了相对模块导入未改写为带哈希绝对资源路径的问题。`VERSION` 与中文发布说明已准备为 `0.2.0-alpha.14`，不是 stable。
+
+| 实际验证 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`test -z "$(gofmt -l server/*.go server/cmd/vapid/*.go)"` | 通过，12 项运维测试 |
+| scratch Web：`HONGSHU_TEST_TMP="$HOME/.build/hongshu/local-contact-display/test-tmp" npm test`、`npm run check`、`WEB_BUILD_DIR="$HOME/.build/hongshu/local-contact-display/web-build" npm run build` | 90 项通过；语法检查与生产构建通过，包含 hashed module import 回归 |
+| 本机 Chromium：`PLAYWRIGHT_MODULE="$HOME/.build/guanlan-playwright/node_modules/playwright" CHROMIUM_EXECUTABLE="$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-x64/chrome-headless-shell" WEB_BUILD_DIR="$HOME/.build/hongshu/local-contact-display/web-build" node scripts/local-contacts-smoke.cjs` | 通过：合成 Picker、IndexedDB/刷新、照片 CSP、本机搜索无 API 请求、跨标签页清除/竞态及不支持浏览器降级 |
+| scratch `server/`：`GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go test -race ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go vet ./... && GOCACHE="$HOME/.build/go-cache" GOMODCACHE="$HOME/.build/go-mod" GOTMPDIR="$HOME/.build/go-tmp" go build -trimpath -o "$HOME/.build/hongshu/local-contact-display/hongshu" .` | 通过；未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成仍由 PR CI 承担 |
+| scratch Android（JDK 17）：`./gradlew --no-daemon --project-cache-dir "$HOME/.build/hongshu/local-contact-display/project-cache" :app:testDebugUnitTest :app:lintDebug` | 265 项 JVM 测试，254 执行、11 项截图测试按设计跳过、0 失败；lint 通过。APK 与 instrumentation 构建交给 PR CI |
+
+上述副本、测试输出与构建产物位于本机 `$HOME/.build/hongshu/local-contact-display/`；验证前后 scratch 约 46 MiB，`$HOME/.build` 可用空间 124 GiB，未在项目卷生成依赖或构建产物。PR 全量 MySQL、Chromium 和 Android API 28/33/35 验证尚待本次重放提交的 CI 运行；旧 commit 的 CI 不替代这次验证。
 
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 
