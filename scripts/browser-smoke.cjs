@@ -187,6 +187,11 @@ async function request(path, token, method = "GET", body) {
     assert.equal(revokedSession.status, 401, "revoked browser credentials must stop authorizing requests");
     assert.equal(await revocableCard.getByRole("button", {name: "撤销设备", exact: true}).count(), 0, "revoked device no longer offers a revoke action");
     await page.getByRole("switch", { name: "浏览器通知", exact: true }).waitFor();
+    const lowSpeedSwitch = page.getByRole("switch", { name: "低速优化", exact: true });
+    await lowSpeedSwitch.check();
+    assert.equal(await lowSpeedSwitch.getAttribute("aria-checked"), "true");
+    await lowSpeedSwitch.uncheck();
+    assert.equal(await lowSpeedSwitch.getAttribute("aria-checked"), "false");
     await page.getByText("通知已关闭", { exact: true }).waitFor();
     assert.equal(await page.getByText("中枢名称", { exact: true }).count(), 0);
     assert.equal(await page.getByText("隐私与存储", { exact: true }).count(), 0);

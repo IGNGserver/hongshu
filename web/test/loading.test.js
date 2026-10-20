@@ -134,3 +134,15 @@ test("detail memory retains at most four recent threads and fifty messages each"
   assert.equal(run(ctx, "detailCache.size"), 4);
   assert.equal(run(ctx, "[...detailCache.values()].every(c=>c.messages.length===50&&c.more&&c.messages[0].id===150)"), true);
 });
+
+test("network and notification switches have independent accessible names and state", async () => {
+  const ctx = runtime();
+  run(ctx, `el=()=>({setAttribute(k,v){this[k]=v},append(){},classList:{toggle(){}}});attachRipple=()=>{};
+    notification=createSwitch(false,async()=>{});
+    lowSpeed=createSwitch(false,async next=>lowSpeed.setChecked(next),'低速优化');`);
+  assert.equal(run(ctx, "notification['aria-label']"), "浏览器通知");
+  assert.equal(run(ctx, "lowSpeed['aria-label']"), "低速优化");
+  await run(ctx, "lowSpeed.onclick()");
+  assert.equal(run(ctx, "lowSpeed['aria-checked']"), "true");
+  assert.equal(run(ctx, "notification['aria-checked']"), "false");
+});

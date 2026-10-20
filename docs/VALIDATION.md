@@ -14,12 +14,14 @@
 | --- | --- |
 | `TMPDIR=本机scratch bash scripts/verify-repository.sh` | 通过，12 项运维测试；在任务 worktree 执行以包含真实 Git 跟踪检查 |
 | `git diff --check` | 通过 |
-| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 80 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离，以及写后强制刷新与有界详情内存 |
+| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 81 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离，以及写后强制刷新、有界详情内存和开关可访问名称 |
 | scratch Go `go test -race ./... && go vet ./...` | 通过；本机未提供 TEST_MYSQL_DSN，真实 MySQL 集成不计入本机结论 |
-| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 首轮通过（8m20s，含冷 Gradle 下载）；扩大覆盖后 14 项通过、0 skip/失败（1m57s），含进程重启后的预览/可靠页重叠通知 |
+| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 最后 16 项通过、0 skip/失败（1m33s），含进程重启后的预览/可靠页重叠通知和替换联系人缓存后的网络时效失效；共享迁移合同及 instrumentation Kotlin 编译另在 scratch 通过（1m42s） |
 
 全套 Go/MySQL、Chromium、Android API 28/33/35 构建/模拟器使用现有 workflow_dispatch 验证任务分支，不能以本地跳过真库测试代替。
 首轮 [39423200026](https://github.com/IGNGserver/hongshu/actions/runs/39423200026) 的 Go race/真 MySQL/vet/build、Web/verify 通过；浏览器设备断言在异步刷新完成前读取旧列表，Android 共享迁移合同仍断言 v14，导致本轮整体失败、未执行 instrumentation。修正浏览器等待目标设备及显式 aria-busy、写后强制请求不复用旧快照，并同步共享迁移版本断言为 v15；保留撤销设备数量、采集/水位/队列数据和通知的全部断言。
+第二轮 [39424518898](https://github.com/IGNGserver/hongshu/actions/runs/39424518898) 的所有 JVM 单测/lint/APK 构建通过；浏览器发现两个开关共用通知标签，Android 三档 instrumentation 均在联系人故障用例失败：本地替换联系人快照后沿用了旧的网络 TTL，跳过了应有重试。已修复独立标签/开关状态，以及无网络时间戳的联系人快照使 TTL 失效；新增相应本地回归，保留原故障/撤销断言，等待全套复核。
+本机 Chromium（隔离合成 API，不访问生产）在元数据/统计挂起时仍可显示内容；独立低速开关和离线重新加载壳也通过。每次 API 人工延迟 0/600/1000ms 的单样本首批内容约 289/1434/2593ms；这是开发回归探针，不是 RTT 限速、p50/p95 或真机结果。
 
 P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
 

@@ -2393,7 +2393,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 }
             }
             if (revision != null) db.execSQL("UPDATE meta SET value=? WHERE key='contacts_revision'", arrayOf(revision))
-            if (checkedAt > 0) db.execSQL("UPDATE meta SET value=? WHERE key='contacts_checked_at'", arrayOf(checkedAt))
+            // A local/restored snapshot is not evidence of a successful network
+            // read. Invalidate an earlier TTL unless this caller supplies one.
+            db.execSQL("UPDATE meta SET value=? WHERE key='contacts_checked_at'", arrayOf(checkedAt))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()

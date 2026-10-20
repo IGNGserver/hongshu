@@ -1729,12 +1729,12 @@ function linkedText(text) {
   return fragment;
 }
 
-function createSwitch(checked, onChange) {
+function createSwitch(checked, onChange, label = "浏览器通知") {
   let value = Boolean(checked);
   const control = el("button", "m3-switch");
   control.type = "button";
   control.setAttribute("role", "switch");
-  control.setAttribute("aria-label", "浏览器通知");
+  control.setAttribute("aria-label", label);
   control.setAttribute("aria-checked", String(value));
   const thumb = el("span", "m3-switch-thumb");
   control.append(thumb);
@@ -1984,8 +1984,9 @@ function settingsView() {
 
   const lowSpeed = createSwitch(networkProfile.manual, async next => {
     networkProfile.manual = next;
+    lowSpeed.setChecked(next);
     try { localStorage.setItem(LOW_SPEED_KEY, String(next)); } catch { /* session only */ }
-  });
+  }, "低速优化");
   inner.append(settingsGroup("网络", [settingsRow({ icon: ICONS.settings, title: "低速优化", summary: "优先当前内容，减少预取并容许更长的交互等待", trailing: lowSpeed })]).section);
 
   const logoutRow = settingsRow({ tag: "button", icon: ICONS.logout, title: "退出登录", summary: "这台浏览器不保存任何短信", cls: "settings-danger" });

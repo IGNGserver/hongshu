@@ -126,4 +126,12 @@ class LoadingTest {
         assertEquals(version, Store.changes.value)
         assertEquals(2L, store.contactsRevision())
     }
+
+    @Test fun replacingCachedContactsInvalidatesPreviousNetworkFreshness() = withStore { store ->
+        val names = JSONObject().put("synthetic", "Contact")
+        store.applyContacts(names, checkedAt = System.currentTimeMillis())
+        assertTrue(store.contactsCheckedAt() > 0)
+        store.applyContacts(names)
+        assertEquals(0L, store.contactsCheckedAt())
+    }
 }
