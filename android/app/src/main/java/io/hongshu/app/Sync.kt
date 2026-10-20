@@ -360,7 +360,7 @@ object SyncEngine {
                 try {
                     if (c.token.isEmpty()) return@withContext true
                     c.lastSyncAttempt = System.currentTimeMillis()
-                    val session = repo.api.request("/me")
+                    val session = repo.api.request("/me", timeoutMillis = 15_000)
                     val me = session.getJSONObject("device")
                     val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
                     c.serverUploadAllowed = serverUpload
@@ -375,78 +375,51 @@ object SyncEngine {
                     else store.rememberEpoch(epoch)
                     store.initializeSyncHead(session.getLong("cursor"))
                     c.notify = me.getBoolean("notify")
-                    // Local capture remains independent; server can deny upload without
-                    // deleting
-                    // its queue.
+                    // Display preview rows never acknowledge the reliable history log.
+                    if (hubFeatures(session).contains("recent_snapshot") &&
+                        session.getLong("cursor") > store.cursor() &&
+                        (!store.initialComplete() || session.getLong("cursor") - store.cursor() > 200) &&
+                        store.previewHead() != session.getLong("cursor")) {
+                        try {
+                            store.applyRecent(repo.api.request("/recent?limit=50", timeoutMillis = 8_000))
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: ApiException) { if (e.status == 401) throw e }
+                        catch (_: Exception) { /* reliable sync remains authoritative */ }
+                    }
+                    // Local capture remains independent; denial never deletes its queue.
                     var uploadFailure: Exception? = null
-                    try {
-                        if (c.upload && serverUpload) {
+                    var uploadProgress = false
+                    fun uploadSlice(): Exception? {
+                        if (!c.upload || !serverUpload || !c.serverUploadAllowed) return null
+                        try {
                             val registrations = SimRegistrations(repo.api, c)
                             for (sim in store.sims())
                                 registrations.ensure(sim.phone, sim.label, sim.sub)
-                            for (batch in 0 until 20) {
-                                if (!c.upload || !c.serverUploadAllowed) break
-                                val candidates = store.uploadCandidates(batch)
-                                val pending =
-                                    candidates.take(
-                                        uploadBatchCount(
-                                            candidates.map {
-                                                it.second.json().toString().toByteArray().size
-                                            }
-                                        )
-                                    )
-                                if (pending.isEmpty()) break
-                                // Queued captures retain the number used before an offline SIM
-                                // change. Register those snapshots too; never rewrite them to the
-                                // new number.
-                                for (message in
-                                    pending
-                                        .map { it.second }
-                                        .distinctBy { it.receiver to it.subscriptionId }) {
-                                    registrations.ensure(
-                                        message.receiver,
-                                        "SIM",
-                                        message.subscriptionId,
-                                    )
-                                }
-                                uploadPending(
-                                    repo.api,
-                                    store,
-                                    pending,
-                                    enabled = { c.upload && c.serverUploadAllowed },
-                                )
-                                // A cached registration the hub no longer knows (restored database,
-                                // removed SIM) is re-sent once; a fresh rejection stays blocked.
-                                registrations
-                                    .forgetRejected(store.simRejectedReceivers())
-                                    .takeIf { it.isNotEmpty() }
-                                    ?.let { store.releaseSimRejections(it) }
+                            val candidates = store.uploadCandidates(0)
+                            val pending = candidates.take(uploadBatchCount(
+                                candidates.map { it.second.json().toString().toByteArray().size },
+                                budget = if (c.lowSpeed || loadingNetwork.slow) 128_000 else 900_000,
+                            ))
+                            if (pending.isEmpty()) return null
+                            // Register historical receiver snapshots without rewriting them.
+                            for (message in pending.map { it.second }.distinctBy { it.receiver to it.subscriptionId }) {
+                                registrations.ensure(message.receiver, "SIM", message.subscriptionId)
                             }
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: ApiException) {
-                        if (e.status == 401) throw e else uploadFailure = e
-                    } catch (e: Exception) {
-                        uploadFailure = e
-                    }
-                    val contactsHealthy =
-                        try {
-                            store.applyContacts(
-                                repo.api.request("/contacts").getJSONObject("contacts")
-                            )
-                            true
+                            uploadPending(repo.api, store, pending, enabled = { c.upload && c.serverUploadAllowed })
+                            uploadProgress = true
+                            // Retry stale cached registrations once; fresh rejections stay blocked.
+                            registrations.forgetRejected(store.simRejectedReceivers())
+                                .takeIf { it.isNotEmpty() }?.let { store.releaseSimRejections(it) }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: ApiException) {
-                            if (e.status == 401) throw e
-                            false
-                        } catch (_: Exception) {
-                            false
+                            if (e.status == 401) throw e else return e
+                        } catch (e: Exception) {
+                            return e
                         }
-                    // Contact names are cosmetic: a failure keeps the cached names and never
-                    // turns an otherwise successful upload/download into a failed sync.
-                    c.contactsHealthy = contactsHealthy
+                        return null
+                    }
+                    var uploaded = false
                     if (session.has("global_watermark_id")) {
                         store.updateGlobalWatermark(session.optLong("global_watermark_id"))
                     }
@@ -454,16 +427,22 @@ object SyncEngine {
                         context.getSystemService(NotificationManager::class.java).cancel(2)
                     }
                     val pairedAt = me.optLong("created_at")
-                    for (page in 0 until 100) {
+                    for (page in 0 until 4) {
                         val data =
                             try {
                                 repo.api.request("/sync?after=${store.cursor()}&limit=200")
                             } catch (e: ApiException) {
-                                if (e.code != "epoch_changed") throw e
+                                if (e.code != "epoch_changed") {
+                                    if (e.status != 401 && !uploaded) { uploadSlice(); uploaded = true }
+                                    throw e
+                                }
                                 val recovered = repo.api.request("/me")
                                 store.resetSyncedCache(recovered.getLong("epoch"))
                                 store.initializeSyncHead(recovered.getLong("cursor"))
                                 continue
+                            } catch (e: java.io.IOException) {
+                                if (!uploaded) { uploadSlice(); uploaded = true }
+                                throw e
                             }
                         if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) {
                             store.resetSyncedCache(data.getLong("epoch"))
@@ -474,9 +453,15 @@ object SyncEngine {
                         val pendingNotice = store.pendingNotification()
                         if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
                             store.acknowledgeNotification(pendingNotice)
-                         if (!data.getBoolean("more")) {
+                        if (!uploaded) {
+                            uploadFailure = uploadSlice()
+                            uploaded = true
+                        }
+                        if (!data.getBoolean("more")) {
+                            val contactsHealthy = refreshContactSnapshot(repo, session)
+                            c.contactsHealthy = contactsHealthy
                             // Cosmetic analysis has a separate cursor and never creates notifications.
-                            syncMessageAnalysis(repo, session)
+                            val analysisMore = syncMessageAnalysis(repo, session)
                             uploadReadReceipts(repo.api, store)
                             val readsComplete = syncReadState(store) { repo.api.request(it) }
                             c.lastSync = System.currentTimeMillis()
@@ -495,18 +480,37 @@ object SyncEngine {
                             // off and retries without having blocked receiving.
                             uploadFailure?.let { throw it }
                             // Successful bounded work gets a successor, not failure backoff.
-                            return@withContext readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
+                            return@withContext !uploadProgress && !analysisMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                                 (serverUpload &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
                     }
+                    uploadFailure?.let { throw it }
                     false
                 } finally {
                     store.close()
-                    Store.changes.value++
                 }
             }
         }
+}
+
+internal fun refreshContactSnapshot(repo: Repository, session: JSONObject): Boolean {
+    val store = repo.store
+    val revision = session.optLong("metadata_revision", -1)
+    if (revision >= 0 && revision == store.contactsRevision()) return true
+    if (revision < 0 && System.currentTimeMillis() - store.contactsCheckedAt() < 60_000) return true
+    return try {
+        if (hubFeatures(session).contains("metadata_revision")) {
+            // Our cached revision may be zero after recovery; do not request an
+            // unchanged snapshot unless the contact bytes are actually present.
+            val data = repo.api.request("/metadata", timeoutMillis = 8_000)
+            check(data.getLong("epoch") == store.epoch()) { "Contact snapshot epoch changed" }
+            store.applyContacts(data.getJSONObject("contacts"), data.getLong("revision"), System.currentTimeMillis())
+        } else store.applyContacts(repo.api.request("/contacts", timeoutMillis = 8_000).getJSONObject("contacts"), checkedAt = System.currentTimeMillis())
+        true
+    } catch (e: CancellationException) { throw e }
+    catch (e: ApiException) { if (e.status == 401) throw e; false }
+    catch (_: Exception) { false }
 }
 
 internal fun hubFeatures(session: JSONObject): Set<String> {
@@ -529,13 +533,13 @@ internal fun applyMessagePage(context: Context, config: Config, store: Store, da
     }
 }
 
-internal fun syncMessageAnalysis(repo: Repository, session: JSONObject) {
+internal fun syncMessageAnalysis(repo: Repository, session: JSONObject): Boolean {
     val store = repo.store
     try {
         store.rememberAI(session.optBoolean("ai_enabled"))
         store.backfillLocalRules()
-        if (!session.has("analysis_revision")) return // Older hub: rule-only UI.
-        for (page in 0 until 20) {
+        if (!session.has("analysis_revision")) return false // Older hub: rule-only UI.
+        for (page in 0 until 2) {
             if (store.analysisCursor() == session.getLong("analysis_revision")) break
             val data = try {
                 repo.api.request("/analysis?after=${store.analysisCursor()}&limit=200")
@@ -544,22 +548,24 @@ internal fun syncMessageAnalysis(repo: Repository, session: JSONObject) {
                 store.resetAnalysis()
                 continue
             }
-            if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) return
+            if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) return false
             store.applyAnalysis(data.getJSONArray("items"), data.getLong("cursor"), data.getLong("epoch"))
-            if (!data.getBoolean("more")) break
+            if (!data.getBoolean("more")) return false
         }
+        return store.analysisCursor() < session.getLong("analysis_revision")
     } catch (e: CancellationException) {
         throw e
     } catch (e: ApiException) {
         if (e.status == 401) throw e
         // Analysis retry must not make an otherwise successful SMS upload/download fail.
     } catch (_: Exception) { /* retry independently on the next sync */ }
+    return false // A cosmetic failure waits for the next normal trigger, not a hot retry loop.
 }
 
 // Called under identityMutex, after checking the hub epoch. Failed requests leave durable
 // receipts for WorkManager retry; an ACK cannot consume a newer local read watermark.
 internal fun uploadReadReceipts(api: Api, store: Store) {
-    for ((sender, id) in store.pendingReads()) {
+    for ((sender, id) in store.pendingReads().take(20)) {
         api.request("/messages/read", "POST", JSONObject().put("sender", sender).put("message_id", id))
         store.acknowledgeRead(sender, id)
     }
@@ -672,11 +678,11 @@ fun notifyMessage(context: Context): Boolean {
  * progress. Returns false when it is still queued after [timeoutMillis] (for example offline).
  */
 suspend fun syncAndWait(context: Context, timeoutMillis: Long = 15_000): Boolean {
-    syncNow(context, manual = true).await()
     return kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
-        WorkManager.getInstance(context.applicationContext)
+        syncNow(context, manual = true).await()
+        val finished = WorkManager.getInstance(context.applicationContext)
             .getWorkInfosForUniqueWorkFlow("hongshu-sync")
             .first { infos -> infos.all { it.state.isFinished } }
-        true
+        finished.isNotEmpty() && finished.all { it.state == androidx.work.WorkInfo.State.SUCCEEDED }
     } ?: false
 }

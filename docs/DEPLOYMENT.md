@@ -40,6 +40,14 @@ Nginx（证书自行提供）：
 ```nginx
 # 在 http {} 内按原始客户端限制昂贵登录，不影响已有会话。
 limit_req_zone $binary_remote_addr zone=hongshu_login:10m rate=10r/m;
+map $http_upgrade $hongshu_connection {
+    default upgrade;
+    '' '';
+}
+upstream hongshu_hub {
+    server 127.0.0.1:18473;
+    keepalive 16;
+}
 server {
     listen 443 ssl;
     server_name sms.example.com;
@@ -49,19 +57,21 @@ server {
     location = /api/login {
         limit_req zone=hongshu_login burst=5 nodelay;
         limit_req_status 429;
-        proxy_pass http://127.0.0.1:18473;
+        proxy_pass http://hongshu_hub;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
         access_log off;
     }
     location / {
-        proxy_pass http://127.0.0.1:18473;
+        proxy_pass http://hongshu_hub;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         # 覆盖，不追加不可信客户端提交的值。
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $hongshu_connection;
         proxy_read_timeout 90s;
         # Do not log SMS bodies, authorization, credentials or query searches.
         access_log off;
@@ -75,6 +85,9 @@ HTTP 局域网访问仍支持自适应 Host。保持默认 `BIND_ADDRESS=127.0.0
 Docker 桥接时该地址可能是网关，可由隔离环境的网络配置核对。代理必须覆盖 X-Forwarded-For。
 未配置时转发头一律不作为客户端身份，因此代理后的请求会共用 peer 限速桶。
 示例已为 `/api/login` 配置独立限速，不影响 WS 和已有身份读取。
+公共 `/assets/<hash>-...` 响应可以按源站 immutable 策略缓存；HTML、SW 需校验更新。
+不得将 `/api/`、携带敏感内容的错误响应或搜索响应设为公共缓存，不开启全站 Cache Everything。
+生产构建提供静态 gzip 文件，源站按 Accept-Encoding 协商；CF 已压缩时不重复压缩。
 不要公开 MySQL 3306。中枢另有全局最多两个并发密码哈希，繁忙返回 503。
 Web Push 需要服务器能访问公开 HTTPS Push 服务，浏览器支持且授予通知权限。
 iOS Web Push 通常需添加到主屏幕；隐私模式/厂商浏览器可能不支持。在线 WS 失效仍周期补齐。
@@ -132,6 +145,8 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 `005` 创建并回填会话摘要，保留全部消息；首次升级需为全历史回填预留时间和磁盘。该迁移失败仍受 dirty 审计阻止启动。
 旧服务可忽略摘要表；重新升级时若摘要检查点落后于提交时钟，中枢会在监听之前持锁重建，
 不会把旧服务未维护的摘要当作最新状态。down.sql 仅删除可重建摘要和检查点，不删除 messages。
+`012` 增加可重建的元数据失效时钟，不删除业务数据。回滚旧服务可保留该表；只有停用依赖新接口的服务后，才可在已备份的隔离环境手工执行 down。新旧写服务不得混合运行，否则旧服务不会维护新修订。
+Android 本地 v15 增加会话摘要和展示预览标记，保留队列、采集证据和可靠游标；旧 APK 不能直接打开新版数据库，不能以清除应用数据作为常规回滚办法。
 down.sql 会销毁对应列或全部表，仅能在已确认的测试环境手工使用。
 应用回滚只能在 schema 兼容时退回旧版本镜像标签（修改 `.env` 中的 `HONGSHU_VERSION` 并重新 `docker compose up -d hub`）；不兼容时恢复已验证的新卷备份，不能盲目执行 down.sql。
 保留数据库与授权信息，`docker compose down` 不加 `-v`；删除数据卷不是升级/回滚步骤。

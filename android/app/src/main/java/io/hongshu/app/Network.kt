@@ -139,6 +139,7 @@ class Api(private val config: Config, private val originOverride: String? = null
         method: String = "GET",
         body: JSONObject? = null,
         authorized: Boolean = true,
+        timeoutMillis: Long = 45_000L,
     ): JSONObject {
         val (origin, token) =
             synchronized(identityLock) {
@@ -160,7 +161,10 @@ class Api(private val config: Config, private val originOverride: String? = null
                     .toString()
                     .toRequestBody("application/json; charset=utf-8".toMediaType()),
         )
-        client.newCall(builder.build()).execute().use { response ->
+        val call = client.newCall(builder.build())
+        call.timeout().timeout(if ((config.lowSpeed || loadingNetwork.slow) && timeoutMillis == 45_000L) 60_000L else timeoutMillis, TimeUnit.MILLISECONDS)
+        val started = System.nanoTime()
+        try { call.execute().use { response ->
             val json =
                 try {
                     JSONObject(response.body?.string() ?: "{}")
@@ -182,7 +186,7 @@ class Api(private val config: Config, private val originOverride: String? = null
                 throw ApiException(response.code, json.optString("error", "network_error"))
             }
             return json
-        }
+        } } finally { loadingNetwork.observe(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)) }
     }
 }
 

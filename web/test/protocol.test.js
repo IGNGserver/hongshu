@@ -42,13 +42,13 @@ test("no credential or SMS persistence in browser source", async () => {
   assert.ok(!source.includes("indexedDB"));
   assert.ok(!source.includes("sessionStorage"));
   assert.ok(!source.includes("document.cookie"));
-  // The theme preference is the single exception: localStorage may only be read or
-  // written through THEME_KEY, which must be "hongshu-theme".
+  // Only explicitly named, non-sensitive UI preferences may be persistent.
   assert.match(source, /const THEME_KEY = "hongshu-theme";/);
   const mentions = source.match(/localStorage/g) || [];
-  const allowed = [...source.matchAll(/localStorage\.(getItem|setItem)\(THEME_KEY[,)]/g)];
+  assert.match(source, /const LOW_SPEED_KEY = "hongshu-low-speed";/);
+  const allowed = [...source.matchAll(/localStorage\.(getItem|setItem)\((?:THEME_KEY|LOW_SPEED_KEY)[,)]/g)];
   assert.ok(allowed.length > 0);
-  assert.equal(mentions.length, allowed.length, "localStorage used outside the theme preference");
+  assert.equal(mentions.length, allowed.length, "localStorage used outside allowed UI preferences");
 });
 
 test("theme preference stores only system, light or dark", () => {

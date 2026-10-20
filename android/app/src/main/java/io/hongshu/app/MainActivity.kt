@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -125,7 +127,9 @@ private data class HomeLists(
 fun HongshuUI(activity: MainActivity) {
     val repo = remember { Repository(activity) }
     DisposableEffect(Unit) { onDispose { repo.store.close() } }
-    val changes by Store.changes.collectAsState()
+    val changes by Store.changes.collectAsStateWithLifecycle()
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val visible = lifecycleState.isAtLeast(Lifecycle.State.STARTED)
     val health by RuntimeHealth.connection.collectAsState()
     val preferenceVersion = rememberPreferenceVersion(activity)
     val resumeCount = rememberResumeCount()
@@ -203,7 +207,9 @@ fun HongshuUI(activity: MainActivity) {
 
     LaunchedEffect(searchQuery, simFilter, group) { messageLimit = 200 }
 
-    LaunchedEffect(changes, simFilter, messageLimit, group) {
+    val destination = navigationStack.last()
+    LaunchedEffect(changes, simFilter, messageLimit, group, destination, visible) {
+        if (!visible || destination is AppDestination.Settings || destination == AppDestination.Search) return@LaunchedEffect
         loadedHomeMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
@@ -212,7 +218,9 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
-    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group) {
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, destination, visible) {
+        if (!visible || destination != AppDestination.Search) return@LaunchedEffect
+        kotlinx.coroutines.delay(250)
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
@@ -222,7 +230,8 @@ fun HongshuUI(activity: MainActivity) {
     }
 
     val lists by
-        produceState(HomeLists(), changes, simFilter, searchQuery) {
+        produceState(HomeLists(), changes, simFilter, searchQuery, visible, destination) {
+            if (!visible || destination is AppDestination.Settings) return@produceState
             value =
                 withContext(Dispatchers.IO) {
                     repo.store.readUnlessClosed(HomeLists()) {

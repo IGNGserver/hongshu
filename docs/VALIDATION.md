@@ -1,3 +1,55 @@
+# 2026-10-20 多端加载与弱网优化
+
+基线 `585b5ee`（`0.2.0-alpha.12`），任务分支 `agent/loading-performance`；发布工作流目标版本 `0.2.0-alpha.13`（预览版，非 stable）。
+实现契约与运行方式见 [LOADING_PERFORMANCE.md](LOADING_PERFORMANCE.md)。
+
+- Web/PWA/桌面安装 PWA：认证后立即呈现壳，列表不等统计/联系人/AI 队列；元数据修订与 single-flight，超时不误登出；有界内存详情缓存和会话节点复用。
+- 公共壳：内容 hash、immutable、静态 gzip；核心集合安装、缓存优先和用户同意更新，保留旧页面资源；敏感 API 不入 SW/CDN 缓存。
+- Android：按可见页面读取、搜索防抖、本地 v15 派生会话头和批量去重；每轮最多四页下载/一批上传，低速上传字节预算；最近展示预览不推进可靠游标，不触发历史通知，可靠重叠页仍处理通知。
+- 中枢：迁移 012，元数据修订与写事务共同提交；只读一致性最近快照；epoch/head/read-revision 键控未读缓存；WS 仍只查 singleton，额外观察元数据与 epoch。
+
+本地验证（源码副本和产物均在 `~/.build/hongshu/loading-performance/`；开始 df 可用 127Gi，后续 125Gi）：
+
+| 命令/检查 | 实际结果 |
+| --- | --- |
+| `TMPDIR=本机scratch bash scripts/verify-repository.sh` | 通过，12 项运维测试；在任务 worktree 执行以包含真实 Git 跟踪检查 |
+| `git diff --check` | 通过 |
+| scratch Web `HONGSHU_TEST_TMP=本机scratch npm test && npm run check` | 81 项通过；含挂起增强请求时内容仍显示、两个关键 API 阶段、超时/身份/epoch、离线壳/版本资源与缓存隔离，以及写后强制刷新、有界详情内存和开关可访问名称 |
+| scratch Go `go test -race ./... && go vet ./...` | 通过；本机未提供 TEST_MYSQL_DSN，真实 MySQL 集成不计入本机结论 |
+| scratch Android `./gradlew --no-daemon --project-cache-dir 本机scratch :app:testDebugUnitTest --tests io.hongshu.app.LoadingTest` | 最后 16 项通过、0 skip/失败（1m33s），含进程重启后的预览/可靠页重叠通知和替换联系人缓存后的网络时效失效；共享迁移合同及 instrumentation Kotlin 编译另在 scratch 通过（1m42s） |
+
+全套 Go/MySQL、Chromium、Android API 28/33/35 构建/模拟器使用现有 workflow_dispatch 验证任务分支，不能以本地跳过真库测试代替。
+首轮 [39423200026](https://github.com/IGNGserver/hongshu/actions/runs/39423200026) 的 Go race/真 MySQL/vet/build、Web/verify 通过；浏览器设备断言在异步刷新完成前读取旧列表，Android 共享迁移合同仍断言 v14，导致本轮整体失败、未执行 instrumentation。修正浏览器等待目标设备及显式 aria-busy、写后强制请求不复用旧快照，并同步共享迁移版本断言为 v15；保留撤销设备数量、采集/水位/队列数据和通知的全部断言。
+第二轮 [39424518898](https://github.com/IGNGserver/hongshu/actions/runs/39424518898) 的所有 JVM 单测/lint/APK 构建通过；浏览器发现两个开关共用通知标签，Android 三档 instrumentation 均在联系人故障用例失败：本地替换联系人快照后沿用了旧的网络 TTL，跳过了应有重试。已修复独立标签/开关状态，以及无网络时间戳的联系人快照使 TTL 失效；新增相应本地回归，保留原故障/撤销断言。
+
+最终代码 `c279963` 的 [39426623660](https://github.com/IGNGserver/hongshu/actions/runs/39426623660) **全部通过**：
+
+| Job | 结论与耗时 |
+| --- | --- |
+| verify | 仓库合同与空白检查通过，9s |
+| web | `npm test && npm run check && npm run build` 通过，81 项测试，6s |
+| server | Go race/真 MySQL 集成/vet/build、Chromium 端到端通过，2m46s；含挂起增强请求仍显示列表、离线壳、独立低速开关、设备撤销、AI 分类及隐私缓存检查 |
+| android (28) | JVM 单测、lint、APK/测试 APK、23 项 instrumentation 全部通过，8m50s |
+| android (33) | JVM 单测、lint、APK/测试 APK、51 项 instrumentation 全部通过，7m49s |
+| android (35) | JVM 单测、lint、APK/测试 APK、51 项 instrumentation 全部通过，8m44s |
+
+三次完整 workflow_dispatch 的 job 时间合计 4313s（约 71.9 job 分钟，另有 push 快速检查）；仓库为 public，标准公开 runner 不占用私仓每月 2000 分钟配额，消耗该配额 0 分钟。产物在 CI 或本机 scratch；本任务 scratch 约 31MiB，保留共享缓存，未把依赖/构建结果写入项目卷。
+本机 Chromium（隔离合成 API，不访问生产）在元数据/统计挂起时仍可显示内容；独立低速开关和离线重新加载壳也通过。每次 API 人工延迟 0/600/1000ms 的单样本首批内容约 289/1434/2593ms；这是开发回归探针，不是 RTT 限速、p50/p95 或真机结果。
+
+另用相同合成响应，对比 `585b5ee` 的只读源码快照与当前源码（每档一次新浏览器 context、相同本机 Chromium）：
+
+| 每次 API 人工延迟 | 基线首批内容 | 当前首批内容 |
+| --- | --- | --- |
+| 0ms | 192ms | 201ms |
+| 600ms | 2882ms | 1400ms |
+| 1000ms | 4430ms | 2426ms |
+
+基线在首批内容时已发起 11 个 HTTP API，当前 4 个（不计 WS，含独立增强请求）；当前元数据/统计被挂起仍能显示列表，基线允许增强请求正常返回。该对照只验证依赖阶段的收益，无延迟时差异属于噪声；每档单样本，不能用约 51%/45% 的单次差值宣称真实网络或 p95 目标已达标。探针、源码副本和原始输出仅保存在本机 scratch，不含生产短信、口令或会话。
+
+P0/P3 的外部验收仍未完成：北京实际入口 URL、用户机型/网络尚未提供；未登录生产读取短信，未部署新版，因而没有同条件 release 包冷/热启动、已登录公网 waterfall、p50/p95 前后结果。LAN 公共资源探测旧部署：预热首页 TTFB 1.23ms、健康 0.99ms，仅是探测工具验证，不代表新版性能。丢包、10 万条规模、真实厂商 ROM/电池策略仍需隔离/真机验收；“p95 ≤1s / 改善 ≥40%”仍是目标而非已实现的结论。
+
+回滚边界：迁移 012 只增派生时钟，旧服务可保留该表但不能混合写服务；Android v15 升级保留 outbox 与采集证据，旧 APK 不能直接降级打开新版库。壳为保护老标签页保留旧版本缓存，长期多次升级的缓存回收策略需结合目标浏览器配额继续观察。
+
 # 2026-10-19 同步本机发出的短信（Android，发出短信同步 2/2）
 
 依赖中枢 PR #74（`direction` 列与 `features: ["outgoing_sms"]`）。

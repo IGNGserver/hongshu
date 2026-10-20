@@ -57,22 +57,23 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	var observed int64 = -1
 	var observedAnalysis int64
 	var observedRead int64
+	var observedMetadata, observedEpoch int64
 	var lastPing time.Time
 
 	checkChanges := func() bool {
 		if _, err := a.lookup(r); err != nil {
 			return false
 		}
-		var clock, analysisRevision, readRevision int64
-		// All three state rows are singletons. Never scan messages/count unread
+		var clock, analysisRevision, readRevision, metadataRevision, epoch int64
+		// All state rows are singletons. Never scan messages/count unread
 		// per socket; clients fetch their own counts after a change hint.
-		if a.db.QueryRowContext(r.Context(), "SELECT c.seq,a.revision,r.updated_at FROM sync_clock c JOIN ai_settings a ON a.id=c.id JOIN read_state r ON r.id=c.id WHERE c.id=1").Scan(&clock, &analysisRevision, &readRevision) != nil {
+		if a.db.QueryRowContext(r.Context(), "SELECT c.seq,a.revision,r.updated_at,m.revision,c.epoch FROM sync_clock c JOIN ai_settings a ON a.id=c.id JOIN read_state r ON r.id=c.id JOIN metadata_clock m ON m.id=c.id WHERE c.id=1").Scan(&clock, &analysisRevision, &readRevision, &metadataRevision, &epoch) != nil {
 			return false
 		}
 		// Include this device's own uploads. Other clients must see them; the source
 		// device decides locally whether to notify itself.
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if clock != observed || analysisRevision != observedAnalysis || readRevision != observedRead {
+		if clock != observed || analysisRevision != observedAnalysis || readRevision != observedRead || metadataRevision != observedMetadata || epoch != observedEpoch {
 			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": clock, "analysis_revision": analysisRevision}) != nil {
 				return false
 			}
@@ -80,6 +81,7 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 		observed = clock
 		observedAnalysis = analysisRevision
 		observedRead = readRevision
+		observedMetadata, observedEpoch = metadataRevision, epoch
 		return true
 	}
 

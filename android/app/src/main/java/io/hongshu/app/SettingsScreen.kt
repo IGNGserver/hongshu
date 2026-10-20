@@ -411,6 +411,19 @@ private fun HubPage(host: SettingsHost) {
                     "更换中枢前，本机未上传的短信必须先上传完成，以免发到错误的中枢。修改设备名称不需要重新输入密码。"
                 )
             }
+            settingsItem("low-speed") {
+                SettingsSwitchItem(
+                    title = "低速优化",
+                    summary = "限制每批上传字节量，优先最近内容；历史记录继续后台补齐",
+                    icon = Icons.Default.Dns,
+                    checked = c.lowSpeed,
+                    enabled = !host.busy,
+                    onCheckedChange = { enabled -> host.action {
+                        c.lowSpeed = enabled
+                        if (enabled) "已开启低速优化" else "已恢复自动网络适配"
+                    } },
+                )
+            }
         } else {
             settingsItem("form") {
                 HubForm(host, onCancel = if (host.facts.connected) ({ editing = false }) else null)

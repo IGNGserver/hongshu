@@ -165,6 +165,40 @@ export function updateAppBadge(count) {
 // UI State & Configuration
 // -------------------------------------------------------------
 const $ = (s) => document.querySelector(s);
+// Only bounded timings/categories live here. Never retain URLs or response data.
+export class NetworkProfile {
+  constructor() { this.samples = []; this.slow = false; this.manual = false; }
+  observe(ms) {
+    this.samples.push(ms);
+    if (this.samples.length > 8) this.samples.shift();
+    const recent = this.samples.slice(-3);
+    if (recent.length === 3 && recent.every(n => n >= 1200)) this.slow = true;
+    if (this.samples.length >= 5 && this.samples.slice(-5).every(n => n < 700)) this.slow = false;
+  }
+  get constrained() { return this.manual || this.slow; }
+}
+const networkProfile = new NetworkProfile();
+const loadingTimings = [];
+function loadingMark(stage) {
+  loadingTimings.push({ stage, at: Date.now() });
+  if (loadingTimings.length > 24) loadingTimings.shift();
+}
+export function loadingDiagnostics() {
+  return { stages: loadingTimings.map(sample => ({ ...sample })), network: networkProfile.samples.slice(), slow: networkProfile.constrained };
+}
+let metadataTask = null;
+let metadataRevision = null;
+let metadataUpdatedAt = 0;
+let countsController = null;
+let metadataChanges = 0;
+const detailCache = new Map();
+const conversationNodes = new Map();
+function rememberDetail() {
+  if (!state.messages.length || state.messagesQuery !== historyQueryKey()) return;
+  detailCache.delete(state.messagesQuery);
+  detailCache.set(state.messagesQuery, { messages: state.messages.slice(-50), more: state.messages.length > 50 || state.historyHasMore });
+  while (detailCache.size > 4) detailCache.delete(detailCache.keys().next().value);
+}
 const state = {
   me: null,
   devices: [],
@@ -348,6 +382,7 @@ function toast(text) {
 }
 
 const THEME_KEY = "hongshu-theme";
+const LOW_SPEED_KEY = "hongshu-low-speed";
 function readTheme() {
   try { return normalizeTheme(localStorage.getItem(THEME_KEY)); } catch { return "system"; }
 }
@@ -382,6 +417,7 @@ function leaveDetailHistory() {
   if (history.state?.[DETAIL_HISTORY]) history.back();
 }
 function closeDetail() {
+  rememberDetail();
   const wasOpen = Boolean(state.sender);
   state.sender = "";
   state.messages = [];
@@ -425,7 +461,12 @@ class ApiError extends Error {
 }
 async function api(path, method = "GET", body, { signal } = {}) {
   const generation = state.generation;
+  const started = Date.now();
   const controller = new AbortController();
+  let timedOut = false;
+  const deadline = typeof setTimeout === "function" ? setTimeout(() => {
+    timedOut = true; controller.abort();
+  }, path === "/analysis/test" ? 90000 : method !== "GET" ? 45000 : networkProfile.constrained ? 25000 : 12000) : null;
   const abort = () => controller.abort();
   if (signal?.aborted) controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
@@ -438,7 +479,10 @@ async function api(path, method = "GET", body, { signal } = {}) {
     credentials: "same-origin",
     signal: controller.signal,
   });
-  const data = await res.json();
+  const data = await res.json().catch(() => {
+    if (!res.ok) return { error: "" };
+    throw new Error("中枢返回了无效响应，请稍后重试");
+  });
   if (generation !== state.generation || controller.signal.aborted) throw new DOMException("Session ended", "AbortError");
   if (!res.ok) {
     if (res.status === 401 && state.me) {
@@ -448,7 +492,12 @@ async function api(path, method = "GET", body, { signal } = {}) {
     throw new ApiError(res.status, data.error);
   }
   return data;
+  } catch (error) {
+    if (timedOut) throw new DOMException("网络较慢，请重试；已有内容仍可查看", "TimeoutError");
+    throw error;
   } finally {
+    if (deadline !== null) clearTimeout(deadline);
+    networkProfile.observe(Date.now() - started);
     sessionRequests.delete(controller);
     signal?.removeEventListener("abort", abort);
   }
@@ -627,8 +676,19 @@ const SETTINGS_HISTORY = "hongshuSettings";
 async function openSettings() {
   state.page = "settings";
   history.pushState({ [SETTINGS_HISTORY]: true }, "");
-  await reloadMetadata();
   shell();
+  const generation = state.generation;
+  $(".device-settings-rows")?.setAttribute("aria-busy", "true");
+  try {
+    await reloadMetadata({ force: true });
+    if (generation === state.generation && state.page === "settings") {
+      $(".device-settings-rows")?.replaceChildren(...deviceRows());
+    }
+  } catch (error) {
+    if (generation === state.generation && error.name !== "AbortError") toast("设备信息暂未刷新，请重试");
+  } finally {
+    if (generation === state.generation) $(".device-settings-rows")?.setAttribute("aria-busy", "false");
+  }
 }
 function closeSettings() {
   if (history.state?.[SETTINGS_HISTORY]) { history.back(); return; }
@@ -1000,7 +1060,7 @@ function renderFilterMenu() {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox({ metadata = true, preserveHistory = false, revalidateHistory = false, revalidateConversations = false, arrivals = false } = {}) {
+async function refreshInbox({ metadata = false, preserveHistory = false, revalidateHistory = false, revalidateConversations = false, arrivals = false } = {}) {
   if (!state.me) return false;
   invalidateQueryData();
   if (inboxAbortController) {
@@ -1010,9 +1070,10 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
   const signal = inboxAbortController.signal;
 
   const gen = ++refreshGeneration;
+  const epoch = state.epoch;
   try {
     setBusy(true);
-    if (metadata) await reloadMetadata();
+    if (metadata) void reloadMetadata({ force: true }).catch(() => {});
     if (signal.aborted) return false;
 
     invalidateQueryData();
@@ -1028,11 +1089,8 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
       offset: 0,
       limit: CONVERSATION_PAGE,
     };
-    const [d, counts] = await Promise.all([
-      api("/conversations?" + query(args), "GET", undefined, { signal }),
-      api("/analysis/counts?" + query({q:state.q,sim:state.sim,device:state.device}), "GET", undefined, { signal }),
-    ]);
-    if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey()) return false;
+    const d = await api("/conversations?" + query(args), "GET", undefined, { signal });
+    if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return false;
     const head = d.conversations;
     const headIsFull = head.length === CONVERSATION_PAGE;
     if (preserveHistory && revalidateConversations) {
@@ -1046,7 +1104,7 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
         rows = rows.concat(next.conversations);
         full = next.conversations.length === CONVERSATION_PAGE;
       }
-      if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey()) return false;
+      if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return false;
       state.conversations = rows;
       state.conversationsHasMore = full;
     } else {
@@ -1055,22 +1113,45 @@ async function refreshInbox({ metadata = true, preserveHistory = false, revalida
     }
     state.conversationsQuery = key;
     state.conversationsLoaded = true;
-    state.counts = counts.counts;
     renderGroupBar();
     renderConversations({ arrivals });
+    loadingMark("content");
+    // In low-speed mode the current thread goes before ancillary counts, too.
+    if (!networkProfile.constrained) void refreshCounts(gen, key);
     if (state.sender) await loadHistory(false, { preserve: preserveHistory, revalidate: revalidateHistory });
+    if (networkProfile.constrained) void refreshCounts(gen, key);
     return !signal.aborted && gen === refreshGeneration;
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return false;
+    const list = $(".list");
+    if (list && state.me && !state.conversationsLoaded) {
+      list.replaceChildren(emptyState(ICONS.warning, "短信暂未加载", "网络较慢或中枢暂不可用，请重试。"),
+        button("重试", () => refreshInbox().catch(e => toast(e.message))));
+    }
     throw err;
   } finally {
     setBusy(false);
   }
 }
 
+async function refreshCounts(gen, key) {
+  const epoch = state.epoch;
+  countsController?.abort();
+  countsController = new AbortController();
+  const signal = countsController.signal;
+  try {
+    const counts = await api("/analysis/counts?" + query({ q: state.q, sim: state.sim, device: state.device }), "GET", undefined, { signal });
+    if (!signal.aborted && gen === refreshGeneration && key === inboxQueryKey() && state.me && epoch === state.epoch) {
+      state.counts = counts.counts;
+      renderGroupBar();
+    }
+  } catch { /* Next refresh retries; never discard a successful content page. */ }
+}
+
 async function loadMoreConversations() {
   if (!state.me || state.loadingMore || !state.conversationsHasMore) return;
   const gen = refreshGeneration;
+  const epoch = state.epoch;
   const key = inboxQueryKey();
   if (key !== state.conversationsQuery) return;
   state.loadingMore = true;
@@ -1080,7 +1161,7 @@ async function loadMoreConversations() {
       group: state.group, q: state.q, sim: state.sim, device: state.device,
       offset: state.conversations.length, limit: CONVERSATION_PAGE,
     }));
-    if (gen !== refreshGeneration || !state.me || key !== inboxQueryKey()) return;
+    if (gen !== refreshGeneration || epoch !== state.epoch || !state.me || key !== inboxQueryKey()) return;
     const keys = new Set(state.conversations.map(conversationKey));
     state.conversations = state.conversations.concat(d.conversations.filter((c) => !keys.has(conversationKey(c))));
     state.conversationsHasMore = d.conversations.length === CONVERSATION_PAGE;
@@ -1131,7 +1212,7 @@ function renderGroupBar() {
       const icon = el("span");
       icon.innerHTML = ICONS.autoAwesome;
       status.append(icon.firstElementChild, document.createTextNode(
-        `AI ${state.ai?.paused ? "已暂停" : "已开启"} · 待分析 ${state.counts.pending || 0} 条` +
+        `AI ${(state.me.ai_paused ?? state.ai?.paused) ? "已暂停" : "已开启"} · 待分析 ${state.counts.pending || 0} 条` +
         (state.ai?.usage_count >= state.ai?.daily_limit ? " · 今日额度已用尽，UTC 零点恢复" : "") +
         (state.ai?.last_error ? " · 服务异常，请在设置中处理" : ""),
       ));
@@ -1158,8 +1239,14 @@ function renderConversations({ arrivals = false } = {}) {
 
   const fresh = arrivals ? freshConversationKeys(state.renderedRows, state.conversations) : new Set();
   state.renderedRows = new Map(state.conversations.map((m) => [conversationKey(m), m.timestamp]));
+  const liveKeys = new Set(state.conversations.map(conversationKey));
+  for (const key of conversationNodes.keys()) if (!liveKeys.has(key)) conversationNodes.delete(key);
   state.conversations.forEach((m) => {
     const isSelected = state.sender === m.sender;
+    const key = conversationKey(m);
+    const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], simLabel(m.receiver), fresh.has(key)]);
+    const cached = conversationNodes.get(key);
+    if (cached?.signature === signature) { list.append(cached.node); return; }
     const b = el(
       "button",
       "conversation" + (isSelected ? " selected" : "") +
@@ -1172,18 +1259,21 @@ function renderConversations({ arrivals = false } = {}) {
 
     b.onclick = async () => {
       if (!isSelected) {
+        rememberDetail();
         state.sender = m.sender;
-        state.messages = [];
+        const cached = detailCache.get(historyQueryKey());
+        state.messages = cached?.messages.slice() || [];
+        state.messagesQuery = cached ? historyQueryKey() : "";
         state.seenMessageId = 0;
-        state.historyHasMore = true;
+        state.historyHasMore = cached?.more ?? true;
         // Shown as loading until the first page arrives, instead of a momentary empty state.
-        state.historyLoading = true;
+        state.historyLoading = !cached;
       }
       setDetailOpen(true);
       enterDetailHistory();
       renderConversations();
       renderDetail();
-      await loadHistory(false);
+      await loadHistory(false, { preserve: true });
     };
 
     const contact = state.contacts[m.sender] || m.contact || "";
@@ -1202,6 +1292,7 @@ function renderConversations({ arrivals = false } = {}) {
     preview.append(top, bottom);
 
     b.append(avatar(contact, m.sender), preview);
+    conversationNodes.set(key, { signature, node: b });
     list.append(b);
   });
 
@@ -1253,6 +1344,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
   const signal = historyAbortController?.signal;
   const requestId = ++historyRequestId;
   const generation = state.generation;
+  const epoch = state.epoch;
   const previousStream = $(".messages");
   const scrollTop = previousStream?.scrollTop || 0;
   const scrollHeight = previousStream?.scrollHeight || 0;
@@ -1288,7 +1380,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
     if (
       signal?.aborted ||
       requestId !== historyRequestId ||
-      generation !== state.generation || !state.me ||
+      generation !== state.generation || epoch !== state.epoch || !state.me ||
       key !== historyQueryKey()
     ) {
       return;
@@ -1310,6 +1402,7 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       state.historyHasMore = revalidate ? lastPageLength === MESSAGE_PAGE_SIZE : state.historyHasMore || incoming.length === MESSAGE_PAGE_SIZE;
     }
     state.historyLoading = false;
+    rememberDetail();
     const freshCount = renderDetail();
 
     if (!older && incoming.length > 0 && $(".messages")) {
@@ -1636,12 +1729,12 @@ function linkedText(text) {
   return fragment;
 }
 
-function createSwitch(checked, onChange) {
+function createSwitch(checked, onChange, label = "浏览器通知") {
   let value = Boolean(checked);
   const control = el("button", "m3-switch");
   control.type = "button";
   control.setAttribute("role", "switch");
-  control.setAttribute("aria-label", "浏览器通知");
+  control.setAttribute("aria-label", label);
   control.setAttribute("aria-checked", String(value));
   const thumb = el("span", "m3-switch-thumb");
   control.append(thumb);
@@ -1839,7 +1932,7 @@ async function revokeDevice(id) {
   await api("/devices/" + encodeURIComponent(id), "DELETE");
   if (generation !== state.generation) return;
   if (current) { disconnect(); authView(); return; }
-  await reloadMetadata();
+  await reloadMetadata({ force: true });
   if (generation === state.generation && state.me) shell();
 }
 
@@ -1885,7 +1978,16 @@ function settingsView() {
     if (ai.group.isConnected) ai.group.append(settingsRow({ icon: ICONS.warning, title: "无法读取 AI 设置", summary: e.message }));
   });
 
-  inner.append(settingsGroup("设备与 SIM", deviceRows()).section);
+  const deviceGroup = settingsGroup("设备与 SIM", deviceRows());
+  deviceGroup.group.classList.add("device-settings-rows");
+  inner.append(deviceGroup.section);
+
+  const lowSpeed = createSwitch(networkProfile.manual, async next => {
+    networkProfile.manual = next;
+    lowSpeed.setChecked(next);
+    try { localStorage.setItem(LOW_SPEED_KEY, String(next)); } catch { /* session only */ }
+  }, "低速优化");
+  inner.append(settingsGroup("网络", [settingsRow({ icon: ICONS.settings, title: "低速优化", summary: "优先当前内容，减少预取并容许更长的交互等待", trailing: lowSpeed })]).section);
 
   const logoutRow = settingsRow({ tag: "button", icon: ICONS.logout, title: "退出登录", summary: "这台浏览器不保存任何短信", cls: "settings-danger" });
   logoutRow.type = "button";
@@ -1911,6 +2013,7 @@ function settingsView() {
 async function renderAISettings(group) {
   const s = await api("/analysis/settings");
   if (!group.isConnected) return;
+  state.ai = s;
   const label = s.enabled ? (s.paused ? "已暂停" : "已开启") : "已关闭";
   group.append(settingsRow({
     icon: ICONS.autoAwesome,
@@ -2045,22 +2148,46 @@ async function enablePush() {
   setLocalNotificationState(true);
 }
 
-async function reloadMetadata() {
+async function reloadMetadata({ force = false } = {}) {
   const generation = state.generation;
-  const [d, s, c, ai] = await Promise.all([api("/devices"), api("/sims"), api("/contacts"), api("/analysis/settings")]);
-  if (generation !== state.generation || !state.me) return;
-  state.devices = d.devices;
-  state.sims = s.sims;
-  state.contacts = c.contacts;
-  state.ai = ai;
-  state.me.ai_enabled = ai.enabled;
-  if (!visibleGroups(ai.enabled).includes(state.group)) state.group = "all";
-  $(".ai-queue-status")?.replaceWith(queueChips(ai));
+  const epoch = state.epoch;
+  const revision = state.me?.metadata_revision;
+  if (!force && metadataUpdatedAt && (revision != null ? revision === metadataRevision : Date.now() - metadataUpdatedAt < 60000)) return;
+  if (metadataTask?.generation === generation && metadataTask.epoch === epoch) {
+    if (!force) return metadataTask.promise;
+    // A mutation needs a read that starts after its commit, not an older in-flight snapshot.
+    try { await metadataTask.promise; } catch { /* explicit refresh retries */ }
+    if (generation !== state.generation || epoch !== state.epoch || !state.me) return;
+    return reloadMetadata({ force: true });
+  }
+  const task = { generation, epoch };
+  task.promise = (async () => {
+    let d, s, c;
+    let appliedRevision = revision;
+    if (state.me?.features?.includes("metadata_revision")) {
+      const data = await api("/metadata?" + query({ since: metadataRevision ?? 0 }));
+      if (generation !== state.generation || epoch !== state.epoch || !state.me) return;
+      if (data.epoch != null && data.epoch !== state.epoch) throw new DOMException("Metadata epoch changed", "AbortError");
+      if (data.unchanged) { metadataUpdatedAt = Date.now(); return; }
+      d = data; s = data; c = data; appliedRevision = data.revision;
+    } else {
+      [d, s, c] = await Promise.all([api("/devices"), api("/sims"), api("/contacts")]);
+    }
+    if (generation !== state.generation || epoch !== state.epoch || !state.me) return;
+    state.devices = d.devices; state.sims = s.sims; state.contacts = c.contacts;
+    metadataRevision = appliedRevision; metadataUpdatedAt = Date.now();
+  })();
+  metadataTask = task;
+  try { return await task.promise; }
+  finally { if (metadataTask === task) metadataTask = null; }
 }
 
 function disconnect() {
   state.loggedOut = true;
   state.generation++;
+  metadataTask = null; metadataRevision = null; metadataUpdatedAt = 0;
+  detailCache.clear(); conversationNodes.clear();
+  countsController?.abort();
   state.ws?.close();
   state.ws = null;
   refreshGeneration++;
@@ -2124,7 +2251,8 @@ async function catchUp() {
   try {
     const me = await api("/me");
     if (generation !== state.generation || !state.me) return;
-    const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled;
+    const analysisChanged = me.analysis_revision !== state.me.analysis_revision || me.ai_enabled !== state.me.ai_enabled || me.ai_paused !== state.me.ai_paused;
+    if (analysisChanged) detailCache.clear();
     const unreadChanged = me.unread_count !== state.me.unread_count;
     const cursorChanged = me.cursor !== state.cursor;
     const changed = analysisChanged || unreadChanged || cursorChanged || epochReset(state.epochSeen, state.epoch, me.epoch);
@@ -2133,9 +2261,9 @@ async function catchUp() {
     state.historyDirty ||= analysisChanged;
     // An arrival and a read can cancel in the total; cursor changes also recheck tail rows.
     state.conversationsDirty ||= analysisChanged || unreadChanged || cursorChanged;
-    const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
     state.arrivalsPending ||= me.cursor > state.cursor && !epochReset(state.epochSeen, state.epoch, me.epoch);
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
+      detailCache.clear(); metadataRevision = null; metadataUpdatedAt = 0;
       state.pendingDisplayedRead = null;
       state.messages = [];
       state.conversations = [];
@@ -2147,22 +2275,36 @@ async function catchUp() {
     // fetch only displayed history, never replay/download discarded SMS bodies.
     state.cursor = me.cursor;
     state.me = me;
+    if (!visibleGroups(me.ai_enabled).includes(state.group)) {
+      state.group = "all"; state.inboxDirty = true;
+      state.historyDirty = state.conversationsDirty = true;
+    }
     if (typeof me.unread_count === "number") {
       state.unreadCount = me.unread_count;
       updateAppBadge(state.unreadCount);
     }
-    await reloadMetadata();
+    const metadataNeeded = !metadataUpdatedAt || (me.metadata_revision != null ? me.metadata_revision !== metadataRevision : Date.now() - metadataUpdatedAt >= 60000);
+    if (metadataNeeded) {
+      const previousMetadata = JSON.stringify([state.devices, state.sims, state.contacts]);
+      void reloadMetadata().then(() => {
+        if (generation !== state.generation || !state.me) return;
+        if (previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts])) {
+          detailCache.clear();
+          metadataChanges++;
+          renderFilterMenu(); renderConversations();
+          // A contact rename can change the search result and older detail labels.
+          state.inboxDirty = state.historyDirty = state.conversationsDirty = true;
+        }
+      }).catch(() => {});
+    }
     if (generation !== state.generation || !state.me) return;
-    const metadataChanged = previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts]);
-    state.inboxDirty ||= metadataChanged;
-    state.historyDirty ||= metadataChanged;
-    state.conversationsDirty ||= metadataChanged;
     if (state.page === "inbox" && state.inboxDirty) {
+      const metadataVersion = metadataChanges;
       state.readRetry = false;
       const refreshed = await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: state.historyDirty, revalidateConversations: state.conversationsDirty, arrivals: state.arrivalsPending });
       if (generation === state.generation && refreshed !== false) {
-        state.inboxDirty = false;
-        state.historyDirty = state.conversationsDirty = false;
+        state.inboxDirty = metadataVersion !== metadataChanges;
+        state.historyDirty = state.conversationsDirty = state.inboxDirty;
         state.arrivalsPending = false;
       }
     }
@@ -2194,14 +2336,14 @@ async function start() {
     state.unreadCount = state.me.unread_count;
     updateAppBadge(state.unreadCount);
   }
-  await reloadMetadata();
   if (sessionGeneration !== state.generation || !state.me || state.loggedOut) return;
+  loadingMark("authenticated");
   shell();
-  if ("serviceWorker" in navigator) {
-    void navigator.serviceWorker
-      .register("/sw.js")
-      .catch(() => toast("离线应用壳注册失败"));
-  }
+  loadingMark("shell");
+  void reloadMetadata().then(() => {
+    if (sessionGeneration !== state.generation || !state.me) return;
+    renderFilterMenu(); renderConversations();
+  }).catch(() => toast("附加信息暂不可用，短信仍可查看"));
   void browserPushEnabled().catch((error) => {
     if (error.name !== "AbortError") toast("通知订阅恢复失败，请在设置中重新开启");
   });
@@ -2210,6 +2352,8 @@ async function start() {
 
 if (typeof document !== "undefined") {
   applyTheme(readTheme());
+  try { networkProfile.manual = localStorage.getItem(LOW_SPEED_KEY) === "true"; } catch { /* default */ }
+  void registerShell();
   setInterval(() => {
     if (state.me && document.visibilityState === "visible") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));
@@ -2229,5 +2373,28 @@ if (typeof document !== "undefined") {
       void catchUp().catch(() => {});
     }
   });
-  start().catch(() => authView());
+  start().catch(startupFailure);
+}
+
+function startupFailure(error) {
+  if (error.status === 401) { authView(); return; }
+  const root = $("#app");
+  root.replaceChildren(emptyState(ICONS.warning, "暂时无法连接中枢", "网络较慢或服务暂不可用。登录状态不会因此丢失。"), button("重试", () => start().catch(startupFailure)));
+}
+
+async function registerShell() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    const offer = () => {
+      if (!registration.waiting || $(".shell-update")) return;
+      const update = button("新版本已就绪，点击更新", () => {
+        navigator.serviceWorker.addEventListener("controllerchange", () => location.reload(), { once: true });
+        registration.waiting?.postMessage({ type: "ACTIVATE_UPDATE" });
+      }, "shell-update");
+      document.body.append(update);
+    };
+    offer();
+    registration.addEventListener("updatefound", () => registration.installing?.addEventListener("statechange", offer));
+  } catch { /* Online shell remains usable; a subsequent visit retries installation. */ }
 }

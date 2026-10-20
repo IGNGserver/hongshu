@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {workerRuntime} from './sw-harness.js';
 
 function runtime() {
   const ctx=vm.createContext({URLSearchParams,Uint8Array,AbortController,DOMException,console});
@@ -76,13 +77,15 @@ test('a failed refresh stays dirty and is retried on the next otherwise empty po
   assert.equal(vm.runInContext('refreshes',ctx),2);
   assert.equal(vm.runInContext('state.inboxDirty',ctx),false);
 });
-test('online shell updates offline cache without intercepting API',async()=>{
-  const handlers={};const cache=new Map();let offline=false;
-  const response=value=>({ok:true,value,clone(){return response(value)}});
-  const ctx=vm.createContext({URL,self:{location:{origin:'https://example.test'},addEventListener:(event,handler)=>handlers[event]=handler},fetch:async()=>{if(offline)throw Error('offline');return response('new')},caches:{open:async()=>({put:async(request,value)=>cache.set(request.url,value)}),match:async request=>cache.get(request.url)}});
-  vm.runInContext(readFileSync(new URL('../sw.js',import.meta.url),'utf8'),ctx);
-  const request={method:'GET',url:'https://example.test/app.js'};let pending;
-  handlers.fetch({request,respondWith:value=>pending=value});assert.equal((await pending).value,'new');
-  offline=true;handlers.fetch({request,respondWith:value=>pending=value});assert.equal((await pending).value,'new');
-  let intercepted=false;handlers.fetch({request:{method:'GET',url:'https://example.test/api/messages'},respondWith:()=>intercepted=true});assert.equal(intercepted,false);
+test('cached shell never waits on slow network and never intercepts sensitive requests',async()=>{
+  const runtime=workerRuntime(readFileSync(new URL('../sw.js',import.meta.url),'utf8'));
+  await runtime.install();
+  assert.equal((await runtime.request('/app.js')).value,'network');
+  assert.equal(runtime.fetches,0);
+  runtime.offline=true;
+  assert.equal((await runtime.request('/app.js')).value,'network');
+  for(const path of ['/api/messages','/api/me','https://elsewhere.test/app.js','/app.js?secret=synthetic']) {
+    assert.equal(await runtime.request(path),undefined);
+  }
+  assert.equal(await runtime.request('/app.js','POST'),undefined);
 });

@@ -816,3 +816,6 @@ button.settings-item:hover { background: color-mix(in srgb, var(--md-sys-color-o
   color: var(--md-sys-color-on-primary);
   flex-shrink: 0;
 }
+/* Startup is useful even before authentication or optional metadata responds. */
+.startup { min-height: 80dvh; display: grid; place-content: center; text-align: center; }
+.shell-update { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 12px 20px; border-radius: 24px; }

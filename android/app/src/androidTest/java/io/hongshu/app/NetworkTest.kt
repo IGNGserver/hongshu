@@ -240,6 +240,7 @@ class NetworkTest {
             val uploaded = java.util.concurrent.atomic.AtomicInteger()
             val registered = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             val registrations = java.util.concurrent.atomic.AtomicInteger()
+            val downloads = java.util.concurrent.atomic.AtomicInteger()
             val oldPhone = "+1234567890"
             val me =
                 JSONObject()
@@ -260,8 +261,10 @@ class NetworkTest {
                                 registered.add(body.getString("phone"))
                                 JSONObject().put("ok", true)
                             }
-                            path == "/api/messages" -> {
-                                val messages = body.getJSONArray("messages")
+                             path == "/api/messages" -> {
+                                 val messages = body.getJSONArray("messages")
+                                 assertTrue("download gets a turn before each upload", downloads.get() > uploaded.get() / 100)
+                                 assertTrue("one bounded upload batch per round", messages.length() in 1..100)
                                 val acks = JSONArray()
                                 for (i in 0 until messages.length()) {
                                     assertTrue(messages.getJSONObject(i).getBoolean("historical"))
@@ -278,12 +281,14 @@ class NetworkTest {
                                 }
                                 JSONObject().put("acks", acks)
                             }
-                            else ->
-                                JSONObject()
+                             else -> {
+                                 if (path.startsWith("/api/sync?")) downloads.incrementAndGet()
+                                 JSONObject()
                                     .put("messages", JSONArray())
                                     .put("cursor", 0)
                                     .put("more", false)
-                                    .put("epoch", 1)
+                                     .put("epoch", 1)
+                             }
                         }
                 }
                 .use { hub ->
@@ -311,10 +316,13 @@ class NetworkTest {
                         val keys = records.map { "provider:${it.first}" }
                         try {
                             store.captureProviders(records, false)
-                            assertFalse(runBlocking { SyncEngine.run(context) })
-                            assertEquals(5, store.pendingCount())
-                            assertEquals(2, registrations.get())
-                            assertTrue(runBlocking { SyncEngine.run(context) })
+                             for (round in 1..21) {
+                                 assertFalse(runBlocking { SyncEngine.run(context) })
+                                 assertEquals((2005 - round * 100).coerceAtLeast(0), store.pendingCount())
+                                 assertEquals(2, registrations.get())
+                             }
+                             // A final successor catches up data committed by the last upload.
+                             assertTrue(runBlocking { SyncEngine.run(context) })
                             assertEquals(0, store.pendingCount())
                             assertEquals(2005, uploaded.get())
                             // Accepted registrations are cached per hub device across runs.
