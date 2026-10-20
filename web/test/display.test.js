@@ -125,8 +125,14 @@ test("messages cluster by device, five-minute gap and day", async () => {
 test("sent and received messages never share a cluster", async () => {
   const { clusterMessages, isOutgoing } = await import("../app.js");
   const base = new Date(2026, 9, 17, 12, 0).getTime();
-  const m = (id, t, direction) => ({ id, timestamp: base + t, device_id: 1, direction });
-  const clusters = clusterMessages([m(1, 0), m(2, 1e3, "in"), m(3, 2e3, "out"), m(4, 3e3, "out"), m(5, 4e3, "in")]);
+  const m = (id, t, direction, device_id = 1) => ({ id, timestamp: base + t, device_id, direction });
+  const clusters = clusterMessages([
+    m(1, 0, "in"),
+    m(2, 1e3, "in"),
+    m(3, 2e3, "out", 1),
+    m(4, 3e3, "out", 2), // Outgoing SMS across different phones still cluster because all sent SMS represent the user
+    m(5, 4e3, "in"),
+  ]);
   assert.deepEqual(clusters.map((c) => c.messages.map((x) => x.id)), [[1, 2], [3, 4], [5]]);
   assert.deepEqual(clusters.map((c) => c.outgoing), [false, true, false]);
   assert.equal(isOutgoing({}), false, "older hubs omit direction: received");
