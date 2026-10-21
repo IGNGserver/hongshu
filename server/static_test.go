@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+func TestManifestServedAsManifestJSON(t *testing.T) {
+	a, e := newApp(nil, "https://sms.example.com", "1", "", "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	w := httptest.NewRecorder()
+	a.routes("../web").ServeHTTP(w, httptest.NewRequest("GET", "/manifest.webmanifest", nil))
+	if w.Code != 200 {
+		t.Fatalf("manifest returned %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/manifest+json") {
+		t.Fatalf("manifest content type %q is not application/manifest+json", got)
+	}
+}
+
 // Every file the service worker precaches must be served, or cache.addAll fails and the
 // offline shell never installs. Files outside the allowlist must stay hidden.
 func TestShellAssetsServed(t *testing.T) {

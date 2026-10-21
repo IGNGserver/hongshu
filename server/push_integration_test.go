@@ -310,3 +310,63 @@ func TestIntegrationPushRetryAndExpiredEndpoint(t *testing.T) {
 		t.Fatal("jobs for the dead subscription retained", jobs, err)
 	}
 }
+
+func TestIntegrationPushTestEndpointAndSubscriptionState(t *testing.T) {
+	a, d := pushFixture(t)
+	token := strings.Repeat("a", 64)
+	if _, err := a.db.Exec("UPDATE devices SET token_hash=? WHERE id=?", hash(token), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	a.pushClient = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		sent++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "测试通知") {
+			t.Fatal("test notification payload sent in plaintext")
+		}
+		if r.Header.Get("Content-Encoding") != "aes128gcm" {
+			t.Fatal("test notification is not encrypted Web Push")
+		}
+		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+	c := apiTest{t: t, a: a}
+	me := c.call("GET", "/api/me", token, nil, 200)
+	if me["push_subscribed"] != true {
+		t.Fatal("subscribed device did not report push_subscribed")
+	}
+	c.call("POST", "/api/push/test", token, nil, 200)
+	if sent != 1 || a.pushLastSuccess.Load() == 0 {
+		t.Fatalf("test notification sent=%d last_success=%d", sent, a.pushLastSuccess.Load())
+	}
+	if _, err := a.db.Exec("DELETE FROM push_subscriptions WHERE device_id=?", d.ID); err != nil {
+		t.Fatal(err)
+	}
+	me = c.call("GET", "/api/me", token, nil, 200)
+	if me["push_subscribed"] != false {
+		t.Fatal("unsubscribed device still reported push_subscribed")
+	}
+	c.call("POST", "/api/push/test", token, nil, 404)
+}
+
+func TestIntegrationPushTestRemovesExpiredSubscription(t *testing.T) {
+	a, d := pushFixture(t)
+	token := strings.Repeat("b", 64)
+	if _, err := a.db.Exec("UPDATE devices SET token_hash=? WHERE id=?", hash(token), d.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.pushClient = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 410, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+	c := apiTest{t: t, a: a}
+	c.call("POST", "/api/push/test", token, nil, 410)
+	var subscriptions, jobs int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_subscriptions WHERE device_id=?", d.ID).Scan(&subscriptions); err != nil || subscriptions != 0 {
+		t.Fatalf("expired subscription retained: %d %v", subscriptions, err)
+	}
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs WHERE device_id=?", d.ID).Scan(&jobs); err != nil || jobs != 0 {
+		t.Fatalf("jobs for expired subscription retained: %d %v", jobs, err)
+	}
+}

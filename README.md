@@ -14,7 +14,8 @@
 - **中枢**：Go + MySQL，单一中枢密码（无用户名）、统一密钥认证、独立设备凭据、设备撤销；
   事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
 - **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
-  WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；不离线持久保存短信正文。
+  WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；iOS/iPadOS 16.4+ 需添加到主屏幕后才有后台通知，
+  Android Chrome 通知依赖系统权限与 FCM/Google Play 服务；不离线持久保存短信正文。
   支持 Contact Picker 的安全浏览器可手动选择联系人，仅保存在当前浏览器，支持停用及清除。
 - **运维**：Docker Compose 中枢/数据库/每日一致性备份、审计迁移、HTTPS 反向代理和恢复指南。
 

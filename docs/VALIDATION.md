@@ -709,3 +709,27 @@ MySQL 验证包括旧数据有界回填、回滚/再升级、分类权限、人�
 - 最后一轮历史关联修正后，通知碰撞、通知身份、通知采集、实时采集四类共 70 项重新通过，无失败或跳过；覆盖已 ACK 的另一来源仍参与竞争，以及重开、同步后碰撞记录保留。
 - 本地 Go `go test -race ./...` 与 `go vet ./...` 通过；没有设置 `TEST_MYSQL_DSN`，MySQL 用例跳过。已读回滚、持续上传期间 AI 领取及查询计划的真实数据库结果以本轮完整 CI 为准。
 - 仓库验证（含 12 项隔离运维测试及凭据模式扫描）、`git diff --check`、gofmt 检查和 `actionlint .github/workflows/ci.yml` 通过。
+
+## 2026-10-21 PWA Web Push 加固
+
+分支 `agent/pwa-push-hardening`（基于 `origin/main` a2ab158，未合并）。本轮只修改 Web、Go 与文档，
+没有数据库迁移；目标是复用现有标准 Web Push + VAPID，补齐 iOS 主屏幕引导、订阅轮换恢复、
+manifest MIME 与测试通知，不改变短信入库和 Android 通知链路。
+
+| 检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`gofmt -l` | 通过；仓库验证含 12 项运维测试 |
+| `cd server && go test -race -count=1 ./... && go vet ./... && go build -trimpath` | 通过；本机未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成用例跳过，不能记为真库通过 |
+| `cd web && npm test` | 96 项通过，含 iOS 引导、VAPID 密钥轮换、服务端订阅丢失恢复、`pushsubscriptionchange`、payload 越界路径防护、manifest MIME |
+| `cd web && npm run check && WEB_BUILD_DIR=... npm run build` | 通过；构建校验 `display=standalone`、稳定 `id` 与 any/maskable 图标 |
+| 本地 scratch | `~/.build/短信同步系统/pwa-push-hardening`；开始可用约 122 GiB，Go/Web 产物与缓存保留用于复测 |
+
+新增行为：服务端显式设置 `.webmanifest` 的 `application/manifest+json`；`/api/me` 返回
+`push_subscribed`；设置页在 iOS Safari 标签页说明“添加到主屏幕”，并在 VAPID 密钥变化、浏览器轮换或
+服务端订阅丢失时重新订阅；新增 `POST /api/push/test` 直接向当前设备发送通用测试通知，不写短信、
+不经过 `push_jobs`，404/410 时清理订阅与积压任务。Service Worker 解析有长度上限的标题/正文，
+只允许同源通知点击路径，并监听 `pushsubscriptionchange`。
+
+未执行：真实 iPhone/iPad 主屏幕安装与 APNs、真实 Android Chrome/FCM、国内无 GMS 设备、
+生产 HTTPS 部署、真实 MySQL 集成测试、Android 构建与模拟器。上述结果不以本地合成测试代替；
+需要在目标设备/环境单独验收，尤其是 iOS 16.4+ 必须从主屏幕图标打开后授权。

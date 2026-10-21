@@ -274,6 +274,10 @@ const errors = {
   invalid_password: "中枢密码不正确",
   rate_limited: "请求过于频繁，请稍后重试",
   push_not_configured: "部署者尚未配置 Web Push",
+  push_not_subscribed: "本浏览器尚未订阅通知，请先开启通知",
+  push_disabled: "通知开关已关闭，请先开启通知",
+  push_subscription_expired: "通知订阅已失效，请关闭后重新开启通知",
+  push_delivery_failed: "通知投递失败，请检查网络或稍后重试",
   origin_denied: "PUBLIC_URL 与访问地址不一致",
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
   ai_secret_required: "请先在中枢部署环境配置 HONGSHU_AI_SECRET，再保存 API 密钥",
@@ -1872,28 +1876,95 @@ function createSwitch(checked, onChange, label = "浏览器通知") {
   return control;
 }
 
+export function isIOSDevice(nav = typeof navigator !== "undefined" ? navigator : {}) {
+  return /iPad|iPhone|iPod/.test(nav.userAgent || "") ||
+    (nav.platform === "MacIntel" && Number(nav.maxTouchPoints) > 1);
+}
+
+export function isStandaloneApp(win = typeof window !== "undefined" ? window : {}, nav = typeof navigator !== "undefined" ? navigator : {}) {
+  let display = false;
+  try { display = Boolean(win.matchMedia?.("(display-mode: standalone)")?.matches); } catch { /* older browser */ }
+  return display || nav.standalone === true;
+}
+
+export function samePushKey(left, right) {
+  if (!left || !right) return true;
+  const a = new Uint8Array(left);
+  const b = new Uint8Array(right);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+export function pushAvailability() {
+  if (!window.isSecureContext) {
+    return { ready: false, message: "Web Push 需要 HTTPS 或 localhost；当前地址无法订阅通知。" };
+  }
+  if (!state.me?.vapid_public_key) {
+    return { ready: false, message: "部署者尚未配置 VAPID，暂时无法开启通知。" };
+  }
+  // iOS Safari tabs may expose no PushManager at all. Tell the user how to
+  // install before reporting a generic "unsupported browser" dead end.
+  if (isIOSDevice(navigator) && !isStandaloneApp(window, navigator)) {
+    return { ready: false, message: "iPhone/iPad 需要先添加到主屏幕：用 Safari 打开本页，点“分享” → “添加到主屏幕”，再从主屏幕图标打开并开启通知。" };
+  }
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") {
+    return { ready: false, message: "当前浏览器不支持 Web Push。" };
+  }
+  if (Notification.permission === "denied") {
+    return { ready: false, message: "通知权限已被拒绝，请到系统设置 → 通知中允许本应用。" };
+  }
+  return { ready: true, message: "通知未开启。" };
+}
+
 function pushCapability() {
-  return Boolean(
-    window.isSecureContext &&
-    "serviceWorker" in navigator &&
-    "PushManager" in window &&
-    typeof Notification !== "undefined" &&
-    state.me?.vapid_public_key,
+  return pushAvailability().ready;
+}
+
+// A subscription belongs to one VAPID key and one server identity. Reuse it only
+// when both still match; otherwise take a fresh endpoint and re-bind it.
+async function reusablePushSubscription(registration, vapid, { create = false, check = () => {} } = {}) {
+  const key = pushKey(vapid);
+  check();
+  let subscription = await registration.pushManager.getSubscription();
+  check();
+  const stale = subscription && (
+    state.me?.push_subscribed === false ||
+    (subscription.options?.applicationServerKey && !samePushKey(subscription.options.applicationServerKey, key))
   );
+  if (stale) {
+    await subscription.unsubscribe();
+    check();
+    subscription = null;
+  }
+  if (!subscription && create) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: key,
+    });
+    check();
+  }
+  return subscription;
 }
 
 async function browserPushEnabled() {
   if (!pushCapability() || Notification.permission !== "granted") return false;
+  if (!state.me.device.notify) return false;
   const session = pushSession();
   const registration = await navigator.serviceWorker.getRegistration();
   checkPushSession(session);
-  const subscription = await registration?.pushManager.getSubscription();
+  if (!registration) return false;
+  const subscription = await reusablePushSubscription(registration, state.me.vapid_public_key, {
+    create: true,
+    check: () => checkPushSession(session),
+  });
   checkPushSession(session);
-  if (!state.me.device.notify || !subscription) return false;
+  if (!subscription) return false;
   // Logout removes the server binding but leaves the browser's subscription intact.
   const json = subscription.toJSON();
   await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
   checkPushSession(session);
+  state.me.push_subscribed = true;
   return true;
 }
 
@@ -1908,6 +1979,7 @@ function checkPushSession(session) {
 }
 
 function setLocalNotificationState(enabled) {
+  if (state.me) state.me.push_subscribed = enabled;
   if (state.me?.device) state.me.device.notify = enabled;
   const current = state.devices.find((device) => device.id === state.me?.device?.id);
   if (current) current.notify = enabled;
@@ -2112,8 +2184,19 @@ function settingsView() {
   head.append(iconButton(ICONS.arrowBack, "返回收件箱", closeSettings), el("h1", "", "设置"));
   inner.append(head);
 
-  const status = el("p", "settings-summary notification-state", "正在读取通知状态…");
+  const availability = pushAvailability();
+  const status = el("p", "settings-summary notification-state", availability.ready ? "正在读取通知状态…" : availability.message);
   status.setAttribute("aria-live", "polite");
+  const sendTest = button("发送测试通知", async () => {
+    sendTest.disabled = true;
+    try {
+      await api("/push/test", "POST", {});
+      toast("测试通知已发送");
+    } finally {
+      sendTest.disabled = toggle.getAttribute("aria-checked") !== "true";
+    }
+  }, "text-button");
+  sendTest.disabled = true;
   const toggle = createSwitch(false, async (next) => {
     toggle.setDisabled(true);
     setBusy(true);
@@ -2121,17 +2204,19 @@ function settingsView() {
       if (next) await enablePush();
       else await disablePush();
       toggle.setChecked(next);
+      sendTest.disabled = !next;
       status.textContent = next ? "通知已开启" : "通知已关闭";
     } catch (error) {
       toast(error.message);
     } finally {
-      toggle.setDisabled(false);
+      toggle.setDisabled(!availability.ready);
       setBusy(false);
     }
   });
-  toggle.setDisabled(true);
+  toggle.setDisabled(!availability.ready);
   inner.append(settingsGroup("本浏览器", [
     settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: status, trailing: toggle }),
+    settingsRow({ icon: ICONS.info, title: "测试通知", summary: "只向本浏览器发送一条通用通知，不依赖真实短信，也不包含短信内容。", trailing: sendTest, cls: "settings-wrap" }),
     settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
   ]).section);
   inner.append(localContactsSettings());
@@ -2166,11 +2251,12 @@ function settingsView() {
 
   void browserPushEnabled().then((enabled) => {
     toggle.setChecked(enabled);
-    status.textContent = enabled ? "通知已开启" : "通知已关闭";
+    sendTest.disabled = !enabled;
+    status.textContent = enabled ? "通知已开启" : (availability.ready ? "通知已关闭" : availability.message);
   }).catch(() => {
-    status.textContent = "无法确认通知状态，请重新开启";
+    status.textContent = availability.ready ? "无法确认通知状态，请重新开启" : availability.message;
   }).finally(() => {
-    toggle.setDisabled(!pushCapability());
+    toggle.setDisabled(!availability.ready);
   });
 }
 
@@ -2278,16 +2364,11 @@ async function renderAISettings(group) {
 // Web Push Subscription Handlers
 // -------------------------------------------------------------
 async function enablePush() {
+  const availability = pushAvailability();
+  if (!availability.ready) throw new Error(availability.message);
   const session = pushSession();
   checkPushSession(session);
   const vapid = state.me.vapid_public_key;
-  if (!window.isSecureContext) {
-    throw new Error("Web Push 需要 HTTPS 或 localhost；公网 HTTP 不支持安全上下文");
-  }
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-    throw new Error("当前浏览器不支持 Web Push");
-  }
-  if (!vapid) throw new Error("部署者尚未配置 VAPID");
   const permission = await Notification.requestPermission();
   checkPushSession(session);
   if (permission !== "granted") {
@@ -2295,15 +2376,12 @@ async function enablePush() {
   }
   const reg = await navigator.serviceWorker.ready;
   checkPushSession(session);
-  let sub = await reg.pushManager.getSubscription();
+  const sub = await reusablePushSubscription(reg, vapid, {
+    create: true,
+    check: () => checkPushSession(session),
+  });
   checkPushSession(session);
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: pushKey(vapid),
-    });
-    checkPushSession(session);
-  }
+  if (!sub) throw new Error("无法创建通知订阅");
   const json = sub.toJSON();
   await api("/push", "PUT", { endpoint: json.endpoint, keys: json.keys });
   checkPushSession(session);

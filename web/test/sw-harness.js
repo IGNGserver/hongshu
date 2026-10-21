@@ -1,8 +1,8 @@
 import vm from "node:vm";
 
-export function workerRuntime(source, stores = new Map(), load = async () => ({ ok: true, value: "network", clone() { return this; } })) {
-  const runtime = { handlers: {}, offline: false, skipped: false, fetches: 0 };
-  const key = request => typeof request === "string" ? request : new URL(request.url).pathname;
+export function workerRuntime(source, stores = new Map(), load = async () => ({ ok: true, value: "network", clone() { return this; } }), options = {}) {
+  const runtime = { handlers: {}, offline: false, skipped: false, fetches: 0, requests: [], notifications: [], opened: null };
+  const key = request => typeof request === "string" ? new URL(request, "https://example.test").pathname : new URL(request.url).pathname;
   const caches = {
     keys: async () => [...stores.keys()],
     delete: async name => stores.delete(name),
@@ -17,14 +17,39 @@ export function workerRuntime(source, stores = new Map(), load = async () => ({ 
     },
     match: async request => [...stores.values()].map(store => store.get(key(request))).find(Boolean),
   };
-  const ctx = vm.createContext({ URL, caches,
-    fetch: async request => { runtime.fetches++; if (runtime.offline) throw Error("offline"); return load(key(request)); },
-    self: { location: { origin: "https://example.test" }, clients: { claim: async () => {} },
+  const registration = {
+    showNotification: async (title, notificationOptions) => { runtime.notifications.push({ title, options: notificationOptions }); },
+    pushManager: {
+      getSubscription: async () => options.subscription ?? null,
+      subscribe: async subscribeOptions => { runtime.subscribeOptions = subscribeOptions; return options.newSubscription ?? null; },
+    },
+  };
+  const clients = {
+    claim: async () => {},
+    matchAll: async () => options.clients ?? [],
+    openWindow: async url => { runtime.opened = url; return {}; },
+  };
+  const ctx = vm.createContext({ URL, Uint8Array, atob, caches,
+    fetch: async (request, init = {}) => {
+      runtime.fetches++;
+      runtime.requests.push({ path: key(request), init });
+      if (runtime.offline) throw Error("offline");
+      return load(key(request));
+    },
+    self: { location: { origin: "https://example.test" }, clients, registration,
       skipWaiting: () => { runtime.skipped = true; }, addEventListener: (name, handler) => { runtime.handlers[name] = handler; } },
   });
   vm.runInContext(source, ctx);
   runtime.install = () => new Promise((resolve, reject) => runtime.handlers.install({ waitUntil: p => p.then(resolve, reject) }));
   runtime.activate = () => new Promise((resolve, reject) => runtime.handlers.activate({ waitUntil: p => p.then(resolve, reject) }));
+  runtime.dispatch = async (name, event = {}) => {
+    const updates = [];
+    runtime.handlers[name]({ ...event, waitUntil: p => updates.push(p) });
+    await Promise.all(updates);
+  };
+  runtime.push = data => runtime.dispatch("push", { data });
+  runtime.subscriptionChange = event => runtime.dispatch("pushsubscriptionchange", event);
+  runtime.click = notification => runtime.dispatch("notificationclick", { notification });
   runtime.request = async (path, method = "GET") => {
     let pending;
     const updates = [];
