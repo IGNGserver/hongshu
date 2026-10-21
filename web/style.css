@@ -616,6 +616,7 @@ input.search::-webkit-search-cancel-button { display: none; }
 .settings-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .settings-title { font: 500 1rem/1.5rem var(--md-ref-typeface-plain); overflow-wrap: anywhere; }
 .settings-summary { margin: 0; font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.notification-summary { display: grid; gap: 2px; }
 .settings-error { margin: .375rem 0 0; font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-error); overflow-wrap: anywhere; }
 .settings-wrap { flex-wrap: wrap; }
 .settings-form { display: block; padding: 1.25rem; }

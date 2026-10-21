@@ -39,9 +39,11 @@ type app struct {
 	pushLastSuccess                   atomic.Int64
 	pushSuppressed                    atomic.Int64
 	pushDropped                       atomic.Int64
-	wsCheckInterval                   time.Duration
-	unreadMu                          sync.Mutex
-	unreadSnapshot                    unreadSnapshot
+	// pushClient is only set by tests; production always uses the SSRF-guarded client.
+	pushClient      *http.Client
+	wsCheckInterval time.Duration
+	unreadMu        sync.Mutex
+	unreadSnapshot  unreadSnapshot
 }
 type attempt struct {
 	count int

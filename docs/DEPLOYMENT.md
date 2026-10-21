@@ -5,7 +5,7 @@
 版本及 Release 状态以根目录 `VERSION` 和 GitHub Release 页面为准；alpha/beta/rc 均为预发布版本，不是稳定版。
 
 ```bash
-HONGSHU_VERSION=0.1.0-alpha.11 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.15 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 docker compose ps
@@ -20,7 +20,7 @@ docker compose ps
 仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
 
 ```bash
-HONGSHU_VERSION=0.1.0-alpha.11 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.15 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```
@@ -89,8 +89,23 @@ Docker 桥接时该地址可能是网关，可由隔离环境的网络配置核�
 不得将 `/api/`、携带敏感内容的错误响应或搜索响应设为公共缓存，不开启全站 Cache Everything。
 生产构建提供静态 gzip 文件，源站按 Accept-Encoding 协商；CF 已压缩时不重复压缩。
 不要公开 MySQL 3306。中枢另有全局最多两个并发密码哈希，繁忙返回 503。
-Web Push 需要服务器能访问公开 HTTPS Push 服务，浏览器支持且授予通知权限。
-iOS Web Push 通常需添加到主屏幕；隐私模式/厂商浏览器可能不支持。在线 WS 失效仍周期补齐。
+### Web Push 上线检查
+
+Web Push 需要 HTTPS、浏览器支持、用户授权，以及服务器能访问公开 HTTPS Push 服务（如 `*.push.apple.com`、
+`fcm.googleapis.com`）；在线 WS 失效仍周期补齐。上线前逐项核对：
+
+1. `.env` 同时有 `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY` 和真实的 `VAPID_SUBJECT`（例如 `mailto:you@example.com`）。
+   旧部署缺少密钥时，用 `docker compose run --rm --no-deps --entrypoint /vapid hub` 生成一次并追加到 `.env`，
+   确认文件中只有一组 VAPID 键（旧的空键先删除），再重启 hub；已有订阅后不要随意轮换，否则浏览器需要重新订阅。
+   VAPID 私钥必须随备份一起加密保存。
+2. `PUBLIC_URL` 使用实际 HTTPS origin；HTTP 下没有 Service Worker/Push API。反向代理不得改写 Host/Origin 到不一致的值。
+3. `curl -s https://实际域名/healthz` 的 `push.enabled` 为 true；`last_success` 只有在真实投递成功后才推进，
+   200 不代表端到端健康。
+4. `curl -I https://实际域名/manifest.webmanifest` 返回 `application/manifest+json`；否则 iOS 可能无法把它识别为
+   主屏幕 Web App。服务端已显式注册该 MIME，自建代理不要覆盖。
+5. iOS/iPadOS 16.4+ 必须用 Safari 分享菜单“添加到主屏幕”，再从主屏幕图标打开并授权；Safari 标签页没有后台推送。
+   Android Chrome/Edge 需要通知权限（Android 13+），无 Google Play 服务/FCM 的国产 ROM 不保证。
+6. 开启通知后在设置页点“发送测试通知”，确认锁屏/通知中心收到且点击能打开 PWA；再验证来源设备不会收到自己的通知。
 
 ## 备份
 
@@ -132,7 +147,7 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 
 升级步骤：
 1. 停机前做好数据备份；
-2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.1.0-alpha.11`），不自动选择 latest；
+2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.15`），不自动选择 latest；
 3. 拉取新镜像并重启 hub 服务：
    ```bash
    docker compose pull hub

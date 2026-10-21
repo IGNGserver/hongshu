@@ -10,7 +10,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | --- | --- |
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
-| GET /api/me | 本设备、设置、公钥、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot` |
+| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot` |
 | GET /api/metadata?since=N | 一致性元数据快照；`revision,epoch,unchanged`，有变化时另含 devices/sims/contacts；需 `metadata_revision` 能力 |
 | GET /api/recent?limit=50 | 最近会话头消息展示快照：messages/head/epoch；head 不可用于推进可靠同步游标，需 `recent_snapshot` 能力 |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
@@ -27,6 +27,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET /api/messages?sender=&q=&sim=&device=&before=&limit= | 按短信时间、ID 降序；before 指向上一页最早消息的 ID，服务端按该消息的时间/ID 二元游标分页 |
 | GET /api/ws | 同源 cookie 或 bearer WS，`{type:"changed",cursor:N}`；无重放保证，必须补齐 |
 | PUT/DELETE /api/push | Web 订阅 `{endpoint,keys:{p256dh,auth}}` / 注销本设备订阅 |
+| POST /api/push/test | 仅向当前设备已有的订阅直接发送一条通用测试通知，不写入短信或 Push 队列；未配置 VAPID 返回 503 `push_not_configured`，未订阅返回 404 `push_not_subscribed`，`notify=false` 返回 409 `push_disabled`，推送服务拒绝返回 502 `push_delivery_failed`；404/410 会删除该设备的订阅与积压任务并返回 410 `push_subscription_expired` |
 | GET/PATCH /api/settings | 管理员可修改 `{title}`，不允许远程修改凭据/DB/HTTPS |
 
 ### Web 会话与刷新行为
@@ -41,6 +42,9 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
   刷新失败保留待刷新/重验标记，下一轮继续补齐。
 - 浏览器 Push 订阅与设备身份分别存在。重新登录后须将现有订阅重新绑定当前身份，
   绑定成功才显示通知已开启；通知操作的外部异步等待不能跨越退出/重新登录代次。
+- iOS/iPadOS 16.4+ 的 Web Push 只能由“添加到主屏幕”的 Web App 订阅；Safari 标签页不提供后台推送。
+  Web 端据此显示安装引导。订阅因 VAPID 密钥变化、浏览器轮换或服务端清理而失效时，客户端应重新订阅并绑定；
+  `push_subscribed` 只表示当前身份在服务端是否有订阅，不表示推送服务端到端健康。
 
 请求体最多 1 MiB；不接受未知 JSON 字段；正文最多 64000 UTF-8 bytes，时间限制在 Unix epoch 至未来 24h；客户端按实际 JSON 字节数拆批。
 号码不能包含 NUL，接收号码采用用户确认的号码（建议 E.164，服务端校验 + 和 3..20 位数字）。Android 保存自动模式即授权持续使用系统读取的有效号码；每次变化仍先注册 /sims 再上传，不猜测无法读取的号码。

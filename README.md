@@ -1,7 +1,8 @@
 # 鸿枢 · Hongshu
 
 面向多部 Android 手机用户的自部署短信互通平台：短信可靠上传到自己的 MySQL 中枢，长期保存，
-在所有授权 Android 和 Web/PWA 设备上查看。无需 Firebase/FCM。
+在所有授权 Android 和 Web/PWA 设备上查看。Android 原生客户端无需 Firebase/FCM；
+PWA 后台通知使用浏览器官方 Push 通道（iOS APNs、Android Chrome FCM）。
 
 当前预发布版本见根目录 `VERSION`。实际测试结果和未完成验收见 [验证记录](docs/VALIDATION.md)，不要将构建通过等同于真机兼容性认证。
 
@@ -14,7 +15,8 @@
 - **中枢**：Go + MySQL，单一中枢密码（无用户名）、统一密钥认证、独立设备凭据、设备撤销；
   事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
 - **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
-  WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；不离线持久保存短信正文。
+  WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；iOS/iPadOS 16.4+ 需添加到主屏幕后才有后台通知，
+  Android Chrome 通知依赖系统权限与 FCM/Google Play 服务；不离线持久保存短信正文。
   支持 Contact Picker 的安全浏览器可手动选择联系人，仅保存在当前浏览器，支持停用及清除。
 - **运维**：Docker Compose 中枢/数据库/每日一致性备份、审计迁移、HTTPS 反向代理和恢复指南。
 
@@ -27,7 +29,7 @@ Android 系统对验证码、后台运行、强制停止和厂商省电的限制
 需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。中枢镜像发布在 GitHub Container Registry（`ghcr.io/igngserver/hongshu`），部署须显式选择已发布固定版本；预发布没有 latest，无需基于 main 或源码本地构建。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
 
 ```bash
-HONGSHU_VERSION=0.1.0-alpha.11 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.15 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```

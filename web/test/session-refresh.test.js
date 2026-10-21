@@ -292,6 +292,64 @@ function pushRuntime() {
   return ctx;
 }
 
+test("iOS Safari tab explains the Home Screen requirement instead of only disabling the switch", () => {
+  const ctx = runtime();
+  run(ctx, `
+    state.me={device:{id:'browser-A',notify:false},vapid_public_key:'BA'};
+    window={isSecureContext:true,PushManager:function(){}};
+    navigator={userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',platform:'iPhone',maxTouchPoints:5,serviceWorker:{}};
+    Notification={permission:'default'};
+    availability=pushAvailability();
+  `);
+  assert.equal(run(ctx, "availability.ready"), false);
+  assert.match(run(ctx, "availability.message"), /添加到主屏幕/);
+  run(ctx, `
+    window.matchMedia=q=>({matches:q==='(display-mode: standalone)'});
+    navigator.standalone=true;
+    availability=pushAvailability();
+  `);
+  assert.equal(run(ctx, "availability.ready"), true);
+});
+
+test("push key comparison treats missing browser metadata as reusable and different bytes as stale", () => {
+  const ctx = runtime();
+  assert.equal(run(ctx, "samePushKey(null,new Uint8Array([4]))"), true);
+  assert.equal(run(ctx, "samePushKey(new Uint8Array([1,2]),new Uint8Array([1,2]))"), true);
+  assert.equal(run(ctx, "samePushKey(new Uint8Array([1,2]),new Uint8Array([1,3]))"), false);
+  assert.equal(run(ctx, "samePushKey(new Uint8Array([1]),new Uint8Array([1,2]))"), false);
+});
+
+test("enable Push replaces a subscription bound to a different VAPID key", async () => {
+  const ctx = pushRuntime();
+  run(ctx, `
+    oldSub={toJSON:()=>({endpoint:'https://old.example/',keys:{p256dh:'old',auth:'auth'}}),unsubscribe:async()=>{calls.push('unsubscribe')},options:{applicationServerKey:new Uint8Array([1])}};
+    freshSub={toJSON:()=>({endpoint:'https://new.example/',keys:{p256dh:'new',auth:'auth'}}),unsubscribe:async()=>{},options:{applicationServerKey:new Uint8Array([4])}};
+    reg.pushManager.getSubscription=async()=>oldSub;
+    reg.pushManager.subscribe=async()=>{calls.push('subscribe');return freshSub};
+    pending=enablePush();
+  `);
+  await run(ctx, "pending");
+  assert.equal(run(ctx, "calls.includes('unsubscribe')"), true);
+  assert.equal(run(ctx, "calls.includes('subscribe')"), true);
+  assert.equal(run(ctx, "calls.includes('/push')"), true);
+  assert.equal(run(ctx, "calls.includes('/devices/browser-A')"), true);
+});
+
+test("automatic Push recovery replaces an endpoint the server no longer has", async () => {
+  const ctx = pushRuntime();
+  run(ctx, `
+    state.me.push_subscribed=false;
+    oldSub={toJSON:()=>({endpoint:'https://old.example/',keys:{p256dh:'old',auth:'auth'}}),unsubscribe:async()=>{calls.push('unsubscribe')},options:{applicationServerKey:pushKey('BA')}};
+    freshSub={toJSON:()=>({endpoint:'https://new.example/',keys:{p256dh:'new',auth:'auth'}}),unsubscribe:async()=>{}};
+    reg.pushManager.getSubscription=async()=>oldSub;
+    reg.pushManager.subscribe=async()=>{calls.push('subscribe');return freshSub};
+  `);
+  assert.equal(await run(ctx, "browserPushEnabled()"), true);
+  assert.equal(run(ctx, "calls.includes('unsubscribe')"), true);
+  assert.equal(run(ctx, "calls.includes('subscribe')"), true);
+  assert.equal(run(ctx, "calls.includes('/push')"), true);
+});
+
 test("existing browser subscription is bound to the newly logged-in server identity before reporting enabled", async () => {
   const ctx = pushRuntime();
   assert.equal(await run(ctx, "browserPushEnabled()"), true);

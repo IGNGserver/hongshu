@@ -19,6 +19,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	pushMessagePayload = `{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`
+	pushTestPayload    = `{"title":"鸿枢","body":"测试通知已送达","tag":"hongshu-test","url":"/"}`
+)
+
 func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" || a.isHostAllowed(r) }, ReadBufferSize: 1024, WriteBufferSize: 1024}
 	conn, e := up.Upgrade(w, r, nil)
@@ -140,6 +145,25 @@ func validateEndpoint(ctx context.Context, s string) error {
 	}
 	return nil
 }
+
+// Docker's default bridge has no IPv6 route even when the host does. Resolvers
+// commonly return IPv6 first, so trying only ips[0] would silently fail APNs
+// delivery on a working NAS. Prefer IPv4 and fall back to every other address.
+func pushDialOrder(ips []net.IP) []net.IP {
+	ordered := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			ordered = append(ordered, v4)
+		}
+	}
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			ordered = append(ordered, ip)
+		}
+	}
+	return ordered
+}
+
 func pushHTTPClient() *http.Client {
 	tr := &http.Transport{TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
@@ -156,10 +180,29 @@ func pushHTTPClient() *http.Client {
 			}
 		}
 		d := net.Dialer{Timeout: 10 * time.Second}
-		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		var lastErr error
+		for _, ip := range pushDialOrder(ips) {
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr == nil {
+			lastErr = errors.New("push DNS failed")
+		}
+		return nil, lastErr
 	}}
 	return &http.Client{Transport: tr, Timeout: 25 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("push redirects forbidden") }}
 }
+
+func (a *app) effectivePushClient() *http.Client {
+	if a.pushClient != nil {
+		return a.pushClient
+	}
+	return pushHTTPClient()
+}
+
 func (a *app) subscribe(w http.ResponseWriter, r *http.Request) {
 	if a.vapidPublic == "" || a.vapidPrivate == "" {
 		fail(w, 503, "push_not_configured")
@@ -239,6 +282,79 @@ func (a *app) unsubscribe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+// testPush delivers one generic notification directly to the current browser.
+// It deliberately bypasses push_jobs: a test must not depend on a real SMS and
+// must not leave a queued alert if the browser is offline.
+func (a *app) testPush(w http.ResponseWriter, r *http.Request) {
+	if a.vapidPublic == "" || a.vapidPrivate == "" {
+		fail(w, 503, "push_not_configured")
+		return
+	}
+	var sub webpush.Subscription
+	var notify bool
+	err := a.db.QueryRowContext(r.Context(), "SELECT p.endpoint,p.p256dh,p.auth,d.notify FROM push_subscriptions p JOIN devices d ON d.id=p.device_id WHERE p.device_id=? AND d.revoked=FALSE", device(r).ID).Scan(&sub.Endpoint, &sub.Keys.P256dh, &sub.Keys.Auth, &notify)
+	if err == sql.ErrNoRows {
+		fail(w, 404, "push_not_subscribed")
+		return
+	}
+	if err != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	if !notify {
+		fail(w, 409, "push_disabled")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	res, sendErr := webpush.SendNotificationWithContext(ctx, []byte(pushTestPayload), &sub, &webpush.Options{HTTPClient: a.effectivePushClient(), Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 300})
+	if sendErr != nil {
+		if res != nil && res.Body != nil {
+			res.Body.Close()
+		}
+		a.pushDeliveryFailures.Add(1)
+		fail(w, 502, "push_delivery_failed")
+		return
+	}
+	if res == nil {
+		a.pushDeliveryFailures.Add(1)
+		fail(w, 502, "push_delivery_failed")
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode == 404 || res.StatusCode == 410 {
+		if err = a.removeDeadPushSubscription(r.Context(), device(r).ID, sub); err != nil {
+			fail(w, 503, "database_unavailable")
+			return
+		}
+		a.pushDeliveryFailures.Add(1)
+		fail(w, 410, "push_subscription_expired")
+		return
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		a.pushDeliveryFailures.Add(1)
+		fail(w, 502, "push_delivery_failed")
+		return
+	}
+	a.pushLastSuccess.Store(time.Now().UnixMilli())
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *app) removeDeadPushSubscription(ctx context.Context, id string, sub webpush.Subscription) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE device_id=?", id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", id, sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 type claimedPush struct {
 	id, lease, messageID int64
 	device               string
@@ -315,7 +431,7 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	// outlive it. Keep the parent context for the conditional state update.
 	sendCtx, cancel := context.WithDeadline(ctx, leaseDeadline)
 	defer cancel()
-	res, sendErr := webpush.SendNotificationWithContext(sendCtx, []byte(`{"title":"鸿枢","body":"有新短信，打开应用查看","tag":"hongshu-new","url":"/"}`), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
+	res, sendErr := webpush.SendNotificationWithContext(sendCtx, []byte(pushMessagePayload), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
 	status := 0
 	var retryAfter time.Duration
 	if res != nil {
@@ -336,18 +452,7 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	if status == 404 || status == 410 {
 		// The subscription is gone for good. Remove every job that would only be retried
 		// through the dead endpoint, then the subscription itself.
-		tx, err := a.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE device_id=?", j.device); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", j.device, j.sub.Endpoint, j.sub.Keys.P256dh, j.sub.Keys.Auth); err != nil {
-			return err
-		}
-		return tx.Commit()
+		return a.removeDeadPushSubscription(ctx, j.device, j.sub)
 	}
 	if retryAfter <= 0 {
 		shift := j.attempts
@@ -389,7 +494,7 @@ func (a *app) pushLoop(ctx context.Context) {
 	if a.vapidPublic == "" || a.vapidPrivate == "" {
 		return
 	}
-	client := pushHTTPClient()
+	client := a.effectivePushClient()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {

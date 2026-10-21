@@ -14,6 +14,13 @@ const manifest = JSON.parse(
   await readFile(resolve(root, "manifest.webmanifest"), "utf8"),
 );
 if (manifest.start_url !== "/") throw new Error("Invalid manifest");
+if (manifest.display !== "standalone" && manifest.display !== "fullscreen")
+  throw new Error("Manifest must open as a standalone/fullscreen web app for iOS push");
+if (typeof manifest.id !== "string" || manifest.id === "")
+  throw new Error("Manifest must have a stable id for Home Screen web apps");
+const icons = new Set((manifest.icons || []).map(icon => `${icon.sizes}:${icon.purpose || "any"}`));
+for (const required of ["192x192:any", "512x512:any", "192x192:maskable", "512x512:maskable"])
+  if (!icons.has(required)) throw new Error(`Manifest missing icon ${required}`);
 await mkdir(out, { recursive: true });
 const assets = [
   "index.html",

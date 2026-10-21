@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+func init() {
+	// Go has no built-in .webmanifest type, and the distroless runtime has no
+	// /etc/mime.types. Without this, ServeFile sniffs the JSON as text/plain,
+	// which can make a Home Screen web app non-installable on iOS.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
+
 func (a *app) routes(web string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +63,7 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/ws", a.auth(a.ws))
 	mux.HandleFunc("PUT /api/push", a.auth(a.subscribe))
 	mux.HandleFunc("DELETE /api/push", a.auth(a.unsubscribe))
+	mux.HandleFunc("POST /api/push/test", a.auth(a.testPush))
 	mux.HandleFunc("GET /api/settings", a.auth(a.settings))
 	mux.HandleFunc("PATCH /api/settings", a.auth(a.saveSettings))
 	// Explicit allowlist: never expose package manifests, tests or source maps.
@@ -177,12 +185,17 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
+	var pushSubscribed bool
+	if err = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM push_subscriptions WHERE device_id=?)", device(r).ID).Scan(&pushSubscribed); err != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
 	if tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
 	serverTiming(w, started)
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "version": buildVersion, "ai_enabled": s.Enabled, "ai_paused": s.Paused, "analysis_revision": s.Revision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "features": hubFeatures})
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "push_subscribed": pushSubscribed, "version": buildVersion, "ai_enabled": s.Enabled, "ai_paused": s.Paused, "analysis_revision": s.Revision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "features": hubFeatures})
 }
 func timeDurationMS(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 2, 64)

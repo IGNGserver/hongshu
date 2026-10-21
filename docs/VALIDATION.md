@@ -709,3 +709,48 @@ MySQL 验证包括旧数据有界回填、回滚/再升级、分类权限、人�
 - 最后一轮历史关联修正后，通知碰撞、通知身份、通知采集、实时采集四类共 70 项重新通过，无失败或跳过；覆盖已 ACK 的另一来源仍参与竞争，以及重开、同步后碰撞记录保留。
 - 本地 Go `go test -race ./...` 与 `go vet ./...` 通过；没有设置 `TEST_MYSQL_DSN`，MySQL 用例跳过。已读回滚、持续上传期间 AI 领取及查询计划的真实数据库结果以本轮完整 CI 为准。
 - 仓库验证（含 12 项隔离运维测试及凭据模式扫描）、`git diff --check`、gofmt 检查和 `actionlint .github/workflows/ci.yml` 通过。
+
+## 2026-10-21 PWA Web Push 加固
+
+分支 `agent/pwa-push-hardening`（基于 `origin/main` a2ab158，未合并）。本轮只修改 Web、Go 与文档，
+没有数据库迁移；目标是复用现有标准 Web Push + VAPID，补齐 iOS 主屏幕引导、订阅轮换恢复、
+manifest MIME 与测试通知，不改变短信入库和 Android 通知链路。
+
+| 检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check`、`gofmt -l` | 通过；仓库验证含 12 项运维测试 |
+| `cd server && go test -race -count=1 ./... && go vet ./... && go build -trimpath` | 通过；本机未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成用例跳过，不能记为真库通过 |
+| `cd web && npm test` | 96 项通过，含 iOS 引导、VAPID 密钥轮换、服务端订阅丢失恢复、`pushsubscriptionchange`、payload 越界路径防护、manifest MIME |
+| `cd web && npm run check && WEB_BUILD_DIR=... npm run build` | 通过；构建校验 `display=standalone`、稳定 `id` 与 any/maskable 图标 |
+| 本地 scratch | `~/.build/短信同步系统/pwa-push-hardening`；开始可用约 122 GiB，Go/Web 产物与缓存保留用于复测 |
+
+新增行为：服务端显式设置 `.webmanifest` 的 `application/manifest+json`；`/api/me` 返回
+`push_subscribed`；设置页在 iOS Safari 标签页说明“添加到主屏幕”，并在 VAPID 密钥变化、浏览器轮换或
+服务端订阅丢失时重新订阅；新增 `POST /api/push/test` 直接向当前设备发送通用测试通知，不写短信、
+不经过 `push_jobs`，404/410 时清理订阅与积压任务。Service Worker 解析有长度上限的标题/正文，
+只允许同源通知点击路径，并监听 `pushsubscriptionchange`。
+
+本机未执行：真实 iPhone/iPad 主屏幕安装与 APNs、真实 Android Chrome/FCM、国内无 GMS 设备、
+生产 HTTPS 部署、真实 MySQL 集成测试、Android 构建与模拟器；CI 已补齐 MySQL、Chromium 冒烟和
+Android 模拟器回归（见下）。真实设备与公网 Push 仍须在目标环境单独验收，尤其是 iOS 16.4+
+必须从主屏幕图标打开后授权，不能用 CI 的 Chromium 结果代替。
+
+### 2026-10-21 完整 CI
+
+功能提交 `10693d1` 的 [Hongshu validation 39621897496](https://github.com/IGNGserver/hongshu/actions/runs/39621897496)
+全部通过；从创建到完成 10 分 24 秒（含排队）。六个 job：
+
+| Job | 实际验证 | 结果 / 耗时 |
+| --- | --- | --- |
+| verify | `bash scripts/verify-repository.sh`、`git diff --check` | 通过，7 秒 |
+| web | `npm test && npm run check && npm run build` | 96 项测试通过，10 秒 |
+| server | 隔离 MySQL 8.4.5：`go test -race -count=1 -v ./... && go vet ./... && go build -trimpath`；Chromium `scripts/browser-smoke.cjs`、`local-contacts-smoke.cjs` | 通过，2 分 52 秒；新增测试通知/订阅状态/失效清理/manifest MIME 用例实际执行 |
+| android (28) | JVM 单测、lint、APK、androidTest APK 与模拟器 instrumentation | 通过，8 分 59 秒 |
+| android (33) | 同上 | 通过，8 分 03 秒 |
+| android (35) | 同上 | 通过，7 分 15 秒 |
+
+浏览器冒烟覆盖登录、收件箱、XSS、移动布局、搜索、设置页、PWA 缓存不包含 API；设置页在没有 VAPID 的
+测试部署中仍显示“通知已关闭”并单独说明原因。Android 矩阵验证的是现有客户端回归，不代表 PWA 真机
+通知或 FCM/APNs 可达。本轮 CI 合计约 27.4 job 分钟；仓库为 public，不消耗私仓月度 2000 分钟配额。
+未创建 PR、未合并、未发布、未部署；真实 iPhone/iPad、Android Chrome/FCM、无 GMS ROM 与生产
+HTTPS/VAPID 配置仍未验收。
