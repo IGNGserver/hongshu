@@ -96,7 +96,8 @@ Web Push 需要 HTTPS、浏览器支持、用户授权，以及服务器能访�
 
 1. `.env` 同时有 `VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY` 和真实的 `VAPID_SUBJECT`（例如 `mailto:you@example.com`）。
    旧部署缺少密钥时，用 `docker compose run --rm --no-deps --entrypoint /vapid hub` 生成一次并追加到 `.env`，
-   再重启 hub；已有订阅后不要随意轮换，否则浏览器需要重新订阅。VAPID 私钥必须随备份一起加密保存。
+   确认文件中只有一组 VAPID 键（旧的空键先删除），再重启 hub；已有订阅后不要随意轮换，否则浏览器需要重新订阅。
+   VAPID 私钥必须随备份一起加密保存。
 2. `PUBLIC_URL` 使用实际 HTTPS origin；HTTP 下没有 Service Worker/Push API。反向代理不得改写 Host/Origin 到不一致的值。
 3. `curl -s https://实际域名/healthz` 的 `push.enabled` 为 true；`last_success` 只有在真实投递成功后才推进，
    200 不代表端到端健康。

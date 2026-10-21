@@ -1,7 +1,8 @@
 # 鸿枢 · Hongshu
 
 面向多部 Android 手机用户的自部署短信互通平台：短信可靠上传到自己的 MySQL 中枢，长期保存，
-在所有授权 Android 和 Web/PWA 设备上查看。无需 Firebase/FCM。
+在所有授权 Android 和 Web/PWA 设备上查看。Android 原生客户端无需 Firebase/FCM；
+PWA 后台通知使用浏览器官方 Push 通道（iOS APNs、Android Chrome FCM）。
 
 当前预发布版本见根目录 `VERSION`。实际测试结果和未完成验收见 [验证记录](docs/VALIDATION.md)，不要将构建通过等同于真机兼容性认证。
 
