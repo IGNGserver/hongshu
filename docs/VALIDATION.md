@@ -1,6 +1,6 @@
 # 2026-10-22 Safari 网页 App 图标修复
 
-基线 `156a059`（`0.2.0-alpha.15`），任务分支 `agent/pwa-safari-icons`。未创建 PR、未部署、未发布。
+基线 `156a059`（`0.2.0-alpha.15`），任务分支 `agent/pwa-safari-icons`。本版本随 PR 合并发布 `0.2.0-alpha.16` 并部署到 NAS；真机 Safari 图标验收见文末。
 
 - 现象：从 Safari 添加到程序坞/启动台的鸿枢网页 App 显示系统首字母占位图标（深色方块 + “鸿”），而不是蓝色短信气泡品牌图标；同一版本的 Web 标签页 favicon 正常。
 - 根因：manifest 的最高图标只有 512×512 maskable。WebKit 的 macOS Web App 图标规则要求至少一个不透明、full-bleed 的
