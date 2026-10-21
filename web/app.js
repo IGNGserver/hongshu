@@ -2185,8 +2185,11 @@ function settingsView() {
   inner.append(head);
 
   const availability = pushAvailability();
-  const status = el("p", "settings-summary notification-state", availability.ready ? "正在读取通知状态…" : availability.message);
+  const status = el("p", "settings-summary notification-state", availability.ready ? "正在读取通知状态…" : "通知已关闭");
   status.setAttribute("aria-live", "polite");
+  const summary = el("div", "notification-summary");
+  summary.append(status);
+  if (!availability.ready) summary.append(el("p", "settings-summary notification-hint", availability.message));
   const sendTest = button("发送测试通知", async () => {
     sendTest.disabled = true;
     try {
@@ -2215,7 +2218,7 @@ function settingsView() {
   });
   toggle.setDisabled(!availability.ready);
   inner.append(settingsGroup("本浏览器", [
-    settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: status, trailing: toggle }),
+    settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: summary, trailing: toggle }),
     settingsRow({ icon: ICONS.info, title: "测试通知", summary: "只向本浏览器发送一条通用通知，不依赖真实短信，也不包含短信内容。", trailing: sendTest, cls: "settings-wrap" }),
     settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
   ]).section);
@@ -2252,9 +2255,9 @@ function settingsView() {
   void browserPushEnabled().then((enabled) => {
     toggle.setChecked(enabled);
     sendTest.disabled = !enabled;
-    status.textContent = enabled ? "通知已开启" : (availability.ready ? "通知已关闭" : availability.message);
+    status.textContent = enabled ? "通知已开启" : "通知已关闭";
   }).catch(() => {
-    status.textContent = availability.ready ? "无法确认通知状态，请重新开启" : availability.message;
+    status.textContent = availability.ready ? "无法确认通知状态，请重新开启" : "通知已关闭";
   }).finally(() => {
     toggle.setDisabled(!availability.ready);
   });
