@@ -164,6 +164,12 @@ fun CapturePage(host: SettingsHost) {
         produceState<String?>(null, host.refresh) {
             value = withContext(Dispatchers.IO) { vendorSmsStatus(activity) }
         }
+    val sims by
+        produceState<List<SimMapping>>(emptyList(), host.refresh) {
+            value = withContext(Dispatchers.IO) { host.repo.store.sims() }
+        }
+    val hasSimNumber = sims.any { confirmedNumber(it.phone) }
+    var confirmAutoIgnore by remember { mutableStateOf(false) }
 
     fun setUpload(enabled: Boolean) {
         fun apply(granted: Boolean) =
@@ -261,6 +267,48 @@ fun CapturePage(host: SettingsHost) {
             }
         if (enabled) host.requestPermissions(arrayOf(Manifest.permission.READ_SMS), ::apply)
         else apply(true)
+    }
+
+    fun setAutoIgnore(enabled: Boolean) {
+        if (enabled) {
+            confirmAutoIgnore = true
+            return
+        }
+        host.action {
+            c.autoIgnoreUnassigned = false
+            val restored = host.repo.store.restoreAutoIgnored()
+            syncNow(activity, manual = true)
+            if (restored > 0) "已关闭自动忽略，恢复 $restored 条待处理短信" else "已关闭自动忽略"
+        }
+    }
+
+    if (confirmAutoIgnore) {
+        AlertDialog(
+            onDismissRequest = { confirmAutoIgnore = false },
+            title = { Text("自动忽略无法确认接收号码的短信") },
+            text = {
+                Text(
+                    "开启后，无法解析接收号码的短信将不再出现在提示和会话列表中，也不会尝试上传；" +
+                        "它们会进入待上传页的“已自动忽略”区，可随时恢复。手机短信应用中的原短信不受影响。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmAutoIgnore = false
+                        host.action {
+                            c.autoIgnoreUnassigned = true
+                            val ignored = host.repo.store.autoIgnoreUnassigned()
+                            syncNow(activity, manual = true)
+                            if (ignored > 0) "已开启自动忽略，忽略 $ignored 条" else "已开启自动忽略"
+                        }
+                    }
+                ) { Text("开启") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmAutoIgnore = false }) { Text("取消") }
+            },
+        )
     }
 
     SettingsScaffold(SettingsPage.Capture.title, host.back, busy) {
@@ -446,6 +494,23 @@ fun CapturePage(host: SettingsHost) {
                         icon = Icons.Default.Outbox,
                         showChevron = true,
                         onClick = { host.navigate(SettingsPage.Pending) },
+                    )
+                },
+                SettingsRow("auto-ignore") {
+                    SettingsSwitchItem(
+                        title = "自动忽略无法确认接收号码的短信",
+                        summary =
+                            when {
+                                !c.autoIgnoreUnassigned ->
+                                    "不再提示这些短信，也不尝试上传；可在待上传页恢复"
+                                !hasSimNumber ->
+                                    "请先在“SIM 卡与号码”配置至少一个有效号码"
+                                else -> "已开启：没有可靠接收号码的短信不提示、不上传"
+                            },
+                        icon = Icons.Default.VisibilityOff,
+                        checked = c.autoIgnoreUnassigned,
+                        enabled = !busy && (hasSimNumber || c.autoIgnoreUnassigned),
+                        onCheckedChange = ::setAutoIgnore,
                     )
                 },
             ),

@@ -58,8 +58,11 @@ fun LocalPendingPage(host: SettingsHost) {
     var counts by remember { mutableStateOf(PendingCounts()) }
     var records by remember { mutableStateOf<List<LocalPendingMessage>?>(null) }
     var sims by remember { mutableStateOf<List<SimMapping>>(emptyList()) }
+    val hasSimNumber = sims.any { confirmedNumber(it.phone) }
     var assigning by remember { mutableStateOf<List<String>?>(null) }
     var discarding by remember { mutableStateOf<List<String>?>(null) }
+    var discardingIgnored by remember { mutableStateOf(false) }
+    var confirmIgnore by remember { mutableStateOf(false) }
     val connected = remember(host.refresh) { networkAvailable(repo.context) }
     val authorized = remember(host.refresh) { config.token.isNotEmpty() }
 
@@ -114,6 +117,50 @@ fun LocalPendingPage(host: SettingsHost) {
             dismissButton = { TextButton(onClick = { discarding = null }) { Text("取消") } },
         )
     }
+    if (discardingIgnored) {
+        AlertDialog(
+            onDismissRequest = { discardingIgnored = false },
+            title = { Text("放弃已自动忽略的短信") },
+            text = {
+                Text("这 ${counts.ignored} 条记录将不再上传，也不会被再次采集。手机短信应用中的原短信不受影响。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        discardingIgnored = false
+                        host.action { "已放弃 ${repo.store.discardAutoIgnored()} 条已自动忽略记录" }
+                    }
+                ) { Text("放弃全部") }
+            },
+            dismissButton = { TextButton(onClick = { discardingIgnored = false }) { Text("取消") } },
+        )
+    }
+    if (confirmIgnore) {
+        AlertDialog(
+            onDismissRequest = { confirmIgnore = false },
+            title = { Text("自动忽略无法确认接收号码的短信") },
+            text = {
+                Text(
+                    "开启后，无法解析接收号码的短信将不再出现在提示和会话列表中，也不会尝试上传；" +
+                        "它们会进入下方的“已自动忽略”区，可随时恢复。手机短信应用中的原短信不受影响。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmIgnore = false
+                        host.action {
+                            repo.config.autoIgnoreUnassigned = true
+                            val ignored = repo.store.autoIgnoreUnassigned()
+                            syncNow(repo.context, manual = true)
+                            if (ignored > 0) "已开启自动忽略，忽略 $ignored 条" else "已开启自动忽略"
+                        }
+                    }
+                ) { Text("开启") }
+            },
+            dismissButton = { TextButton(onClick = { confirmIgnore = false }) { Text("取消") } },
+        )
+    }
 
     SettingsScaffold(SettingsPage.Pending.title, host.back, host.busy) {
         settingsItem("intro") {
@@ -144,28 +191,36 @@ fun LocalPendingPage(host: SettingsHost) {
             settingsItem("group-sim") {
                 PendingGroupCard(
                     "需确认接收号码 ${counts.needsSim} 条",
-                    if (sims.isEmpty())
+                    if (!hasSimNumber)
                         "系统没有告诉鸿枢这些短信是哪张卡收到的，且尚未配置任何手机号。请先填写 SIM 卡号码。"
                     else "系统没有告诉鸿枢这些短信是哪张卡收到的。确认后为它们选择接收号码即可上传。",
                 ) {
-                    if (sims.isEmpty())
+                    if (!hasSimNumber)
                         FilledTonalButton(onClick = { host.navigate(SettingsPage.Sims) }) {
                             Text("填写 SIM 卡号码")
                         }
                     else
-                        FilledTonalButton(
-                            enabled = !host.busy,
-                            onClick = {
-                                host.action {
-                                    val keys = withContext(Dispatchers.IO) { repo.store.unresolvedKeys() }
-                                    withContext(Dispatchers.Main) {
-                                        assigning = keys.takeIf { it.isNotEmpty() }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilledTonalButton(
+                                enabled = !host.busy,
+                                onClick = {
+                                    host.action {
+                                        val keys = withContext(Dispatchers.IO) { repo.store.unresolvedKeys() }
+                                        withContext(Dispatchers.Main) {
+                                            assigning = keys.takeIf { it.isNotEmpty() }
+                                        }
+                                        if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
                                     }
-                                    if (keys.isEmpty()) "没有需要指定号码的短信" else "请选择接收这些短信的号码"
-                                }
-                            },
-                        ) {
-                            Text("指定接收号码")
+                                },
+                            ) {
+                                Text("指定接收号码")
+                            }
+                            TextButton(
+                                enabled = !host.busy,
+                                onClick = { confirmIgnore = true },
+                            ) {
+                                Text("自动忽略此类")
+                            }
                         }
                 }
             }
@@ -196,6 +251,36 @@ fun LocalPendingPage(host: SettingsHost) {
                     "多个通知观察对应相同上传指纹，中枢不能分别保存。记录已保留；请核实下方接收号码，或明确放弃。普通重试不会解除碰撞。",
                 ) {}
             }
+        if (counts.ignored > 0)
+            settingsItem("group-auto-ignored") {
+                PendingGroupCard(
+                    "已自动忽略 ${counts.ignored} 条",
+                    "这些记录没有可靠的接收号码，已不再提示，也不会尝试上传。手机短信应用中的原短信不受影响；出现新的广播/收件箱副本或保存有效号码后会自动恢复。",
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            enabled = !host.busy,
+                            onClick = {
+                                host.action {
+                                    repo.config.autoIgnoreUnassigned = false
+                                    val restored = repo.store.restoreAutoIgnored()
+                                    syncNow(repo.context, manual = true)
+                                    if (restored > 0) "已恢复 $restored 条，并关闭自动忽略"
+                                    else "已关闭自动忽略"
+                                }
+                            },
+                        ) {
+                            Text("恢复并关闭")
+                        }
+                        OutlinedButton(
+                            enabled = !host.busy,
+                            onClick = { discardingIgnored = true },
+                        ) {
+                            Text("放弃全部")
+                        }
+                    }
+                }
+            }
         settingsItem("sync") {
             Text(
                 "中枢同步：${smsSyncStatus(repo.context, repo)}",
@@ -224,7 +309,10 @@ fun LocalPendingPage(host: SettingsHost) {
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                         )
-                        Text("没有未上传的短信", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (counts.ignored > 0) "没有需要处理的未上传短信" else "没有未上传的短信",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                     }
                 }
             else ->
@@ -289,7 +377,7 @@ fun LocalPendingPage(host: SettingsHost) {
             }
         settingsItem("help") {
             ExpandableHelp(
-                "短信在中枢确认收到之前不会从本机删除；这里和中枢里的收件箱是分开的。号码不确定的短信不会按卡槽猜测归属；“指定接收号码”只在你确认后生效。“放弃上传”会从本机队列删除记录，手机短信应用中的原短信不受影响。"
+                "短信在中枢确认收到之前不会从本机删除；这里和中枢里的收件箱是分开的。号码不确定的短信不会按卡槽猜测归属；“指定接收号码”只在你确认后生效。“放弃上传”会从本机队列删除记录，手机短信应用中的原短信不受影响。自动忽略的记录保留判重账本，不提示也不上传，可在上方恢复或放弃。"
             )
         }
     }

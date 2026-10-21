@@ -15,6 +15,16 @@ internal const val SENT_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000L
 // Notification post time and SMS provider/PDU time differ by seconds, rarely minutes.
 internal const val NOTIFICATION_MATCH_WINDOW = 120_000L
 
+// A notification has no SIM and may use a contact name as its sender, so the normal pairing
+// above can refuse it. Once the authoritative broadcast/provider copy is accepted by the hub,
+// a body match within this tighter window is enough to retire the redundant observation.
+internal const val NOTIFICATION_ABSORB_WINDOW = 60_000L
+
+// outbox.blocked state for rows the user asked to stop prompting about. It is intentionally a
+// soft state: the capture ledger and notification receipt stay, so saving a SIM or pairing a
+// later authoritative copy can restore the row without re-capturing or guessing.
+internal const val AUTO_IGNORED = "auto_ignored"
+
 // A notification is only evidence that an SMS arrived. Until the broadcast or the inbox copy
 // pairs with it, its row waits: the inbox read it triggers normally lands within seconds and
 // supplies the exact sender, SIM and text. A numeric title waits briefly (verification codes);
@@ -34,6 +44,7 @@ internal object CaptureSource {
     const val RECOVERY = "recovery"
     const val HISTORY = "history"
     const val SENT = "sent"
+    const val QUEUE = "queue"
 }
 
 private const val UNPAIRED_NOTIFICATION =
@@ -790,7 +801,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val hubOutgoing = hubSupportsOutgoing()
         return readableDatabase
             .rawQuery(
-                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0),$UNPAIRED_NOTIFICATION,$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER),direction FROM outbox ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
+                "SELECT key,receiver,sender,body,timestamp,sub,slot,historical,blocked,COALESCE((SELECT source FROM captures WHERE captures.key=outbox.key),'legacy'),COALESCE((SELECT uncertain FROM notification_receipts n WHERE n.capture_key=outbox.key),0),$UNPAIRED_NOTIFICATION,$UNPAIRED_NOTIFICATION AND $NOTIFICATION_RELEASE_AT>CAST(? AS INTEGER),direction FROM outbox WHERE blocked<>'$AUTO_IGNORED' ORDER BY timestamp DESC,key DESC LIMIT ? OFFSET ?",
                 arrayOf(now.toString(), limit.coerceIn(1, 200).toString(), offset.coerceAtLeast(0).toString()),
             )
             .use { c ->
@@ -860,7 +871,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     }
 
     fun pendingCount(): Int =
-        readableDatabase.rawQuery("SELECT COUNT(*) FROM outbox", null).use {
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM outbox WHERE blocked<>'$AUTO_IGNORED'", null).use {
             it.moveToFirst()
             it.getInt(0)
         }
@@ -1015,6 +1026,20 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         val receiver: String,
     )
 
+    private data class AutoIgnoreRow(
+        val key: String,
+        val receiver: String,
+        val sub: Int,
+        val source: String,
+    )
+
+    private data class InboxMatch(
+        val receiver: String,
+        val sender: String,
+        val body: String,
+        val timestamp: Long,
+    )
+
     // The SIM-less half of a pair learns the SIM from its counterpart. Rows already
     // acknowledged by the hub have no outbox entry and are left alone.
     private fun inheritSim(db: SQLiteDatabase, key: String, m: SmsRecord, slot: Int) {
@@ -1037,6 +1062,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             "key=? AND sub<0",
             arrayOf(key),
         )
+        if (m.receiver.isNotEmpty())
+            db.execSQL(
+                "UPDATE outbox SET blocked='' WHERE key=? AND blocked='$AUTO_IGNORED'",
+                arrayOf(key),
+            )
         changes.value++
     }
 
@@ -1257,7 +1287,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun unresolvedKeys(): List<String> {
         val resolver = receiverResolver(allowFallback = false)
         return readableDatabase
-            .rawQuery("SELECT key,receiver,sub,blocked FROM outbox", null)
+            .rawQuery("SELECT key,receiver,sub,blocked FROM outbox WHERE blocked<>'$AUTO_IGNORED'", null)
             .use { c ->
                 buildList {
                     while (c.moveToNext()) {
@@ -1394,6 +1424,12 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             "key=?",
             arrayOf(key),
         )
+        // A later broadcast/provider copy proves this row is a real SMS with a usable number;
+        // do not leave it hidden by the user's auto-ignore policy.
+        db.execSQL(
+            "UPDATE outbox SET blocked='' WHERE key=? AND blocked='$AUTO_IGNORED'",
+            arrayOf(key),
+        )
         recordCaptureEvent(CaptureSource.NOTIFICATION, if (providerId == null) "paired_broadcast" else "paired_inbox")
         changes.value++
         return true
@@ -1522,6 +1558,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         } finally {
             db.endTransaction()
         }
+        releaseAutoIgnoredIfResolved()
         changes.value++
     }
 
@@ -1606,6 +1643,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             } finally {
                 db.endTransaction()
             }
+            releaseAutoIgnoredIfResolved()
             changes.value++
         }
     }
@@ -1709,6 +1747,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             val result = batch.filter { (key, message) ->
                 val ready = db.rawQuery("SELECT blocked FROM outbox WHERE key=?", arrayOf(key)).use {
                     it.moveToFirst() && it.getString(0) != "notification_collision" &&
+                        it.getString(0) != AUTO_IGNORED &&
                         (fromSync || it.getString(0).isEmpty())
                 }
                 if (!ready) return@filter false
@@ -1772,12 +1811,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 var collisions = 0
                 var held = 0
                 var awaitingHub = 0
+                var ignored = 0
                 while (rows.moveToNext()) {
                     val count = rows.getInt(3)
                     when {
                         rows.getString(5) == "out" && !hubOutgoing && rows.getString(2).isEmpty() ->
                             awaitingHub += count
                         rows.getString(2) == "notification_collision" -> collisions += count
+                        rows.getString(2) == AUTO_IGNORED -> ignored += count
                         rows.getString(2) == "invalid_message" -> invalid += count
                         rows.getInt(4) != 0 -> held += count
                         rows.getString(2).isNotEmpty() ||
@@ -1786,7 +1827,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                         else -> ready += count
                     }
                 }
-                PendingCounts(ready, needsSim, invalid, collisions, held, awaitingHub)
+                PendingCounts(ready, needsSim, invalid, collisions, held, awaitingHub, ignored)
             }
     }
 
@@ -1796,8 +1837,138 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             it.getInt(0)
         }
 
+    // The user opted out of being prompted about rows that cannot name a receiving line. This
+    // is a soft state, not a deletion: receipts/captures remain, so a later authoritative copy
+    // or a saved SIM can restore the row. With no usable SIM configuration we only ignore
+    // notification observations; real broadcast/provider SMS stay visible instead of being
+    // silently hidden because setup is incomplete.
+    fun autoIgnoreUnassigned(): Int {
+        if (!config.autoIgnoreUnassigned) return 0
+        val resolver = receiverResolver()
+        val mappingsUsable =
+            sims().any { confirmedNumber(it.phone) } &&
+                (!config.automaticSim || config.simRecognitionHealthy)
+        val db = writableDatabase
+        var count = 0
+        db.beginTransaction()
+        try {
+            val rows =
+                db.rawQuery(
+                        "SELECT o.key,o.receiver,o.sub,COALESCE(c.source,'') FROM outbox o LEFT JOIN captures c ON c.key=o.key WHERE o.blocked=''",
+                        null,
+                    )
+                    .use { c ->
+                        buildList {
+                            while (c.moveToNext())
+                                add(
+                                    AutoIgnoreRow(
+                                        c.getString(0),
+                                        c.getString(1),
+                                        c.getInt(2),
+                                        c.getString(3),
+                                    )
+                                )
+                        }
+                    }
+            for (row in rows) {
+                val phone =
+                    if (confirmedNumber(row.receiver)) row.receiver else resolver(row.sub)
+                if (confirmedNumber(phone)) continue
+                if (row.source != "notification" && !mappingsUsable) continue
+                count +=
+                    db.update(
+                        "outbox",
+                        ContentValues().apply { put("blocked", AUTO_IGNORED) },
+                        "key=? AND blocked=''",
+                        arrayOf(row.key),
+                    )
+            }
+            if (count > 0) recordCaptureEvent(CaptureSource.QUEUE, "auto_ignored", count)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (count > 0) changes.value++
+        return count
+    }
+
+    fun autoIgnoredKeys(): List<String> =
+        readableDatabase
+            .rawQuery("SELECT key FROM outbox WHERE blocked='$AUTO_IGNORED' ORDER BY timestamp DESC,key DESC", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+    fun restoreAutoIgnored(): Int {
+        val db = writableDatabase
+        var count = 0
+        db.beginTransaction()
+        try {
+            count =
+                db.update(
+                    "outbox",
+                    ContentValues().apply { put("blocked", "") },
+                    "blocked=?",
+                    arrayOf(AUTO_IGNORED),
+                )
+            if (count > 0) recordCaptureEvent(CaptureSource.QUEUE, "restored", count)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (count > 0) changes.value++
+        return count
+    }
+
+    fun discardAutoIgnored(): Int {
+        val keys = autoIgnoredKeys()
+        val count = discard(keys)
+        if (count > 0) {
+            recordCaptureEvent(CaptureSource.QUEUE, "discarded", count)
+            changes.value++
+        }
+        return count
+    }
+
+    // Saving a SIM can make previously-unresolved rows uploadable again. Only clear the soft
+    // state; invalid/collision rows keep their more specific reason.
+    internal fun releaseAutoIgnoredIfResolved(): Int {
+        val resolver = receiverResolver()
+        val rows =
+            readableDatabase
+                .rawQuery(
+                    "SELECT key,receiver,sub FROM outbox WHERE blocked='$AUTO_IGNORED'",
+                    null,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            add(Triple(c.getString(0), c.getString(1), c.getInt(2)))
+                    }
+                }
+        if (rows.isEmpty()) return 0
+        var count = 0
+        val db = writableDatabase
+        for ((key, receiver, sub) in rows) {
+            val phone = if (confirmedNumber(receiver)) receiver else resolver(sub)
+            if (!confirmedNumber(phone)) continue
+            count +=
+                db.update(
+                    "outbox",
+                    ContentValues().apply { put("blocked", "") },
+                    "key=? AND blocked=?",
+                    arrayOf(key, AUTO_IGNORED),
+                )
+        }
+        if (count > 0) {
+            recordCaptureEvent(CaptureSource.QUEUE, "restored", count)
+            changes.value++
+        }
+        return count
+    }
+
     fun retryBlocked() {
-        writableDatabase.execSQL("UPDATE outbox SET blocked='' WHERE blocked<>'notification_collision'")
+        writableDatabase.execSQL(
+            "UPDATE outbox SET blocked='' WHERE blocked NOT IN ('notification_collision','$AUTO_IGNORED')"
+        )
         changes.value++
     }
 
@@ -1823,12 +1994,119 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    // Once the hub has accepted the authoritative broadcast/provider copy, a still-unpaired
+    // notification observation with the same body and a very close time is redundant. It is
+    // safe to retire it now even when the notification's contact-name title never produced
+    // sender evidence for the normal pairing path. The receipt and fingerprint ownership move
+    // to the authoritative capture so notification replays stay idempotent and later provider
+    // rows cannot be swallowed by a stale notification capture with no outbox row.
+    private fun absorbAuthoritativeDuplicate(
+        db: SQLiteDatabase,
+        key: String,
+        receiver: String,
+        body: String,
+        timestamp: Long,
+        outgoing: Boolean,
+    ): Int {
+        if (outgoing || !confirmedNumber(receiver)) return 0
+        val source =
+            db.rawQuery(
+                    "SELECT source FROM captures WHERE key=? AND (broadcast_key IS NOT NULL OR provider_id IS NOT NULL)",
+                    arrayOf(key),
+                )
+                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return 0
+        if (source != "broadcast" && source != "provider") return 0
+        if (hasNotificationReceipt(db, key)) return 0
+        val candidates =
+            db.rawQuery(
+                    "SELECT o.key,c.key FROM outbox o JOIN captures c ON c.key=o.key JOIN notification_receipts n ON n.capture_key=c.key WHERE c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL AND o.receiver='' AND o.sub<0 AND o.blocked<>'notification_collision' AND o.body=? AND ABS(o.timestamp-CAST(? AS INTEGER))<=? LIMIT 2",
+                    arrayOf(body, timestamp.toString(), NOTIFICATION_ABSORB_WINDOW.toString()),
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext()) add(c.getString(0) to c.getString(1))
+                    }
+                }
+        if (candidates.size != 1) return 0
+        val (orphanOutbox, orphanCapture) = candidates.single()
+        if (orphanOutbox == key) return 0
+        db.execSQL(
+            "UPDATE notification_receipts SET capture_key=? WHERE capture_key=?",
+            arrayOf(key, orphanCapture),
+        )
+        db.execSQL(
+            "UPDATE upload_fingerprints SET capture_key=? WHERE capture_key=?",
+            arrayOf(key, orphanCapture),
+        )
+        db.delete("outbox", "key=?", arrayOf(orphanOutbox))
+        return 1
+    }
+
+    // A sync page is durable proof that the hub already stored a message from this device, even
+    // when the original HTTP ACK was lost. Use the cached inbox row to find the local
+    // authoritative capture, then retire any redundant notification observation.
+    private fun absorbNotificationCopiesFromInbox(db: SQLiteDatabase, self: String): Int {
+        if (self.isEmpty()) return 0
+        val orphans =
+            db.rawQuery(
+                    "SELECT o.key,o.body,o.timestamp FROM outbox o JOIN captures c ON c.key=o.key JOIN notification_receipts n ON n.capture_key=c.key WHERE c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL AND o.receiver='' AND o.sub<0 AND o.blocked<>'notification_collision' ORDER BY o.timestamp DESC LIMIT 20",
+                    null,
+                )
+                .use { c ->
+                    buildList {
+                        while (c.moveToNext())
+                            add(Triple(c.getString(0), c.getString(1), c.getLong(2)))
+                    }
+                }
+        var absorbed = 0
+        for ((_, body, timestamp) in orphans) {
+            val matches =
+                db.rawQuery(
+                        "SELECT receiver,sender,body,timestamp FROM inbox WHERE device=? AND direction='in' AND body=? AND ABS(timestamp-CAST(? AS INTEGER))<=?",
+                        arrayOf(self, body, timestamp.toString(), NOTIFICATION_ABSORB_WINDOW.toString()),
+                    )
+                    .use { c ->
+                        buildList {
+                            while (c.moveToNext())
+                                add(
+                                    InboxMatch(
+                                        c.getString(0),
+                                        c.getString(1),
+                                        c.getString(2),
+                                        c.getLong(3),
+                                    )
+                                )
+                        }
+                    }
+            if (matches.size != 1) continue
+            val match = matches.single()
+            val captures =
+                db.rawQuery(
+                        "SELECT key FROM captures WHERE source IN ('broadcast','provider') AND receiver=? AND sender=? AND body=? AND timestamp=?",
+                        arrayOf(match.receiver, match.sender, match.body, match.timestamp.toString()),
+                    )
+                    .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+            if (captures.size != 1) continue
+            absorbed +=
+                absorbAuthoritativeDuplicate(
+                    db,
+                    captures.single(),
+                    match.receiver,
+                    match.body,
+                    match.timestamp,
+                    outgoing = false,
+                )
+        }
+        return absorbed
+    }
+
     fun ack(keys: List<String>) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             val resolver = receiverResolver(allowFallback = false)
             var notificationOnly = 0
+            var absorbed = 0
             for (key in keys) {
                 // Enrichment may race an HTTP request. Recheck the current wire identity
                 // before ACK can remove a newly colliding observation.
@@ -1836,12 +2114,28 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     if (!c.moveToFirst()) null else SmsRecord(c.getString(0).ifEmpty { resolver(c.getInt(4)) },
                         c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), outgoing = c.getString(5) == "out")
                 }
+                val source =
+                    db.rawQuery("SELECT source FROM captures WHERE key=?", arrayOf(key)).use {
+                        if (it.moveToFirst()) it.getString(0) else ""
+                    }
                 if (current != null && confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
                 val unpaired = db.rawQuery("SELECT 1 FROM outbox WHERE key=? AND $UNPAIRED_NOTIFICATION", arrayOf(key)).use { it.moveToFirst() }
-                if (db.delete("outbox", "key=? AND blocked<>'notification_collision'", arrayOf(key)) > 0 && unpaired)
-                    notificationOnly++
+                if (db.delete("outbox", "key=? AND blocked<>'notification_collision'", arrayOf(key)) > 0) {
+                    if (unpaired) notificationOnly++
+                    if (current != null && (source == "broadcast" || source == "provider"))
+                        absorbed += absorbAuthoritativeDuplicate(
+                            db,
+                            key,
+                            current.receiver,
+                            current.body,
+                            current.timestamp,
+                            current.outgoing,
+                        )
+                }
             }
             recordCaptureEvent(CaptureSource.NOTIFICATION, "uploaded_unpaired", notificationOnly)
+            if (absorbed > 0)
+                recordCaptureEvent(CaptureSource.NOTIFICATION, "absorbed_duplicate", absorbed)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -2096,6 +2390,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 arrayOf(cursor),
               )
             }
+            if (!preview && self.isNotEmpty()) {
+                val absorbed = absorbNotificationCopiesFromInbox(db, self)
+                if (absorbed > 0)
+                    recordCaptureEvent(CaptureSource.NOTIFICATION, "absorbed_duplicate", absorbed)
+            }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -2214,7 +2513,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     // views show them immediately. After the ACK the synced copy replaces them.
     fun localMessages(sender: String = "", q: String = "", sim: String = "", localContactSenders: Set<String> = emptySet()): List<CachedMessage> {
         val resolver = receiverResolver(allowFallback = false)
-        var where = "1=1"
+        var where = "o.blocked<>'$AUTO_IGNORED'"
         val args = mutableListOf<String>()
         if (sender.isNotEmpty()) {
             where += " AND o.sender=?"

@@ -29,6 +29,7 @@ enum class PendingState {
     NOTIFICATION_HELD,
     NOTIFICATION_ONLY,
     NEEDS_SIM,
+    AUTO_IGNORED,
     AWAITING_HUB,
     INVALID,
     SERVER_DENIED,
@@ -47,12 +48,18 @@ data class PendingCounts(
     val held: Int = 0,
     // Sent messages waiting for a hub that can store their direction (older hub version).
     val awaitingHub: Int = 0,
+    // Receiver-less rows hidden by the opt-in auto-ignore policy. They are not prompts and are
+    // not uploaded, but remain restorable from the pending page.
+    val ignored: Int = 0,
 ) {
+    // Only rows that still need action or upload. auto_ignored is deliberately excluded so the
+    // home banner and settings summary stay silent when nothing needs the user.
     val total: Int get() = ready + needsSim + invalid + collisions + held + awaitingHub
 
     // "Pending" means captured on this phone and not yet acknowledged by the hub.
     fun label(): String =
-        if (total == 0) "没有未上传的短信"
+        if (total == 0)
+            if (ignored > 0) "没有需要处理的未上传短信" else "没有未上传的短信"
         else
             "未上传 $total 条：" +
                 listOfNotNull(
@@ -113,6 +120,7 @@ fun pendingState(
 ): PendingState =
     when {
         blocked == "notification_collision" -> PendingState.NOTIFICATION_COLLISION
+        blocked == "auto_ignored" -> PendingState.AUTO_IGNORED
         blocked == "invalid_message" -> PendingState.INVALID
         notificationHeld -> PendingState.NOTIFICATION_HELD
         notificationOnly && (receiver.isEmpty() || blocked == "sim_not_confirmed") -> PendingState.NOTIFICATION_ONLY
@@ -131,6 +139,7 @@ fun pendingStateLabel(state: PendingState): String =
         PendingState.NOTIFICATION_HELD -> "来自短信通知：正在等待收件箱或系统广播的同一条短信，用来核对号码与内容"
         PendingState.NOTIFICATION_ONLY -> "只在短信通知中出现：收件箱和系统广播都没有这条短信，也不知道是哪张卡收到的；请确认接收号码或放弃"
         PendingState.NEEDS_SIM -> "需确认接收号码：系统没有告知是哪张卡收到的"
+        PendingState.AUTO_IGNORED -> "已自动忽略：没有可靠的接收号码，不提示也不上传；可恢复或放弃"
         PendingState.AWAITING_HUB -> "发出的短信：当前中枢版本还不支持，升级中枢后自动上传"
         PendingState.INVALID -> "无法上传：内容或格式被拒绝，可重试或放弃"
         PendingState.SERVER_DENIED -> "中枢已禁止本机上传"
