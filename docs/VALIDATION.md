@@ -807,3 +807,21 @@ HTTPS/VAPID 配置仍未验收。
 未执行/未覆盖：本机 `adb` 无真机，双卡/澎湃 OS 的真实通知标题、后台进程回收、网络断开重连后的端到端
 上传未在本轮验证；由 PR CI 的 Android 模拟器矩阵承担回归，真机行为仍需目标设备验收。
 服务端与 Web 未改动，Go/MySQL 与浏览器冒烟以 PR CI 为准。
+
+### 2026-10-22 完整 CI
+
+PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
+[Hongshu validation 39695130184](https://github.com/IGNGserver/hongshu/actions/runs/39695130184)
+全部通过；从创建到完成 7 分 55 秒（含排队）。六个 job 实际执行：
+
+| Job | 结果 / 耗时 |
+| --- | --- |
+| verify | `bash scripts/verify-repository.sh`、`git diff --check`；通过，7 秒 |
+| web | `npm test && npm run check && npm run build`，浏览器与联系人冒烟；通过，6 秒 |
+| server | 隔离 MySQL 8.4.5：`go test -race -count=1 -v ./... && go vet ./... && go build -trimpath`；Chromium 与本地联系人冒烟；通过，3 分 13 秒 |
+| android (28) | JVM 单测、lint、APK、androidTest APK 与模拟器 instrumentation；通过，7 分 50 秒 |
+| android (33) | 同上；通过，7 分 52 秒 |
+| android (35) | 同上；通过，6 分 32 秒 |
+
+仓库为 public，本轮 CI 不消耗私仓月度 2000 分钟配额。PR 尚未合并、未发布、未部署；本机仍无真机/adb，
+双卡、澎湃 OS 通知字段、后台进程回收与断网重连的端到端行为仍需目标设备验收。
