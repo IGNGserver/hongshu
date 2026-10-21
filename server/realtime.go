@@ -145,6 +145,25 @@ func validateEndpoint(ctx context.Context, s string) error {
 	}
 	return nil
 }
+
+// Docker's default bridge has no IPv6 route even when the host does. Resolvers
+// commonly return IPv6 first, so trying only ips[0] would silently fail APNs
+// delivery on a working NAS. Prefer IPv4 and fall back to every other address.
+func pushDialOrder(ips []net.IP) []net.IP {
+	ordered := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			ordered = append(ordered, v4)
+		}
+	}
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			ordered = append(ordered, ip)
+		}
+	}
+	return ordered
+}
+
 func pushHTTPClient() *http.Client {
 	tr := &http.Transport{TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
@@ -161,7 +180,18 @@ func pushHTTPClient() *http.Client {
 			}
 		}
 		d := net.Dialer{Timeout: 10 * time.Second}
-		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		var lastErr error
+		for _, ip := range pushDialOrder(ips) {
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr == nil {
+			lastErr = errors.New("push DNS failed")
+		}
+		return nil, lastErr
 	}}
 	return &http.Client{Transport: tr, Timeout: 25 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("push redirects forbidden") }}
 }

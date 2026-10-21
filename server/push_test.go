@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -52,6 +53,16 @@ func TestWebPushStandardEncryption(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != 202 {
 		t.Fatal("push delivery contract failed")
+	}
+}
+
+func TestPushDialOrderPrefersIPv4AndKeepsIPv6(t *testing.T) {
+	v6a := net.ParseIP("2001:db8::1")
+	v6b := net.ParseIP("2001:db8::2")
+	v4 := net.ParseIP("203.0.113.7")
+	ordered := pushDialOrder([]net.IP{v6a, v4, v6b})
+	if len(ordered) != 3 || ordered[0].To4() == nil || ordered[1].To4() != nil || ordered[2].To4() != nil {
+		t.Fatalf("unexpected dial order: %v", ordered)
 	}
 }
 
