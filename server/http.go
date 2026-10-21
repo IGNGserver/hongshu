@@ -20,6 +20,8 @@ func init() {
 	// /etc/mime.types. Without this, ServeFile sniffs the JSON as text/plain,
 	// which can make a Home Screen web app non-installable on iOS.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+	// Safari probes the legacy favicon path even when <link rel="icon"> exists.
+	_ = mime.AddExtensionType(".ico", "image/x-icon")
 }
 
 func (a *app) routes(web string) http.Handler {
@@ -155,7 +157,11 @@ func acceptsGzip(header string) bool {
 
 func shellAsset(name string) bool {
 	switch name {
-	case "index.html", "app.js", "local-contacts.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png", "apple-touch-icon-167.png", "apple-touch-icon-152.png", "favicon-32.png", "favicon-16.png":
+	case "index.html", "app.js", "local-contacts.js", "style.css", "sw.js", "manifest.webmanifest", "icon.svg",
+		"icon-192.png", "icon-512.png", "icon-1024.png",
+		"icon-maskable-192.png", "icon-maskable-512.png", "icon-maskable-1024.png",
+		"apple-touch-icon.png", "apple-touch-icon-167.png", "apple-touch-icon-152.png", "apple-touch-icon-precomposed.png",
+		"favicon-32.png", "favicon-16.png", "favicon.ico":
 		return true
 	}
 	return false

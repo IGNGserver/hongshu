@@ -14,13 +14,17 @@ const ASSETS = [
   "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",
+  "/icon-1024.png",
   "/icon-maskable-192.png",
   "/icon-maskable-512.png",
+  "/icon-maskable-1024.png",
   "/apple-touch-icon.png",
   "/apple-touch-icon-167.png",
   "/apple-touch-icon-152.png",
+  "/apple-touch-icon-precomposed.png",
   "/favicon-32.png",
   "/favicon-16.png",
+  "/favicon.ico",
 ];
 self.addEventListener("install", (e) => {
   // Icons of every platform/size must not compete with the first useful view.

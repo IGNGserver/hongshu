@@ -55,29 +55,39 @@ test("icon.svg is self-contained so <img> and favicon can render it", () => {
   assert.ok(refs.every((ref) => ref.startsWith("data:image/png;base64,")), "no external file references");
 });
 
-test("manifest keeps any and maskable icons separate and the shell caches them", () => {
+test("manifest keeps high-resolution any and maskable icons separate and the shell caches them", () => {
   const manifest = JSON.parse(read("manifest.webmanifest"));
   assert.ok(manifest.icons.every((icon) => icon.purpose === "any" || icon.purpose === "maskable"));
   const maskable = manifest.icons.filter((icon) => icon.purpose === "maskable");
-  assert.deepEqual(maskable.map((icon) => icon.src), ["/icon-maskable-192.png", "/icon-maskable-512.png"]);
+  assert.deepEqual(maskable.map((icon) => icon.src), ["/icon-maskable-1024.png", "/icon-maskable-512.png", "/icon-maskable-192.png"]);
+  const any = manifest.icons.filter((icon) => icon.purpose === "any");
+  assert.deepEqual(any.map((icon) => icon.src), ["/icon-1024.png", "/icon-512.png", "/icon-192.png", "/favicon-32.png"]);
+  assert.equal(manifest.icons[0].sizes, "1024x1024", "macOS Safari reads the high-resolution maskable icon for Dock and Launchpad");
   const worker = read("sw.js");
   const build = read("build.mjs");
   for (const file of [
-    "icon-maskable-192.png",
+    "icon-1024.png",
+    "icon-maskable-1024.png",
     "icon-maskable-512.png",
+    "icon-maskable-192.png",
     "apple-touch-icon.png",
     "apple-touch-icon-167.png",
     "apple-touch-icon-152.png",
+    "apple-touch-icon-precomposed.png",
     "favicon-32.png",
     "favicon-16.png",
+    "favicon.ico",
   ]) {
     assert.ok(worker.includes(`"/${file}"`), `sw.js precaches ${file}`);
     assert.ok(build.includes(`"${file}"`), `build.mjs ships ${file}`);
   }
   const html = read("index.html");
+  assert.ok(html.includes('rel="icon" type="image/png" sizes="1024x1024" href="/icon-1024.png"'));
   assert.ok(html.includes('rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"'));
   assert.ok(html.includes('rel="apple-touch-icon" sizes="167x167" href="/apple-touch-icon-167.png"'));
   assert.ok(html.includes('rel="apple-touch-icon" sizes="152x152" href="/apple-touch-icon-152.png"'));
+  assert.ok(html.includes('rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png"'));
+  assert.ok(html.includes('rel="icon" href="/icon.svg" type="image/svg+xml" sizes="any"'));
   assert.ok(html.includes('name="apple-mobile-web-app-capable" content="yes"'));
   assert.ok(html.includes('name="apple-mobile-web-app-title" content="鸿枢"'));
 });

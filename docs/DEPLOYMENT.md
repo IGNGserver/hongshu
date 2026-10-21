@@ -102,7 +102,9 @@ Web Push 需要 HTTPS、浏览器支持、用户授权，以及服务器能访�
 3. `curl -s https://实际域名/healthz` 的 `push.enabled` 为 true；`last_success` 只有在真实投递成功后才推进，
    200 不代表端到端健康。
 4. `curl -I https://实际域名/manifest.webmanifest` 返回 `application/manifest+json`；否则 iOS 可能无法把它识别为
-   主屏幕 Web App。服务端已显式注册该 MIME，自建代理不要覆盖。
+   主屏幕 Web App。服务端已显式注册该 MIME，自建代理不要覆盖。manifest 必须包含不透明的
+   `1024x1024` full-bleed maskable 图标（`icon-maskable-1024.png`）；macOS Safari 用它生成程序坞/启动台图标，
+   只有 512px 时会退回系统首字母占位图。升级后需删除旧网页 App 并重新“添加到程序坞”，系统才会重建图标缓存。
 5. iOS/iPadOS 16.4+ 必须用 Safari 分享菜单“添加到主屏幕”，再从主屏幕图标打开并授权；Safari 标签页没有后台推送。
    Android Chrome/Edge 需要通知权限（Android 13+），无 Google Play 服务/FCM 的国产 ROM 不保证。
 6. 开启通知后在设置页点“发送测试通知”，确认锁屏/通知中心收到且点击能打开 PWA；再验证来源设备不会收到自己的通知。
