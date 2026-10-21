@@ -1,3 +1,29 @@
+# 2026-10-22 Safari 网页 App 图标修复
+
+基线 `156a059`（`0.2.0-alpha.15`），任务分支 `agent/pwa-safari-icons`。未创建 PR、未部署、未发布。
+
+- 现象：从 Safari 添加到程序坞/启动台的鸿枢网页 App 显示系统首字母占位图标（深色方块 + “鸿”），而不是蓝色短信气泡品牌图标；同一版本的 Web 标签页 favicon 正常。
+- 根因：manifest 的最高图标只有 512×512 maskable。WebKit 的 macOS Web App 图标规则要求至少一个不透明、full-bleed 的
+  `1024×1024` maskable 位图（或任意尺寸 SVG）来生成程序坞/启动台/Quick Look 的多尺寸图标；缺失时 Safari 会回退到
+  apple-touch-icon（这里最高 180）或系统占位图。Alpha.15 的 manifest 首个图标还是 32×32 favicon，进一步放大了旧版选图器的风险。
+- 修复：从 512 主图标 Catmull-Rom 上采样生成 `icon-1024.png` 与 `icon-maskable-1024.png`，将 1024 maskable 放在 manifest
+  首位，HTML favicon 也优先声明 1024/512/192 PNG；补充 `/favicon.ico` 与 `apple-touch-icon-precomposed.png` 兜底；
+  build、SW、Go 静态白名单和测试同步。
+
+本机验证（macOS 26.7.1，Safari 27.0；产物在 `~/.build/hongshu/pwa-safari-icons/`，开始 `df` 可用 110Gi）：
+
+| 命令/检查 | 实际结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过，12 项运维测试（11.3s）；`git diff --check` 通过 |
+| `cd web && npm test && npm run check` | 96 项测试通过；manifest 顺序、1024 any/maskable、SW/build 资源和 Apple 元标签断言通过 |
+| `WEB_BUILD_DIR=~/.build/hongshu/pwa-safari-icons/web-dist npm run build` | 通过；产物 manifest 的 7 个图标均存在且尺寸正确，HTML/SW 均指向内容 hash 文件 |
+| `cd server && go test -race ./... && go vet ./... && go build -trimpath -o 本机scratch/hongshu .` | 通过（race 5.8s）；新增测试逐条请求 manifest 图标并用 `image/png` 解码核对尺寸，另检查 `/favicon.ico`、`/apple-touch-icon-precomposed.png` |
+| 实网只读探测 `https://hongshu.lvziwang.top`（alpha.15） | `manifest.webmanifest` 返回 `application/manifest+json`，图标均 200；说明不是 MIME/静态路由问题 |
+
+真机验收仍未完成：需要在部署包含本修复的镜像后，在受影响的 Mac 上删除旧网页 App，再从 Safari 重新“添加到程序坞”，
+确认程序坞/启动台显示蓝色气泡图标。Safari 在添加时缓存图标，直接在旧 App 上刷新不会触发重取。1024 图标由 512 主图标
+上采样，若后续有原生 1024 设计稿应替换；本次未运行 Android 构建（改动不涉及 Android），未触发 CI。
+
 # 2026-10-20 多端加载与弱网优化
 
 基线 `585b5ee`（`0.2.0-alpha.12`），任务分支 `agent/loading-performance`；发布工作流目标版本 `0.2.0-alpha.13`（预览版，非 stable）。

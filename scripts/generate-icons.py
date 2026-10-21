@@ -2,16 +2,23 @@
 """Generate every derived web icon from the checked-in 512px master.
 
 Outputs:
-- icon-192.png, icon-512.png (standard any icons)
-- icon-maskable-192.png, icon-maskable-512.png (80% safe zone for Android / Chromium PWA)
+- icon-192.png, icon-512.png, icon-1024.png (standard any icons)
+- icon-maskable-192.png, icon-maskable-512.png, icon-maskable-1024.png
+  (80% safe zone for Android / Chromium PWA and macOS Safari web apps)
 - apple-touch-icon.png (180px, iPhone/default), apple-touch-icon-167.png (167px, iPad Pro),
-  apple-touch-icon-152.png (152px, iPad)
+  apple-touch-icon-152.png (152px, iPad), apple-touch-icon-precomposed.png (legacy fallback)
 - favicon-32.png, favicon-16.png (desktop browsers & Safari pinned tab fallback)
+- favicon.ico (multi-size legacy fallback for implicit /favicon.ico requests)
 - icon.svg (self-contained SVG embedding a 128px PNG, usable as <img> or SVG favicon)
+
+macOS Safari builds the Dock/Launchpad icon from a high-resolution opaque full-bleed
+maskable manifest icon. The checked-in master is 512px, so the 1024px variants are a
+2x Catmull-Rom upscale; replace MASTER with a native 1024px asset when one exists.
 """
 from __future__ import annotations
 
 import base64
+import math
 import pathlib
 import struct
 import zlib
@@ -112,6 +119,52 @@ def resize_rgb(pixels: bytes, source_size: int, target_size: int) -> bytes:
     return bytes(result)
 
 
+def catmull_rom(distance: float) -> float:
+    x = abs(distance)
+    if x <= 1:
+        return 1.5 * x**3 - 2.5 * x**2 + 1
+    if x < 2:
+        return -0.5 * x**3 + 2.5 * x**2 - 4 * x + 2
+    return 0.0
+
+
+def upscale_rgb(pixels: bytes, source_size: int, target_size: int) -> bytes:
+    """Catmull-Rom upscale for the high-resolution macOS web app icon.
+
+    The 512px master is the only checked-in source, so a plain nearest-neighbour
+    upscale would look blocky in the Dock and Launchpad. This separable cubic pass
+    keeps the soft gradients smooth until a native 1024px master is available.
+    """
+    if target_size <= source_size:
+        return resize_rgb(pixels, source_size, target_size)
+    scale = source_size / target_size
+    result = bytearray(target_size * target_size * 3)
+    for y in range(target_size):
+        sy = (y + 0.5) * scale - 0.5
+        base_y = math.floor(sy)
+        y_taps = [(base_y + k - 1, catmull_rom(sy - (base_y + k - 1))) for k in range(4)]
+        for x in range(target_size):
+            sx = (x + 0.5) * scale - 0.5
+            base_x = math.floor(sx)
+            x_taps = [(base_x + k - 1, catmull_rom(sx - (base_x + k - 1))) for k in range(4)]
+            red = green = blue = 0.0
+            for source_y, weight_y in y_taps:
+                clamped_y = min(max(source_y, 0), source_size - 1)
+                row = clamped_y * source_size * 3
+                for source_x, weight_x in x_taps:
+                    clamped_x = min(max(source_x, 0), source_size - 1)
+                    pixel = row + clamped_x * 3
+                    weight = weight_x * weight_y
+                    red += pixels[pixel] * weight
+                    green += pixels[pixel + 1] * weight
+                    blue += pixels[pixel + 2] * weight
+            target = (y * target_size + x) * 3
+            result[target] = min(255, max(0, round(red)))
+            result[target + 1] = min(255, max(0, round(green)))
+            result[target + 2] = min(255, max(0, round(blue)))
+    return bytes(result)
+
+
 def write_png(path: pathlib.Path, size: int, pixels: bytes) -> None:
     rows = b"".join(b"\x00" + pixels[y * size * 3 : (y + 1) * size * 3] for y in range(size))
     payload = (
@@ -131,6 +184,20 @@ def png_bytes(size: int, pixels: bytes) -> bytes:
         + png_chunk(b"IDAT", zlib.compress(rows, 9))
         + png_chunk(b"IEND", b"")
     )
+
+
+def ico_bytes(images: list[tuple[int, bytes]]) -> bytes:
+    """Build a multi-resolution ICO whose entries contain PNG data."""
+    header = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    entries = bytearray()
+    payload = bytearray()
+    for size, png in images:
+        dimension = 0 if size >= 256 else size
+        entries.extend(struct.pack("<BBBBHHII", dimension, dimension, 0, 0, 1, 32, len(png), offset))
+        payload.extend(png)
+        offset += len(png)
+    return header + bytes(entries) + bytes(payload)
 
 
 def pad_into_safe_zone(pixels: bytes, size: int, scale: float, feather: int = 24) -> bytes:
@@ -159,15 +226,28 @@ width, height, pixels = read_png(MASTER)
 if width != height:
     raise ValueError("icon master must be square")
 write_png(ROOT / "icon-192.png", 192, resize_rgb(pixels, width, 192))
-write_png(ROOT / "apple-touch-icon.png", 180, resize_rgb(pixels, width, 180))
+apple_touch_180 = resize_rgb(pixels, width, 180)
+write_png(ROOT / "apple-touch-icon.png", 180, apple_touch_180)
+(ROOT / "apple-touch-icon-precomposed.png").write_bytes(png_bytes(180, apple_touch_180))
 write_png(ROOT / "apple-touch-icon-167.png", 167, resize_rgb(pixels, width, 167))
 write_png(ROOT / "apple-touch-icon-152.png", 152, resize_rgb(pixels, width, 152))
 write_png(ROOT / "favicon-32.png", 32, resize_rgb(pixels, width, 32))
 write_png(ROOT / "favicon-16.png", 16, resize_rgb(pixels, width, 16))
+# Safari's macOS web app icon synthesis expects an opaque full-bleed maskable
+# bitmap at 1024x1024. The 512 master is upscaled with Catmull-Rom so the Dock,
+# Launchpad and Quick Look variants are not blocky.
+icon_1024 = upscale_rgb(pixels, width, 1024)
+write_png(ROOT / "icon-1024.png", 1024, icon_1024)
+write_png(ROOT / "icon-maskable-1024.png", 1024, pad_into_safe_zone(icon_1024, 1024, 0.8))
 # Maskable icons may be cropped to a circle of 80% diameter; keep the artwork inside it.
 padded_512 = pad_into_safe_zone(pixels, width, 0.8)
 write_png(ROOT / "icon-maskable-512.png", width, padded_512)
 write_png(ROOT / "icon-maskable-192.png", 192, resize_rgb(padded_512, width, 192))
+# Safari probes /favicon.ico implicitly even when <link rel="icon"> exists.
+(ROOT / "favicon.ico").write_bytes(ico_bytes([
+    (size, png_bytes(size, resize_rgb(pixels, width, size)))
+    for size in (16, 32, 48, 64, 128, 256)
+]))
 embedded = base64.b64encode(png_bytes(128, resize_rgb(pixels, width, 128))).decode("ascii")
 (ROOT / "icon.svg").write_text(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">\n'
@@ -177,4 +257,4 @@ embedded = base64.b64encode(png_bytes(128, resize_rgb(pixels, width, 128))).deco
     "</svg>\n",
     encoding="utf-8",
 )
-print("generated web icons: icon-192.png, apple-touch-icon*.png, favicon-*.png, icon-maskable-*.png, icon.svg")
+print("generated web icons: icon-192/512/1024.png, apple-touch-icon*.png, favicon-16/32.png, favicon.ico, icon-maskable-192/512/1024.png, icon.svg")

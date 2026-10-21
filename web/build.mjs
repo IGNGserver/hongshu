@@ -19,7 +19,7 @@ if (manifest.display !== "standalone" && manifest.display !== "fullscreen")
 if (typeof manifest.id !== "string" || manifest.id === "")
   throw new Error("Manifest must have a stable id for Home Screen web apps");
 const icons = new Set((manifest.icons || []).map(icon => `${icon.sizes}:${icon.purpose || "any"}`));
-for (const required of ["192x192:any", "512x512:any", "192x192:maskable", "512x512:maskable"])
+for (const required of ["192x192:any", "512x512:any", "1024x1024:any", "192x192:maskable", "512x512:maskable", "1024x1024:maskable"])
   if (!icons.has(required)) throw new Error(`Manifest missing icon ${required}`);
 await mkdir(out, { recursive: true });
 const assets = [
@@ -32,13 +32,17 @@ const assets = [
   "icon.svg",
   "icon-192.png",
   "icon-512.png",
+  "icon-1024.png",
   "icon-maskable-192.png",
   "icon-maskable-512.png",
+  "icon-maskable-1024.png",
   "apple-touch-icon.png",
   "apple-touch-icon-167.png",
   "apple-touch-icon-152.png",
+  "apple-touch-icon-precomposed.png",
   "favicon-32.png",
   "favicon-16.png",
+  "favicon.ico",
 ];
 const hash = createHash("sha256");
 for (const file of assets) hash.update(file).update(await readFile(resolve(root, file)));
