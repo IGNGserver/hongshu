@@ -29,7 +29,7 @@ Android 系统对验证码、后台运行、强制停止和厂商省电的限制
 需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。中枢镜像发布在 GitHub Container Registry（`ghcr.io/igngserver/hongshu`），部署须显式选择已发布固定版本；预发布没有 latest，无需基于 main 或源码本地构建。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
 
 ```bash
-HONGSHU_VERSION=0.1.0-alpha.11 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.15 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```
