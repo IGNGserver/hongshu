@@ -233,6 +233,15 @@ class Config(context: Context) {
     val notificationGeneration: Long
         get() = prefs.getLong("notification_generation", 0)
 
+    // Opt-in queue policy: receiver-less rows are soft-ignored instead of prompting forever.
+    // The switch is only offered after a SIM number is mapped, so "unresolved" is an anomaly,
+    // not a missing setup. Rows keep their capture receipts and can be restored.
+    var autoIgnoreUnassigned: Boolean
+        get() = prefs.getBoolean("auto_ignore_unassigned", false)
+        set(value) {
+            prefs.edit().putBoolean("auto_ignore_unassigned", value).commit()
+        }
+
     val receivedNotifications: Long
         get() = prefs.getLong("received_notifications", 0)
 

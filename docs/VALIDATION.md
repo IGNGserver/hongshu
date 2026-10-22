@@ -780,3 +780,48 @@ Android 模拟器回归（见下）。真实设备与公网 Push 仍须在目标
 通知或 FCM/APNs 可达。本轮 CI 合计约 27.4 job 分钟；仓库为 public，不消耗私仓月度 2000 分钟配额。
 未创建 PR、未合并、未发布、未部署；真实 iPhone/iPad、Android Chrome/FCM、无 GMS ROM 与生产
 HTTPS/VAPID 配置仍未验收。
+
+## 2026-10-22 通知副本吸收与无法归属短信自动忽略
+
+分支 `agent/sms-dedup-ignore`（基于 `origin/main` 4038691，`0.2.0-alpha.16`），worktree
+`~/项目/.wt/短信同步系统/sms-dedup-ignore`。本轮只修改 Android 与文档，不改服务端协议、Web 或数据库 schema；
+不递增版本、不创建 Release。
+
+新增行为：权威广播/收件箱副本 ACK 或同步确认后，把同正文、时间差不超过 60 秒、候选唯一的未配对通知副本
+吸收到权威 capture，转移通知身份与上传指纹归属并删除通知 outbox 行；待上传页的设置/分组新增
+“自动忽略无法确认接收号码的短信”，以 `outbox.blocked=auto_ignored` 软忽略，不计入提示与上传，
+可在待上传页恢复或放弃，保存有效 SIM 或出现权威副本时自动解除。无数据库迁移。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；版本 `0.2.0-alpha.16`，12 项隔离运维测试 OK |
+| `git diff --check` | 通过 |
+| scratch `~/.build/短信同步系统/sms-dedup-ignore`；`./gradlew --no-daemon :app:testDebugUnitTest` | 274 项测试，0 失败/0 错误/11 跳过；含新增 `NotificationDuplicateAbsorptionTest` 9 项 |
+| `./gradlew --no-daemon :app:lintDebug :app:assembleDebug` | 通过；lint 无 error，debug APK 20 MB；最终合并跑 2 分 09 秒，冷跑 4 分 06 秒 |
+| 本地构建位置 | 源码副本 `~/.build/短信同步系统/sms-dedup-ignore`（7.1M）；Gradle 输出/缓存 `~/.cache/hongshu`（178M），未在工作区或项目卷生成 `build`/`.gradle` |
+
+测试覆盖：联系人名通知与有号码 provider/广播副本在 ACK 后合并为一份；ACK 丢失后由同步页清理旧副本；
+其他设备的同内容同步页不清理本机通知；自动忽略开关的提示总数、会话列表、上传排除、恢复/放弃、
+通知身份账本幂等；无可用 SIM 时只忽略通知副本；保存缺失 SIM 后恢复；后续权威副本出现时恢复。
+
+未执行/未覆盖：本机 `adb` 无真机，双卡/澎湃 OS 的真实通知标题、后台进程回收、网络断开重连后的端到端
+上传未在本轮验证；由 PR CI 的 Android 模拟器矩阵承担回归，真机行为仍需目标设备验收。
+服务端与 Web 未改动，Go/MySQL 与浏览器冒烟以 PR CI 为准。
+
+### 2026-10-22 完整 CI
+
+PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
+[Hongshu validation 39695130184](https://github.com/IGNGserver/hongshu/actions/runs/39695130184)
+全部通过；从创建到完成 7 分 55 秒（含排队）。六个 job 实际执行：
+
+| Job | 结果 / 耗时 |
+| --- | --- |
+| verify | `bash scripts/verify-repository.sh`、`git diff --check`；通过，7 秒 |
+| web | `npm test && npm run check && npm run build`，浏览器与联系人冒烟；通过，6 秒 |
+| server | 隔离 MySQL 8.4.5：`go test -race -count=1 -v ./... && go vet ./... && go build -trimpath`；Chromium 与本地联系人冒烟；通过，3 分 13 秒 |
+| android (28) | JVM 单测、lint、APK、androidTest APK 与模拟器 instrumentation；通过，7 分 50 秒 |
+| android (33) | 同上；通过，7 分 52 秒 |
+| android (35) | 同上；通过，6 分 32 秒 |
+
+仓库为 public，本轮 CI 不消耗私仓月度 2000 分钟配额。PR 尚未合并、未发布、未部署；本机仍无真机/adb，
+双卡、澎湃 OS 通知字段、后台进程回收与断网重连的端到端行为仍需目标设备验收。

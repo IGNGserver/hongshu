@@ -182,6 +182,9 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             }
             // Wake upload without enqueueing another capture worker in a completion loop.
             Store(applicationContext).use {
+                // Apply the user's queue policy after pairing/scanning, so a row that was just
+                // enriched by this pass is not hidden before it had a chance to resolve.
+                it.autoIgnoreUnassigned()
                 if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
             }
             // Paging through a large inbox is progress, not failure: a retry would back off
