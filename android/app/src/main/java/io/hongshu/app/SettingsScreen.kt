@@ -24,10 +24,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -60,6 +66,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -116,6 +123,7 @@ fun SettingsScreen(
     onRequestPermissions: PermissionRequest,
     onAction: (suspend () -> String) -> Unit,
     onMessage: (String) -> Unit,
+    layoutSpec: AdaptiveLayoutSpec = rememberAdaptiveLayoutSpec(),
 ) {
     val changes by Store.changes.collectAsState()
     val health by RuntimeHealth.connection.collectAsState()
@@ -140,8 +148,85 @@ fun SettingsScreen(
             onAction,
             onMessage,
         )
+    if (layoutSpec.twoPane) {
+        val activePage =
+            if (page == SettingsPage.Overview) {
+                attentionItems(facts).firstOrNull()?.page ?: SettingsPage.Hub
+            } else page
+        Row(
+            Modifier.fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .padding(end = layoutSpec.outerPadding),
+            horizontalArrangement = Arrangement.spacedBy(layoutSpec.paneSpacing),
+        ) {
+            Box(Modifier.width(layoutSpec.settingsListPaneWidth).fillMaxHeight()) {
+                CompositionLocalProvider(
+                    LocalSettingsPaneStyle provides
+                        SettingsPaneStyle(
+                            compactHeader = true,
+                            showBack = true,
+                            embeddedInCard = false,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                            maxContentWidth = layoutSpec.settingsListPaneWidth,
+                        )
+                ) {
+                    SettingsOverviewPage(host, selectedPage = activePage)
+                }
+            }
+            Surface(
+                Modifier.weight(1f)
+                    .fillMaxHeight()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(top = 8.dp, bottom = 12.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                CompositionLocalProvider(
+                    LocalSettingsPaneStyle provides
+                        SettingsPaneStyle(
+                            compactHeader = true,
+                            showBack = false,
+                            embeddedInCard = true,
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            maxContentWidth = layoutSpec.settingsMaxWidth,
+                        )
+                ) {
+                    val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+                    val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+                    AnimatedContent(
+                        targetState = activePage,
+                        transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
+                        label = "settings detail pane",
+                    ) { detailPage ->
+                        SettingsSubpageContent(detailPage, host)
+                    }
+                }
+            }
+        }
+    } else {
+        CompositionLocalProvider(
+            LocalSettingsPaneStyle provides
+                SettingsPaneStyle(
+                    compactHeader = layoutSpec.compactHeight,
+                    showBack = true,
+                    embeddedInCard = false,
+                    maxContentWidth = layoutSpec.settingsMaxWidth,
+                )
+        ) {
+            if (page == SettingsPage.Overview) {
+                SettingsOverviewPage(host, selectedPage = null)
+            } else {
+                SettingsSubpageContent(page, host)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSubpageContent(page: SettingsPage, host: SettingsHost) {
     when (page) {
-        SettingsPage.Overview -> SettingsOverviewPage(host)
+        SettingsPage.Overview -> SettingsOverviewPage(host, selectedPage = null)
         SettingsPage.Hub -> HubPage(host)
         SettingsPage.Analysis -> AnalysisSettingsPage(host)
         SettingsPage.Capture -> CapturePage(host)
@@ -163,7 +248,7 @@ internal fun appVersion(activity: ComponentActivity): String =
         .orEmpty()
 
 @Composable
-private fun SettingsOverviewPage(host: SettingsHost) {
+private fun SettingsOverviewPage(host: SettingsHost, selectedPage: SettingsPage? = null) {
     val c = host.config
     val f = host.facts
     val attention = attentionItems(f)
@@ -185,13 +270,17 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "中枢连接",
                         summary = if (f.connected) "${c.deviceName} · ${c.url}" else "连接你的私有短信中枢",
                         icon = Icons.Default.Dns,
+                        selected = selectedPage == SettingsPage.Hub,
                         status = hubStatus(f),
                         onClick = { host.navigate(SettingsPage.Hub) },
                     )
                 },
                 SettingsRow("analysis") {
                     SettingsItem(
-                        title = "AI 短信分组", summary = "验证码规则提取 · 可选中枢 AI 整理", icon = Icons.Default.Sms,
+                        title = "AI 短信分组",
+                        summary = "验证码规则提取 · 可选中枢 AI 整理",
+                        icon = Icons.Default.Sms,
+                        selected = selectedPage == SettingsPage.Analysis,
                         onClick = { host.navigate(SettingsPage.Analysis) },
                     )
                 },
@@ -206,6 +295,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "本机联系人",
                         summary = "仅本机显示姓名和头像，不上传或同步",
                         icon = Icons.Default.Person,
+                        selected = selectedPage == SettingsPage.Contacts,
                         onClick = { host.navigate(SettingsPage.Contacts) },
                     )
                 },
@@ -214,6 +304,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "短信采集",
                         summary = "把这台手机收到的短信上传到中枢",
                         icon = Icons.Default.Sms,
+                        selected = selectedPage == SettingsPage.Capture,
                         status = captureStatus(f),
                         onClick = { host.navigate(SettingsPage.Capture) },
                     )
@@ -223,6 +314,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "SIM 卡与号码",
                         summary = if (c.automaticSim) "自动识别号码" else "手动填写号码",
                         icon = Icons.Default.SimCard,
+                        selected = selectedPage == SettingsPage.Sims,
                         showChevron = true,
                         onClick = { host.navigate(SettingsPage.Sims) },
                     )
@@ -234,6 +326,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                             if (f.pending.total == 0) "没有等待上传的短信"
                             else "${f.pending.total} 条保留在本机，等待上传",
                         icon = Icons.Default.Outbox,
+                        selected = selectedPage == SettingsPage.Pending,
                         showChevron = true,
                         onClick = { host.navigate(SettingsPage.Pending) },
                     )
@@ -249,6 +342,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "通知",
                         summary = "其他设备的新短信到达时提醒",
                         icon = Icons.Default.Notifications,
+                        selected = selectedPage == SettingsPage.Notifications,
                         status = notificationsStatus(f),
                         onClick = { host.navigate(SettingsPage.Notifications) },
                     )
@@ -258,6 +352,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "后台运行",
                         summary = "保持实时连接、开机恢复",
                         icon = Icons.Default.BatteryChargingFull,
+                        selected = selectedPage == SettingsPage.Background,
                         status = backgroundStatus(f),
                         onClick = { host.navigate(SettingsPage.Background) },
                     )
@@ -273,6 +368,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "诊断信息",
                         summary = "各项采集与连接的详细状态，用于排查问题",
                         icon = Icons.Default.MonitorHeart,
+                        selected = selectedPage == SettingsPage.Diagnostics,
                         showChevron = true,
                         onClick = { host.navigate(SettingsPage.Diagnostics) },
                     )
@@ -282,6 +378,7 @@ private fun SettingsOverviewPage(host: SettingsHost) {
                         title = "关于鸿枢",
                         summary = "版本 ${appVersion(host.activity)}",
                         icon = Icons.Default.Info,
+                        selected = selectedPage == SettingsPage.About,
                         showChevron = true,
                         onClick = { host.navigate(SettingsPage.About) },
                     )
@@ -436,7 +533,11 @@ private fun HubPage(host: SettingsHost) {
             }
         } else {
             settingsItem("form") {
-                HubForm(host, onCancel = if (host.facts.connected) ({ editing = false }) else null)
+                HubForm(
+                    host,
+                    onSaved = { editing = false },
+                    onCancel = if (host.facts.connected) ({ editing = false }) else null,
+                )
             }
         }
     }
@@ -494,7 +595,12 @@ private fun ConnectedHubCard(
 }
 
 @Composable
-private fun HubForm(host: SettingsHost, onCancel: (() -> Unit)?) {
+private fun HubForm(
+    host: SettingsHost,
+    onSaved: () -> Unit = {},
+    onCancel: (() -> Unit)?,
+) {
+    val style = LocalSettingsPaneStyle.current
     val c = host.config
     val connected = host.facts.connected
     var url by rememberSaveable { mutableStateOf(c.url) }
@@ -528,7 +634,10 @@ private fun HubForm(host: SettingsHost, onCancel: (() -> Unit)?) {
                     }
                 }
                 password = ""
-                host.back()
+                onSaved()
+                if (!style.embeddedInCard) {
+                    host.back()
+                }
             }
             if (sameHub) "设备名称已保存" else "已连接到中枢"
         }

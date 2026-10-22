@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyItemScope
@@ -54,9 +55,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -73,6 +76,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** How a setting or subsystem is doing, shown as a coloured dot plus a short label. */
@@ -125,8 +129,23 @@ fun IconBadge(
 }
 
 /**
- * Full-screen settings page: a large collapsing title with back navigation, a wavy progress bar
- * while an action runs, and a lazily built body.
+ * Layout configuration for a settings scaffold so single-pane, landscape compact-height, and
+ * two-pane master-detail panes share the same page definitions without duplicating code.
+ */
+data class SettingsPaneStyle(
+    val compactHeader: Boolean = false,
+    val showBack: Boolean = true,
+    val embeddedInCard: Boolean = false,
+    val containerColor: Color? = null,
+    val maxContentWidth: Dp = 680.dp,
+)
+
+internal val LocalSettingsPaneStyle = compositionLocalOf { SettingsPaneStyle() }
+
+/**
+ * Full-screen or pane settings page: a large collapsing title (or compact top bar on short/split
+ * viewports), a wavy progress bar while an action runs, and a lazily built body with bounded
+ * reading width.
  */
 @Composable
 fun SettingsScaffold(
@@ -135,39 +154,77 @@ fun SettingsScaffold(
     busy: Boolean,
     content: LazyListScope.() -> Unit,
 ) {
+    val style = LocalSettingsPaneStyle.current
+    val bgColor = style.containerColor ?: MaterialTheme.colorScheme.surface
+    val topBarInsets =
+        if (style.embeddedInCard) WindowInsets(0, 0, 0, 0) else TopAppBarDefaults.windowInsets
     val scrollBehavior =
-        TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+        if (style.compactHeader) TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
+        else TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     Scaffold(
         modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = bgColor,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            LargeTopAppBar(
-                title = { Text(title) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors =
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    ),
-                scrollBehavior = scrollBehavior,
-            )
+            if (style.compactHeader) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            title,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = if (!style.showBack) Modifier.padding(start = 8.dp) else Modifier,
+                        )
+                    },
+                    navigationIcon = {
+                        if (style.showBack) {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                            }
+                        }
+                    },
+                    windowInsets = topBarInsets,
+                    colors =
+                        TopAppBarDefaults.topAppBarColors(
+                            containerColor = bgColor,
+                            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        ),
+                    scrollBehavior = scrollBehavior,
+                )
+            } else {
+                LargeTopAppBar(
+                    title = { Text(title) },
+                    navigationIcon = {
+                        if (style.showBack) {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                            }
+                        }
+                    },
+                    windowInsets = topBarInsets,
+                    colors =
+                        TopAppBarDefaults.topAppBarColors(
+                            containerColor = bgColor,
+                            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        ),
+                    scrollBehavior = scrollBehavior,
+                )
+            }
         },
     ) { padding ->
         val direction = LocalLayoutDirection.current
         val navigation = WindowInsets.navigationBars.asPaddingValues()
-        Box(Modifier.fillMaxSize()) {
+        val bottomPadding =
+            if (style.embeddedInCard) 24.dp else navigation.calculateBottomPadding() + 32.dp
+        val horizontalPadding = if (style.embeddedInCard) 24.dp else 16.dp
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
-                Modifier.fillMaxSize(),
+                Modifier.fillMaxSize().widthIn(max = style.maxContentWidth),
                 contentPadding =
                     PaddingValues(
-                        start = padding.calculateStartPadding(direction) + 16.dp,
-                        end = padding.calculateEndPadding(direction) + 16.dp,
+                        start = padding.calculateStartPadding(direction) + horizontalPadding,
+                        end = padding.calculateEndPadding(direction) + horizontalPadding,
                         top = padding.calculateTopPadding() + 4.dp,
-                        bottom = navigation.calculateBottomPadding() + 32.dp,
+                        bottom = bottomPadding,
                     ),
                 content = content,
             )
@@ -175,7 +232,7 @@ fun SettingsScaffold(
                 visible = busy,
                 enter = fadeIn(),
                 exit = fadeOut(),
-                modifier = Modifier.padding(top = padding.calculateTopPadding()),
+                modifier = Modifier.fillMaxWidth().padding(top = padding.calculateTopPadding()),
             ) {
                 LinearWavyProgressIndicator(Modifier.fillMaxWidth())
             }
@@ -242,15 +299,30 @@ fun SettingsItem(
     summary: String? = null,
     icon: ImageVector? = null,
     enabled: Boolean = true,
+    selected: Boolean = false,
     status: Pair<StatusLevel, String>? = null,
     showChevron: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
+    val itemContainer =
+        if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+    val badgeContainer =
+        if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.secondaryContainer
+    val badgeContent =
+        if (selected) MaterialTheme.colorScheme.onPrimary
+        else MaterialTheme.colorScheme.onSecondaryContainer
     ListItem(
-        headlineContent = { Text(title) },
+        headlineContent = {
+            Text(
+                title,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            )
+        },
         supportingContent =
             summary?.let { { Text(it, modifier = Modifier.animateContentSize()) } },
-        leadingContent = icon?.let { { IconBadge(it) } },
+        leadingContent =
+            icon?.let { { IconBadge(it, container = badgeContainer, content = badgeContent) } },
         trailingContent =
             if (status != null || showChevron) {
                 {
@@ -266,7 +338,7 @@ fun SettingsItem(
                     }
                 }
             } else null,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        colors = ListItemDefaults.colors(containerColor = itemContainer),
         modifier =
             Modifier.alpha(if (enabled) 1f else 0.38f)
                 .then(

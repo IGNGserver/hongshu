@@ -32,9 +32,75 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+
+/**
+ * Responsive layout metrics derived from the current window size.
+ *
+ * Compact (`< 600dp`) uses a single-pane flow; Medium (`600..839dp`, such as phones in landscape
+ * or small tablets) and Expanded (`>= 840dp`, tablets and desktop windows) use a master-detail
+ * two-pane layout with proportional pane widths and bounded reading widths.
+ */
+data class AdaptiveLayoutSpec(
+    val width: Dp,
+    val height: Dp,
+    val twoPane: Boolean,
+    val expanded: Boolean,
+    val compactHeight: Boolean,
+    val listPaneWidth: Dp,
+    val settingsListPaneWidth: Dp,
+    val paneSpacing: Dp,
+    val outerPadding: Dp,
+    val bubbleMaxWidth: Dp,
+    val conversationMaxWidth: Dp,
+    val settingsMaxWidth: Dp,
+)
+
+fun adaptiveLayoutSpec(width: Dp, height: Dp): AdaptiveLayoutSpec {
+    val twoPane = width >= 600.dp
+    val expanded = width >= 840.dp
+    val compactHeight = height < 480.dp
+    val listPaneWidth =
+        when {
+            !twoPane -> width
+            expanded -> (width * 0.37f).coerceIn(360.dp, 420.dp)
+            else -> (width * 0.42f).coerceIn(300.dp, 348.dp)
+        }
+    val settingsListPaneWidth =
+        when {
+            !twoPane -> width
+            expanded -> (width * 0.36f).coerceIn(340.dp, 400.dp)
+            else -> (width * 0.40f).coerceIn(288.dp, 336.dp)
+        }
+    return AdaptiveLayoutSpec(
+        width = width,
+        height = height,
+        twoPane = twoPane,
+        expanded = expanded,
+        compactHeight = compactHeight,
+        listPaneWidth = listPaneWidth,
+        settingsListPaneWidth = settingsListPaneWidth,
+        paneSpacing = if (expanded) 12.dp else 8.dp,
+        outerPadding = if (expanded) 16.dp else 12.dp,
+        bubbleMaxWidth = if (twoPane) 460.dp else 320.dp,
+        conversationMaxWidth = if (expanded) 860.dp else 720.dp,
+        settingsMaxWidth = if (expanded) 780.dp else 680.dp,
+    )
+}
+
+@Composable
+fun rememberAdaptiveLayoutSpec(): AdaptiveLayoutSpec {
+    val window = LocalWindowInfo.current
+    val density = LocalDensity.current
+    val width = with(density) { window.containerSize.width.toDp() }
+    val height = with(density) { window.containerSize.height.toDp() }
+    return remember(width, height) { adaptiveLayoutSpec(width, height) }
+}
 
 sealed interface AppDestination {
     data object Home : AppDestination
@@ -82,17 +148,97 @@ internal fun closeSettingsDestinations(stack: List<AppDestination>): List<AppDes
 }
 
 /**
+ * Pops one step from the navigation stack.
+ *
+ * In two-pane settings, Overview is permanently shown in the left pane while the right pane shows
+ * the active subpage, so pressing Back from a top-level subpage closes settings directly instead
+ * of stopping on a redundant Overview-only state.
+ */
+internal fun popNavigationStack(
+    stack: List<AppDestination>,
+    twoPane: Boolean,
+): List<AppDestination> {
+    if (stack.size <= 1) return stack
+    if (
+        twoPane &&
+            stack.lastOrNull() is AppDestination.Settings &&
+            stack.getOrNull(stack.lastIndex - 1) == AppDestination.Settings(SettingsPage.Overview)
+    ) {
+        return closeSettingsDestinations(stack)
+    }
+    return popDestination(stack)
+}
+
+/**
+ * Updates the navigation stack when entering or exiting search mode.
+ */
+internal fun updateSearchDestination(
+    stack: List<AppDestination>,
+    active: Boolean,
+): List<AppDestination> {
+    if (active) {
+        return if (AppDestination.Search in stack) stack
+        else pushDestination(stack, AppDestination.Search)
+    }
+    val searchIndex = stack.lastIndexOf(AppDestination.Search)
+    return if (searchIndex >= 0) {
+        val next = stack.filterIndexed { index, _ -> index != searchIndex }
+        next.ifEmpty { listOf(AppDestination.Home) }
+    } else {
+        stack
+    }
+}
+
+/**
+ * Navigates to a settings page while avoiding unbounded subpage history in two-pane mode.
+ *
+ * In single-pane mode each drill-down pushes onto the stack so back returns to Overview first.
+ * In two-pane mode Overview is always visible on the left, so switching between subpages from the
+ * left menu replaces the active subpage while sub-drills (e.g. Pending -> Sims) still push if
+ * needed or switch cleanly.
+ */
+internal fun navigateSettingsDestination(
+    stack: List<AppDestination>,
+    page: SettingsPage,
+    twoPane: Boolean,
+): List<AppDestination> {
+    val target = AppDestination.Settings(page)
+    val current = stack.lastOrNull()
+    return if (twoPane && current is AppDestination.Settings && page != SettingsPage.Overview) {
+        if (current.page == SettingsPage.Overview) pushDestination(stack, target)
+        else replaceTopDestination(stack, target)
+    } else {
+        pushDestination(stack, target)
+    }
+}
+
+/**
+ * True when the search bar and filtered conversation list should be active.
+ *
+ * In two-pane mode, opening a conversation from search keeps `Search` on the stack right below
+ * `Conversation`, so the left pane stays in search mode while the right pane previews the thread.
+ */
+internal fun isSearchMode(stack: List<AppDestination>, twoPane: Boolean): Boolean {
+    val last = stack.lastOrNull() ?: return false
+    if (last == AppDestination.Search) return true
+    return twoPane &&
+        last is AppDestination.Conversation &&
+        stack.getOrNull(stack.lastIndex - 1) == AppDestination.Search
+}
+
+/**
  * Which destinations share one screen and therefore change in place instead of sliding.
  *
  * Search is the home list with its header in search mode, and on wide screens a conversation
- * opens in the detail pane next to the list, so neither is a separate full-screen page.
+ * opens in the detail pane next to the list and settings subpages open next to the overview pane,
+ * so none of those transitions is a separate full-screen slide.
  */
 internal fun AppDestination.screenKey(twoPane: Boolean): String =
     when (this) {
         AppDestination.Home,
         AppDestination.Search -> "main"
         is AppDestination.Conversation -> if (twoPane) "main" else "conversation:$sender"
-        is AppDestination.Settings -> "settings:${page.name}"
+        is AppDestination.Settings -> if (twoPane) "settings" else "settings:${page.name}"
     }
 
 /** True when moving from [from] to [to] goes back up the stack. */

@@ -157,17 +157,40 @@ private fun formatClock(timestamp: Long): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
-fun MainSurface(destination: AppDestination, model: HomeModel, actions: HomeActions, twoPane: Boolean) {
+fun MainSurface(
+    destination: AppDestination,
+    model: HomeModel,
+    actions: HomeActions,
+    twoPane: Boolean,
+    searching: Boolean = destination == AppDestination.Search,
+    layoutSpec: AdaptiveLayoutSpec = rememberAdaptiveLayoutSpec(),
+) {
     val conversation = destination as? AppDestination.Conversation
-    val searching = destination == AppDestination.Search
-    Box(Modifier.fillMaxSize()) {
+    val compactHeight = layoutSpec.compactHeight
+    Box(
+        Modifier.fillMaxSize()
+            .background(
+                if (twoPane) MaterialTheme.colorScheme.surfaceContainerLow
+                else MaterialTheme.colorScheme.surface
+            )
+    ) {
         if (twoPane) {
-            Row(Modifier.fillMaxSize()) {
-                Box(Modifier.width(400.dp).fillMaxHeight()) {
-                    ConversationListPane(model, actions, searching, conversation)
+            Row(
+                Modifier.fillMaxSize().padding(end = layoutSpec.outerPadding),
+                horizontalArrangement = Arrangement.spacedBy(layoutSpec.paneSpacing),
+            ) {
+                Box(Modifier.width(layoutSpec.listPaneWidth).fillMaxHeight()) {
+                    ConversationListPane(model, actions, searching, conversation, compactHeight = compactHeight)
                 }
-                VerticalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
-                Surface(Modifier.weight(1f).fillMaxHeight(), color = MaterialTheme.colorScheme.surface) {
+                Surface(
+                    Modifier.weight(1f)
+                        .fillMaxHeight()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(top = 8.dp, bottom = 12.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
                     val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
                     val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
                     AnimatedContent(
@@ -177,14 +200,31 @@ fun MainSurface(destination: AppDestination, model: HomeModel, actions: HomeActi
                         label = "detail pane",
                     ) { selected ->
                         if (selected == null) DetailPlaceholder()
-                        else ConversationPane(selected, model, actions, showBack = false)
+                        else
+                            ConversationPane(
+                                selected,
+                                model,
+                                actions,
+                                showBack = false,
+                                inDetailCard = true,
+                                maxContentWidth = layoutSpec.conversationMaxWidth,
+                                bubbleMaxWidth = layoutSpec.bubbleMaxWidth,
+                            )
                     }
                 }
             }
         } else if (conversation != null) {
-            ConversationPane(conversation, model, actions, showBack = true)
+            ConversationPane(
+                conversation,
+                model,
+                actions,
+                showBack = true,
+                inDetailCard = false,
+                maxContentWidth = layoutSpec.conversationMaxWidth,
+                bubbleMaxWidth = layoutSpec.bubbleMaxWidth,
+            )
         } else {
-            ConversationListPane(model, actions, searching, null)
+            ConversationListPane(model, actions, searching, null, compactHeight = compactHeight)
         }
         AnimatedVisibility(
             visible = model.busy && !model.refreshing,
@@ -200,16 +240,23 @@ fun MainSurface(destination: AppDestination, model: HomeModel, actions: HomeActi
 @Composable
 private fun DetailPlaceholder() {
     Column(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            Icons.Default.ChatBubbleOutline,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.outline,
-        )
+        Box(
+            Modifier.size(88.dp)
+                .clip(MaterialShapes.Cookie9Sided.toShape())
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.ChatBubbleOutline,
+                contentDescription = null,
+                modifier = Modifier.size(36.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
         Text(
             "选择一个对话查看短信",
             style = MaterialTheme.typography.titleMedium,
@@ -224,6 +271,7 @@ private fun ConversationListPane(
     actions: HomeActions,
     searching: Boolean,
     selected: AppDestination.Conversation?,
+    compactHeight: Boolean = false,
 ) {
     val f = model.facts
     val showSims = model.receivers.size > 1
@@ -236,43 +284,8 @@ private fun ConversationListPane(
             attention = f.connected && attentionItems(f).isNotEmpty(),
             onOpenSettings = { actions.onOpenSettings(SettingsPage.Overview) },
             onMarkAllRead = actions.onMarkAllRead,
+            compactHeight = compactHeight,
         )
-        AnimatedVisibility(
-            visible = !searching && model.setup.visible,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            SetupCard(model.setup, actions.onOpenSettings, actions.onDismissSetup)
-        }
-        AnimatedVisibility(
-            visible = !searching && f.connected && !f.syncHealthy,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            NoticeCard(
-                icon = Icons.Default.CloudOff,
-                title = "同步异常",
-                text = f.syncDetail.ifEmpty { "最近一次同步没有成功" },
-                actionLabel = "查看",
-                onAction = { actions.onOpenSettings(SettingsPage.Hub) },
-                attention = true,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-        AnimatedVisibility(
-            visible = !searching && f.upload && f.pending.total > 0,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            NoticeCard(
-                icon = Icons.Default.Outbox,
-                title = f.pending.banner(),
-                text = "点击查看原因并处理",
-                actionLabel = "查看",
-                onAction = { actions.onOpenSettings(SettingsPage.Pending) },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
         AnimatedVisibility(showSims) {
             SimFilterRow(model.receivers, model.sims, model.simFilter, actions.onSimFilterChange)
         }
@@ -289,7 +302,10 @@ private fun ConversationListPane(
             }
         }
         if (model.aiEnabled) {
-            TextButton(onClick = { actions.onOpenSettings(SettingsPage.Analysis) }) {
+            TextButton(
+                onClick = { actions.onOpenSettings(SettingsPage.Analysis) },
+                modifier = Modifier.padding(horizontal = 8.dp),
+            ) {
                 Text("待分析 ${model.groupCounts["pending"] ?: 0} 条 · 查看队列状态")
             }
         }
@@ -321,6 +337,7 @@ private fun SearchHeader(
     attention: Boolean,
     onOpenSettings: () -> Unit,
     onMarkAllRead: () -> Unit = {},
+    compactHeight: Boolean = false,
 ) {
     Surface(
         onClick = { if (!searching) onSearchActiveChange(true) },
@@ -328,9 +345,9 @@ private fun SearchHeader(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier =
             Modifier.statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(horizontal = 16.dp, vertical = if (compactHeight) 4.dp else 8.dp)
                 .fillMaxWidth()
-                .height(56.dp),
+                .height(if (compactHeight) 48.dp else 56.dp),
     ) {
         val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
         val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
@@ -443,21 +460,65 @@ private fun ConversationList(
     showSims: Boolean,
 ) {
     val messages = model.messages
+    val f = model.facts
+    val hasBanners =
+        !searching &&
+            (model.setup.visible || (f.connected && !f.syncHealthy) || (f.upload && f.pending.total > 0))
     val navigation = WindowInsets.navigationBars.asPaddingValues()
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 4.dp, bottom = navigation.calculateBottomPadding() + 24.dp),
     ) {
+        if (!searching && model.setup.visible) {
+            item(key = "banner:setup") {
+                Box(Modifier.animateItem()) {
+                    SetupCard(model.setup, actions.onOpenSettings, actions.onDismissSetup)
+                }
+            }
+        }
+        if (!searching && f.connected && !f.syncHealthy) {
+            item(key = "banner:sync") {
+                NoticeCard(
+                    icon = Icons.Default.CloudOff,
+                    title = "同步异常",
+                    text = f.syncDetail.ifEmpty { "最近一次同步没有成功" },
+                    actionLabel = "查看",
+                    onAction = { actions.onOpenSettings(SettingsPage.Hub) },
+                    attention = true,
+                    modifier = Modifier.animateItem().padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+        }
+        if (!searching && f.upload && f.pending.total > 0) {
+            item(key = "banner:pending") {
+                NoticeCard(
+                    icon = Icons.Default.Outbox,
+                    title = f.pending.banner(),
+                    text = "点击查看原因并处理",
+                    actionLabel = "查看",
+                    onAction = { actions.onOpenSettings(SettingsPage.Pending) },
+                    modifier = Modifier.animateItem().padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+        }
         when {
             messages == null ->
                 item(key = "loading") {
-                    Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(
+                        if (hasBanners) Modifier.fillMaxWidth().padding(vertical = 48.dp)
+                        else Modifier.fillParentMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         LoadingIndicator()
                     }
                 }
             messages.isEmpty() ->
                 item(key = "empty") {
-                    Box(Modifier.fillParentMaxSize().animateItem(), contentAlignment = Alignment.Center) {
+                    Box(
+                        (if (hasBanners) Modifier.fillMaxWidth().padding(vertical = 24.dp)
+                        else Modifier.fillParentMaxSize()).animateItem(),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         EmptyState(model, actions, searching)
                     }
                 }
@@ -658,6 +719,9 @@ private fun ConversationPane(
     model: HomeModel,
     actions: HomeActions,
     showBack: Boolean,
+    inDetailCard: Boolean = false,
+    maxContentWidth: Dp = 760.dp,
+    bubbleMaxWidth: Dp = 320.dp,
 ) {
     val repo = model.repo
     val sender = conversation.sender
@@ -702,6 +766,10 @@ private fun ConversationPane(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 2 } }
+    val bottomInset =
+        if (inDetailCard) 12.dp
+        else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp
+    val horizontalPadding = if (inDetailCard) 24.dp else 16.dp
 
     fun copyCode(code: String) {
         copyOtp(context, code)
@@ -710,6 +778,8 @@ private fun ConversationPane(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
+            windowInsets =
+                if (inDetailCard) WindowInsets(0, 0, 0, 0) else TopAppBarDefaults.windowInsets,
             colors =
                 TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -723,7 +793,10 @@ private fun ConversationPane(
                 }
             },
             title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = if (!showBack) Modifier.padding(start = 8.dp) else Modifier,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Avatar(contactName, sender, 40.dp, localContact?.photo)
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -744,38 +817,41 @@ private fun ConversationPane(
                 }
             },
         )
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             if (messages == null) {
                 LoadingIndicator(Modifier.align(Alignment.Center))
             }
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxHeight().widthIn(max = maxContentWidth).fillMaxWidth(),
                 reverseLayout = true,
                 contentPadding =
                     PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
+                        start = horizontalPadding,
+                        end = horizontalPadding,
                         top = 12.dp,
-                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp,
+                        bottom = bottomInset,
                     ),
-                // Bottom alignment keeps a short conversation anchored above the input edge, as a
-                // reversed list does by default; spacedBy alone would pin it to the top.
-                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp,
+                        if (inDetailCard) Alignment.Top else Alignment.Bottom,
+                    ),
             ) {
                 // Newest first because the layout is reversed; a day header follows the oldest
                 // message of each day so it renders above that day's bubbles.
                 loaded.forEachIndexed { index, msg ->
-                        item(key = msg.id) {
-                            MessageBubble(
-                                msg = msg,
-                                isOutgoing = msg.outgoing,
-                                sourceDevice = if (msg.deviceId == deviceId) repo.config.deviceName.ifEmpty { "本机" } else "来源手机",
-                                onCopyCode = ::copyCode,
-                                aiEnabled = model.aiEnabled,
-                                onChangeCategory = { category -> actions.onChangeCategory(msg.id, category) },
-                                modifier = Modifier.animateItem(),
-                            )
+                    item(key = msg.id) {
+                        MessageBubble(
+                            msg = msg,
+                            isOutgoing = msg.outgoing,
+                            sourceDevice = if (msg.deviceId == deviceId) repo.config.deviceName.ifEmpty { "本机" } else "来源手机",
+                            onCopyCode = ::copyCode,
+                            aiEnabled = model.aiEnabled,
+                            onChangeCategory = { category -> actions.onChangeCategory(msg.id, category) },
+                            maxBubbleWidth = bubbleMaxWidth,
+                            modifier = Modifier.animateItem(),
+                        )
                     }
                     val older = loaded.getOrNull(index + 1)
                     if (older == null || !sameDay(older.timestamp, msg.timestamp)) {
@@ -794,7 +870,10 @@ private fun ConversationPane(
                 visible = showJump,
                 enter = scaleIn() + fadeIn(),
                 exit = scaleOut() + fadeOut(),
-                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
+                modifier =
+                    Modifier.align(Alignment.BottomEnd)
+                        .then(if (inDetailCard) Modifier else Modifier.navigationBarsPadding())
+                        .padding(16.dp),
             ) {
                 SmallFloatingActionButton(onClick = { scope.launch { listState.animateScrollToItem(0) } }) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "回到最新")
@@ -828,6 +907,7 @@ private fun MessageBubble(
     modifier: Modifier = Modifier,
     aiEnabled: Boolean = false,
     onChangeCategory: (String) -> Unit = {},
+    maxBubbleWidth: Dp = 320.dp,
 ) {
     val otp = messageOtp(msg)
     val shape =
@@ -846,24 +926,35 @@ private fun MessageBubble(
             contentColor =
                 if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer
                 else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.widthIn(max = 320.dp),
+            modifier = Modifier.widthIn(max = maxBubbleWidth),
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            if (otp != null) {
-                Text(otp, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
-                TextButton(onClick = { onCopyCode(otp) }) { Text("复制验证码") }
-                if (msg.analysis.expiresAt > 0) Text(
-                    if (msg.analysis.expiresAt <= System.currentTimeMillis()) "按短信标注的有效期，可能已过期"
-                    else "短信标注有效至 ${formatClock(msg.analysis.expiresAt)}",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-            SelectionContainer {
-                Text(
-                    msg.body,
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            }
+                if (otp != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            otp,
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        TextButton(onClick = { onCopyCode(otp) }) { Text("复制验证码") }
+                    }
+                    if (msg.analysis.expiresAt > 0)
+                        Text(
+                            if (msg.analysis.expiresAt <= System.currentTimeMillis()) "按短信标注的有效期，可能已过期"
+                            else "短信标注有效至 ${formatClock(msg.analysis.expiresAt)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                }
+                SelectionContainer {
+                    Text(
+                        msg.body,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
             }
         }
         // The user's own messages are not classified.
