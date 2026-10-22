@@ -168,7 +168,7 @@ class UiScreenshotTest {
                         .put("timestamp", time)
                 )
             }
-        Store(compose.activity).use { it.applySync(messages, 13) }
+            Store(compose.activity).use { it.applySync(messages, 13) }
         val facts = SetupFacts(connected = true)
         shot("conversation") {
             MainSurface(
@@ -176,6 +176,70 @@ class UiScreenshotTest {
                 model(sample, facts, true),
                 actions,
                 twoPane = false,
+            )
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w1024dp-h640dp-xhdpi")
+    fun tabletHomeConversation() {
+        val messages = org.json.JSONArray()
+        listOf(
+                Triple(11L, "【工商银行】您尾号 1234 的储蓄卡消费 56.00 元。", now - 30 * hour),
+                Triple(12L, "【工商银行】您的验证码为 482913，5 分钟内有效，请勿泄露。", now - hour / 6),
+                Triple(13L, "【工商银行】您正在登录手机银行，验证码 730215。", now - hour / 12),
+            )
+            .forEach { (id, body, time) ->
+                messages.put(
+                    org.json.JSONObject()
+                        .put("id", id)
+                        .put("device_id", "d1")
+                        .put("receiver", "+8613800138000")
+                        .put("sender", "95588")
+                        .put("body", body)
+                        .put("timestamp", time)
+                )
+            }
+        Store(compose.activity).use { it.applySync(messages, 13) }
+        val facts =
+            SetupFacts(
+                connected = true,
+                upload = true,
+                receiveSms = true,
+                keepAlive = true,
+                realtimeRunning = true,
+            )
+        shot("tablet-home-conversation") {
+            val spec = rememberAdaptiveLayoutSpec()
+            MainSurface(
+                AppDestination.Conversation("95588"),
+                model(sample, facts, true),
+                actions,
+                twoPane = spec.twoPane,
+                layoutSpec = spec,
+            )
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w1024dp-h640dp-xhdpi")
+    fun tabletSettingsTwoPane() =
+        shot("tablet-settings-two-pane") {
+            Settings(SettingsPage.Capture)
+        }
+
+    @Test
+    @Config(qualifiers = "w720dp-h360dp-xhdpi")
+    fun phoneLandscapeHome() {
+        val facts = SetupFacts(connected = true, upload = true, receiveSms = true)
+        shot("phone-landscape-home") {
+            val spec = rememberAdaptiveLayoutSpec()
+            MainSurface(
+                AppDestination.Home,
+                model(sample, facts, true),
+                actions,
+                twoPane = spec.twoPane,
+                layoutSpec = spec,
             )
         }
     }

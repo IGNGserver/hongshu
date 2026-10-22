@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -155,8 +156,9 @@ fun HongshuUI(activity: MainActivity) {
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
-    val window = LocalWindowInfo.current
-    val isExpanded = with(LocalDensity.current) { window.containerSize.width.toDp() } >= 840.dp
+    val layoutSpec = rememberAdaptiveLayoutSpec()
+    val isExpanded = layoutSpec.twoPane
+    val searchActive = isSearchMode(navigationStack, isExpanded)
 
     fun runAction(announce: Boolean, task: suspend () -> String) {
         if (busy) return
@@ -212,8 +214,8 @@ fun HongshuUI(activity: MainActivity) {
     LaunchedEffect(searchQuery, simFilter, group) { messageLimit = 200 }
 
     val destination = navigationStack.last()
-    LaunchedEffect(changes, simFilter, messageLimit, group, destination, visible) {
-        if (!visible || destination is AppDestination.Settings || destination == AppDestination.Search) return@LaunchedEffect
+    LaunchedEffect(changes, simFilter, messageLimit, group, destination, searchActive, visible) {
+        if (!visible || destination is AppDestination.Settings || searchActive) return@LaunchedEffect
         loadedHomeMessages =
             withContext(Dispatchers.IO) {
                 repo.store.readUnlessClosed(emptyList()) {
@@ -230,8 +232,8 @@ fun HongshuUI(activity: MainActivity) {
         }
     }
 
-    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, searchSenders, destination, visible) {
-        if (!visible || destination != AppDestination.Search) return@LaunchedEffect
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, searchSenders, destination, searchActive, visible) {
+        if (!visible || destination is AppDestination.Settings || !searchActive) return@LaunchedEffect
         kotlinx.coroutines.delay(250)
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
@@ -242,8 +244,9 @@ fun HongshuUI(activity: MainActivity) {
     }
 
     val lists by
-        produceState(HomeLists(), changes, simFilter, searchQuery, searchSenders, visible, destination) {
+        produceState(HomeLists(), changes, simFilter, searchQuery, searchSenders, visible, destination, searchActive) {
             if (!visible || destination is AppDestination.Settings) return@produceState
+            val activeQuery = if (searchActive) searchQuery else ""
             value =
                 withContext(Dispatchers.IO) {
                     repo.store.readUnlessClosed(HomeLists()) {
@@ -253,7 +256,7 @@ fun HongshuUI(activity: MainActivity) {
                             sims = sims,
                             pending = pendingCounts(),
                             aiEnabled = aiEnabled(),
-                            groupCounts = groupCounts(searchQuery, simFilter, searchSenders),
+                            groupCounts = groupCounts(activeQuery, simFilter, searchSenders),
                         )
                     }
                 }
@@ -284,6 +287,10 @@ fun HongshuUI(activity: MainActivity) {
         navigationStack = pushDestination(navigationStack, destination)
     }
 
+    fun navigateSettings(page: SettingsPage) {
+        navigationStack = navigateSettingsDestination(navigationStack, page, isExpanded)
+    }
+
     fun navigateConversation(sender: String) {
         val destination = AppDestination.Conversation(sender)
         navigationStack =
@@ -297,19 +304,14 @@ fun HongshuUI(activity: MainActivity) {
             activity.leaveForBackground()
             return
         }
-        val leaving = navigationStack.last()
-        navigationStack = popDestination(navigationStack)
-        if (leaving == AppDestination.Search) searchQuery = ""
+        val wasSearching = AppDestination.Search in navigationStack
+        navigationStack = popNavigationStack(navigationStack, isExpanded)
+        if (wasSearching && AppDestination.Search !in navigationStack) searchQuery = ""
     }
 
     fun updateSearch(active: Boolean) {
-        if (active) {
-            push(AppDestination.Search)
-        } else if (navigationStack.lastOrNull() == AppDestination.Search) {
-            popNavigation()
-        } else {
-            searchQuery = ""
-        }
+        navigationStack = updateSearchDestination(navigationStack, active)
+        if (!active) searchQuery = ""
     }
 
     val permissionRequest: PermissionRequest = { permissions, continuation ->
@@ -329,7 +331,7 @@ fun HongshuUI(activity: MainActivity) {
             onSelectConversation = ::navigateConversation,
             onBack = ::popNavigation,
             onLoadMore = { messageLimit += 200 },
-            onOpenSettings = { page -> push(AppDestination.Settings(page)) },
+            onOpenSettings = ::navigateSettings,
             onRefresh = ::refresh,
             onDismissSetup = {
                 setupHidden = true
@@ -375,20 +377,22 @@ fun HongshuUI(activity: MainActivity) {
                             repo = repo,
                             busy = busy,
                             page = destination.page,
-                            onNavigate = { page -> push(AppDestination.Settings(page)) },
+                            onNavigate = ::navigateSettings,
                             onBack = ::popNavigation,
                             onRequestPermissions = permissionRequest,
                             onAction = ::action,
                             onMessage = ::showMessage,
+                            layoutSpec = layoutSpec,
                         )
-                    else ->
+                    else -> {
+                        val inSearch = isSearchMode(navigationStack, isExpanded)
                         MainSurface(
                             destination = destination,
                             model =
                                 HomeModel(
                                     repo = repo,
                                     messages =
-                                        if (destination == AppDestination.Search) loadedSearchMessages
+                                        if (inSearch) loadedSearchMessages
                                         else loadedHomeMessages,
                                     searchQuery = searchQuery,
                                     simFilter = simFilter,
@@ -406,12 +410,18 @@ fun HongshuUI(activity: MainActivity) {
                                 ),
                             actions = homeActions,
                             twoPane = isExpanded,
+                            searching = inSearch,
+                            layoutSpec = layoutSpec,
                         )
+                    }
                 }
             }
             SnackbarHost(
                 snackbar,
-                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding(),
+                Modifier.align(Alignment.BottomCenter)
+                    .widthIn(max = 560.dp)
+                    .navigationBarsPadding()
+                    .imePadding(),
             )
         }
     }
