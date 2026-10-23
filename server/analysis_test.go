@@ -37,6 +37,7 @@ func TestOTP(t *testing.T) {
 		{"Your order code is 123456", "", 0},
 		{"验证码 1234 或 5678", "", 0},
 		{"Your code is 1234 or 5678", "", 0},
+		{"验证码已发送，登录口令是 654321", "", 0},
 		{"【Google】G-397783 是您的 Google 验证码。请勿与任何人分享此码。", "G-397783", 0},
 		{"G-315643 is your Google verification code", "G-315643", 0},
 		{"Your Stripe verification code is: 719-839.", "719-839", 0},
@@ -247,20 +248,89 @@ func TestClassifierContract(t *testing.T) {
 	u, _ := url.Parse(server.URL)
 	t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", u.Hostname())
 	s := AISettings{Endpoint: server.URL, Model: "synthetic", Timeout: 2, Redact: true}
-	got, code, _ := classifySMS(context.Background(), s, "联系电话 13800138000")
-	if got != "notification" || code != "" {
-		t.Fatal(got, code)
+	got, otp, code, _ := classifySMS(context.Background(), s, "联系电话 13800138000", "")
+	if got != "notification" || otp != "" || code != "" {
+		t.Fatal(got, otp, code)
 	}
-	for _, bad := range []string{`{"category":"spam","action":"delete"}`, `{"category":"invented"}`, "```json\n{}\n```", `{"category":"unknown"}`} {
+	for _, bad := range []string{`{"category":"spam","action":"delete"}`, `{"category":"invented"}`, "```json\n{}\n```", `{"category":"unknown"}`, `{"category":"otp","otp":123456}`} {
 		content = bad
-		if got, code, _ = classifySMS(context.Background(), s, "synthetic"); got != "" || code == "" {
+		if got, otp, code, _ = classifySMS(context.Background(), s, "synthetic", ""); got != "" || otp != "" || code == "" {
 			t.Fatal("accepted untrusted output")
 		}
 	}
 	t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", "")
-	_, code, _ = classifySMS(context.Background(), AISettings{Endpoint: strings.Replace(server.URL, "http:", "https:", 1), Model: "synthetic", Timeout: 2}, "synthetic")
+	_, _, code, _ = classifySMS(context.Background(), AISettings{Endpoint: strings.Replace(server.URL, "http:", "https:", 1), Model: "synthetic", Timeout: 2}, "synthetic", "")
 	if code == "" {
 		t.Fatal("private destination accepted")
+	}
+}
+
+func TestClassifierOTPExtractionAndRedaction(t *testing.T) {
+	var seen string
+	content := `{"category":"otp","otp":"482913"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || len(in.Messages) != 2 {
+			t.Error("payload")
+			return
+		}
+		seen = in.Messages[1].Content
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", u.Hostname())
+	s := AISettings{Endpoint: server.URL, Model: "synthetic", Timeout: 2, Redact: true}
+	body := "您的验证码是 482913，订单 20261018 已支付，详情 https://example.com/482913"
+	got, otp, code, _ := classifySMS(context.Background(), s, body, "")
+	if got != "otp" || otp != "482913" || code != "" {
+		t.Fatalf("got=%q otp=%q code=%q", got, otp, code)
+	}
+	// OTP-like messages intentionally keep all digits so the model can find the
+	// code; links stay redacted. Non-OTP numeric redaction is covered above.
+	if !strings.Contains(seen, "482913") || strings.Contains(seen, "example.com") {
+		t.Fatalf("OTP redaction exception hid the code or leaked a link: %q", seen)
+	}
+	// The original body is still authoritative for validation: a code that only
+	// exists in the model output must not be persisted.
+	content = `{"category":"otp","otp":"111111"}`
+	if got, otp, code, _ = classifySMS(context.Background(), s, body, ""); got != "" || otp != "" || code == "" {
+		t.Fatal("hallucinated OTP accepted")
+	}
+	// A longer order number must not be truncated into a short code.
+	content = `{"category":"otp","otp":"202610"}`
+	if got, otp, code, _ = classifySMS(context.Background(), s, body, ""); got != "" || otp != "" || code == "" {
+		t.Fatal("truncated OTP accepted")
+	}
+	// Non-otp classification ignores any code the model volunteers.
+	content = `{"category":"promotion","otp":"482913"}`
+	if got, otp, code, _ = classifySMS(context.Background(), s, body, ""); got != "promotion" || otp != "" || code != "" {
+		t.Fatalf("non-otp code persisted: got=%q otp=%q code=%q", got, otp, code)
+	}
+}
+
+func TestNormalizeAICode(t *testing.T) {
+	for _, v := range []struct {
+		body, code, want string
+		ok               bool
+	}{
+		{"验证码：482913", "482913", "482913", true},
+		{"Your code is A2B3C4.", "a2b3c4", "A2B3C4", true},
+		{"G-397783 is your code", "G-397783", "G-397783", true},
+		{"您的验证码是【123456】", "123456", "123456", true},
+		{"验证码 12345678", "12345678", "12345678", true},
+		{"验证码 123456789", "123456789", "", false},
+		{"验证码 12345678901", "123456", "", false},
+		{"验证码：2026-10-16", "2026-10", "", false},
+	} {
+		got, ok := normalizeAICode(v.body, v.code)
+		if ok != v.ok || got != v.want {
+			t.Fatalf("body=%q code=%q got=%q ok=%v want=%q/%v", v.body, v.code, got, ok, v.want, v.ok)
+		}
 	}
 }
 
@@ -269,9 +339,9 @@ func TestClassifierProtocolAdapters(t *testing.T) {
 		name string
 		body map[string]any
 	}{
-		{aiProtocolResponses, map[string]any{"output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": `{"category":"notification"}`}}}}}},
-		{aiProtocolAnthropic, map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"category":"notification"}`}}}},
-		{aiProtocolGemini, map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": `{"category":"notification"}`}}}}}}},
+		{aiProtocolResponses, map[string]any{"output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": `{"category":"notification","otp":""}`}}}}}},
+		{aiProtocolAnthropic, map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"category":"notification","otp":""}`}}}},
+		{aiProtocolGemini, map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": `{"category":"notification","otp":""}`}}}}}}},
 	}
 	for _, protocol := range protocols {
 		t.Run(protocol.name, func(t *testing.T) {
@@ -290,9 +360,9 @@ func TestClassifierProtocolAdapters(t *testing.T) {
 			defer server.Close()
 			u, _ := url.Parse(server.URL)
 			t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", u.Hostname())
-			got, code, pause := classifySMS(context.Background(), AISettings{Protocol: protocol.name, Endpoint: server.URL, Model: "synthetic", Timeout: 2}, "synthetic")
-			if got != "notification" || code != "" || pause {
-				t.Fatalf("got=%q code=%q pause=%v", got, code, pause)
+			got, otp, code, pause := classifySMS(context.Background(), AISettings{Protocol: protocol.name, Endpoint: server.URL, Model: "synthetic", Timeout: 2}, "synthetic", "")
+			if got != "notification" || otp != "" || code != "" || pause {
+				t.Fatalf("got=%q otp=%q code=%q pause=%v", got, otp, code, pause)
 			}
 		})
 	}
@@ -332,7 +402,7 @@ func TestAnalysisIntegration(t *testing.T) {
 		t.Fatal("claim", e)
 	}
 	c.call("PATCH", "/api/messages/2/category", token, map[string]string{"category": "spam"}, 200)
-	if e = a.finishAnalysis(context.Background(), j, "notification", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "notification", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	ms := c.call("GET", "/api/messages?group=spam", token, nil, 200)["messages"].([]any)
@@ -347,7 +417,15 @@ func TestAnalysisIntegration(t *testing.T) {
 	if counts["all"] != float64(2) || counts["otp"] != float64(1) || counts["spam"] != float64(1) {
 		t.Fatal(counts)
 	}
-	c.call("PATCH", "/api/messages/1/category", token, map[string]string{"category": "spam"}, 400)
+	// An OTP message is no longer rule-managed: a human can move it out of the
+	// OTP group, which hides the code but keeps the rule value in storage.
+	c.call("PATCH", "/api/messages/1/category", token, map[string]string{"category": "spam"}, 200)
+	if len(c.call("GET", "/api/messages?group=otp", token, nil, 200)["messages"].([]any)) != 0 {
+		t.Fatal("manual OTP override did not leave otp group")
+	}
+	if len(c.call("GET", "/api/messages?group=spam", token, nil, 200)["messages"].([]any)) != 2 {
+		t.Fatal("manual OTP override did not enter spam group")
+	}
 	c.call("PATCH", "/api/messages/2/category", token, map[string]string{"category": "auto"}, 200)
 	if _, e = db.Exec("UPDATE ai_settings SET next_call=0"); e != nil {
 		t.Fatal(e)
@@ -356,7 +434,7 @@ func TestAnalysisIntegration(t *testing.T) {
 	if e != nil || j == nil {
 		t.Fatal("reclaim", e)
 	}
-	if e = a.finishAnalysis(context.Background(), j, "", "ai_http_429", true); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "", "", "ai_http_429", true); e != nil {
 		t.Fatal(e)
 	}
 	if j, e = a.claimAnalysis(context.Background()); e != nil || j != nil {
@@ -384,15 +462,15 @@ func TestAnalysisIntegration(t *testing.T) {
 	if e != nil || next == nil || next.Token == j.Token {
 		t.Fatal("lease recovery", e)
 	}
-	if e = a.finishAnalysis(context.Background(), j, "spam", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "spam", "", "", false); e != nil {
 		t.Fatal(e)
 	}
-	if e = a.finishAnalysis(context.Background(), next, "notification", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), next, "notification", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	cfg["enabled"] = false
 	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
-	if len(c.call("GET", "/api/messages?group=other", token, nil, 200)["messages"].([]any)) != 1 {
+	if len(c.call("GET", "/api/messages?group=other", token, nil, 200)["messages"].([]any)) != 2 {
 		t.Fatal("disabled mode")
 	}
 	if j, e = a.claimAnalysis(context.Background()); e != nil || j != nil {
@@ -416,6 +494,9 @@ func TestAnalysisIntegration(t *testing.T) {
 	cfg["daily_limit"] = 1
 	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
 	c.call("PATCH", "/api/messages/2/category", token, map[string]string{"category": "notification"}, 200)
+	// Backfill recreated the OTP row; keep it out of the queue so the remaining
+	// assertions still exercise the incoming/history ordering of IDs 3-5.
+	c.call("PATCH", "/api/messages/1/category", token, map[string]string{"category": "spam"}, 200)
 	more := []Incoming{
 		{Receiver: "+8613800000000", Sender: "10010", Body: "older synthetic history", Timestamp: 1700000000100, SubscriptionID: 1, Historical: true},
 		{Receiver: "+8613800000000", Sender: "10010", Body: "newer synthetic history", Timestamp: 1700000000200, SubscriptionID: 1, Historical: true},
@@ -439,7 +520,7 @@ func TestAnalysisIntegration(t *testing.T) {
 	if other, e := a.claimAnalysis(context.Background()); e != nil || other != nil {
 		t.Fatal("daily budget not enforced")
 	}
-	if e = a.finishAnalysis(context.Background(), j, "personal", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "personal", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	resetRate()
@@ -450,7 +531,7 @@ func TestAnalysisIntegration(t *testing.T) {
 	// Changing provider invalidates the old result, and lease recovery uses new settings.
 	cfg["model"] = "replacement"
 	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
-	if e = a.finishAnalysis(context.Background(), j, "spam", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "spam", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	var category string
@@ -465,7 +546,7 @@ func TestAnalysisIntegration(t *testing.T) {
 	if e != nil || j == nil || j.ID != 4 || j.Settings.Model != "replacement" {
 		t.Fatal("new provider lease", e)
 	}
-	if e = a.finishAnalysis(context.Background(), j, "notification", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "notification", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	resetRate()
@@ -473,7 +554,7 @@ func TestAnalysisIntegration(t *testing.T) {
 	if e != nil || j == nil || j.ID != 3 {
 		t.Fatal("remaining history", e)
 	}
-	if e = a.finishAnalysis(context.Background(), j, "promotion", "", false); e != nil {
+	if e = a.finishAnalysis(context.Background(), j, "promotion", "", "", false); e != nil {
 		t.Fatal(e)
 	}
 	cfg["enabled"] = false
@@ -502,5 +583,98 @@ func TestAnalysisIntegration(t *testing.T) {
 	j, e = a.claimAnalysis(claimCtx)
 	if e != nil || j == nil || j.ID != 3 {
 		t.Fatal("classifier locked source messages", e)
+	}
+}
+
+func TestAnalysisOTPReview(t *testing.T) {
+	db := testDB(t)
+	a, _ := newApp(db, "http://localhost:8080", "1", "", "")
+	c := apiTest{t: t, a: a}
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "kind": "android", "name": "Phone"}, 200)
+	token := paired["token"].(string)
+	id := paired["device"].(map[string]any)["id"].(string)
+	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	c.call("PATCH", "/api/devices/"+id, token, map[string]bool{"upload": true}, 200)
+	c.call("PUT", "/api/sims", token, map[string]any{"phone": "+8613800000000", "label": "SIM", "subscription_id": 1}, 200)
+	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{
+		{Receiver: "+8613800000000", Sender: "10086", Body: "验证码为 482913，5分钟内有效", Timestamp: 1700000000000, SubscriptionID: 1},
+		{Receiver: "+8613800000000", Sender: "10086", Body: "验证码已发送，登录口令是 654321", Timestamp: 1700000000001, SubscriptionID: 1},
+	}}, 200)
+	message := func(want int64) map[string]any {
+		t.Helper()
+		for _, raw := range c.call("GET", "/api/messages?limit=200", token, nil, 200)["messages"].([]any) {
+			m := raw.(map[string]any)
+			if int64(m["id"].(float64)) == want {
+				return m
+			}
+		}
+		t.Fatalf("message %d missing", want)
+		return nil
+	}
+	analysis := func(m map[string]any) map[string]any { return m["analysis"].(map[string]any) }
+	// AI off: the rule code is already visible; the rescue candidate is not a
+	// rule OTP because its code is not in the conservative adjacent grammar.
+	if m := message(1); analysis(m)["otp"] != "482913" || analysis(m)["state"] != "pending" {
+		t.Fatalf("rule OTP not immediate: %v", analysis(m))
+	}
+	if m := message(2); analysis(m)["otp"] != "" {
+		t.Fatalf("rule extracted the rescue candidate: %v", analysis(m))
+	}
+	cfg := map[string]any{"enabled": true, "consent": true, "endpoint": "https://example.com/chat/completions", "model": "synthetic", "timeout_seconds": 2, "requests_per_minute": 60, "daily_limit": 10, "redact": true}
+	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
+	resetRate := func() {
+		t.Helper()
+		if _, e := db.Exec("UPDATE ai_settings SET next_call=0,usage_count=0,usage_day=?", time.Now().UTC().Unix()/86400); e != nil {
+			t.Fatal(e)
+		}
+	}
+	resetRate()
+	j, e := a.claimAnalysis(context.Background())
+	if e != nil || j == nil || j.ID != 2 {
+		t.Fatal("newest OTP candidate", e)
+	}
+	if e = a.finishAnalysis(context.Background(), j, "otp", "654321", "", false); e != nil {
+		t.Fatal(e)
+	}
+	if m := message(2); analysis(m)["otp"] != "654321" || analysis(m)["category"] != "otp" {
+		t.Fatalf("AI rescue not persisted: %v", analysis(m))
+	}
+	resetRate()
+	j, e = a.claimAnalysis(context.Background())
+	if e != nil || j == nil || j.ID != 1 {
+		t.Fatal("rule OTP not queued", e)
+	}
+	// The AI overrules a rule false positive: the message leaves the OTP group
+	// and the API stops exposing the rule code while AI is enabled.
+	if e = a.finishAnalysis(context.Background(), j, "promotion", "", "", false); e != nil {
+		t.Fatal(e)
+	}
+	if m := message(1); analysis(m)["category"] != "promotion" || analysis(m)["otp"] != "" {
+		t.Fatalf("AI demotion not applied: %v", analysis(m))
+	}
+	if len(c.call("GET", "/api/messages?group=promotion", token, nil, 200)["messages"].([]any)) != 1 {
+		t.Fatal("demoted OTP not in promotion")
+	}
+	// Disabling AI falls back to the rule result without losing the AI outcome.
+	cfg["enabled"] = false
+	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
+	if m := message(1); analysis(m)["otp"] != "482913" {
+		t.Fatalf("AI-off rule fallback missing: %v", analysis(m))
+	}
+	// Re-enabling restores the completed AI result; a manual otp override then
+	// restores the code, and a manual promotion hides it again.
+	cfg["enabled"] = true
+	c.call("PUT", "/api/analysis/settings", "", cfg, 200)
+	if m := message(1); analysis(m)["otp"] != "" {
+		t.Fatalf("completed AI result did not persist: %v", analysis(m))
+	}
+	c.call("PATCH", "/api/messages/1/category", token, map[string]string{"category": "otp"}, 200)
+	if m := message(1); analysis(m)["otp"] != "482913" || analysis(m)["category"] != "otp" {
+		t.Fatalf("manual otp restore failed: %v", analysis(m))
+	}
+	c.call("PATCH", "/api/messages/1/category", token, map[string]string{"category": "promotion"}, 200)
+	if m := message(1); analysis(m)["otp"] != "" {
+		t.Fatalf("manual promotion did not hide the code: %v", analysis(m))
 	}
 }

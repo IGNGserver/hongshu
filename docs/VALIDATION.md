@@ -1,3 +1,52 @@
+# 2026-10-23 验证码 AI 复核与提取
+
+基线 `c68fa5e`（`0.2.0-alpha.18`），任务分支 `agent/ai-otp-analysis`，PR
+[#89](https://github.com/IGNGserver/hongshu/pull/89)。契约见
+[MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)、[API.md](API.md)。
+
+- 验证码仍由规则在入库事务内同步提取并立即显示；AI 开启后验证码也进入持久
+  队列，以 `otp` 类别复核最终分组并提取验证码文本。AI 未完成、失败或关闭时
+  回退规则结果；规则码保留在 `message_analysis`，人工改回验证码可恢复展示。
+- AI 输出严格校验：必须逐字出现在原文、4–8 位字母数字或连字符、至少一位
+  数字、边界不允许截断更长号码；不满足则丢弃重试。
+- 验证码类短信向 AI 发送时保留数字，链接和邮箱仍脱敏；同意文案已更新。
+- 旧规则验证码行通过领取条件懒纳入队列，不批量改 `state`，不需要迁移。
+- Web/Android 显示验证码的 AI 复核状态并允许手动归类；Android 本地规则提取
+  只在无服务端分析时兜底，AI 开关切换时重置分析游标避免陈旧码。
+- 浏览器 smoke 改为覆盖验证码进入 AI 队列，并验证分类器收到原码、其它短信
+  不泄漏验证码。
+
+本机验证（macOS，`~/.build` 可用 108 GiB；任务 scratch 18 MiB；Android
+构建输出在默认本机缓存 `~/.cache/hongshu/build`，均不在项目卷）：
+
+| 命令/检查 | 实际结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过，版本 `0.2.0-alpha.18`，12 项运维测试，10.9s |
+| `git diff --check` | 通过 |
+| `server`: `go test -race ./...`、`go vet ./...`、`go build -trimpath` | 通过（race 5.7s）；未设置 `TEST_MYSQL_DSN`，真实 MySQL 集成本机跳过 |
+| `web`: `npm test`、`npm run check`、`npm run build` | 97 项通过；检查/构建通过（`WEB_BUILD_DIR` 在 scratch） |
+| `android`: scratch `:app:testDebugUnitTest --tests io.hongshu.app.MessageAnalysisTest` | 8 项（API 28/35）通过，0 失败 |
+
+完整 PR CI：[Hongshu validation 39889220318](https://github.com/IGNGserver/hongshu/actions/runs/39889220318)，
+全部通过：
+
+| Job | 结论与耗时 |
+| --- | --- |
+| verify | 通过，8s |
+| web | 通过，5s |
+| server | 通过，2m40s；真实 MySQL、Go race/vet/build、Chromium 浏览器 smoke |
+| android (28) | 通过，9m27s；全量单测、lint、APK/测试 APK、instrumentation |
+| android (33) | 通过，8m30s；全量单测、lint、APK/测试 APK、instrumentation |
+| android (35) | 通过，10m11s；全量单测、lint、APK/测试 APK、instrumentation |
+
+本次未调用真实 AI provider，未使用真实短信或真机；服务端集成、浏览器流程与
+全量 Android 构建由 CI 使用合成数据执行。本机未提供 MySQL，不能把本机跳过
+真库测试当作数据库验证通过。
+
+回滚：关闭 AI 即恢复规则即时结果，或回退二进制；没有迁移需要回滚。派生表可
+保留，重新升级可继续使用。验证码正文会发送到配置的 AI 服务，已开启 AI 的部署
+应重新查看并保存新的同意文案；若要强制重新同意，需额外 `consent_version`。
+
 # 2026-10-22 Safari 网页 App 图标修复
 
 基线 `156a059`（`0.2.0-alpha.15`），任务分支 `agent/pwa-safari-icons`。本版本随 PR 合并发布 `0.2.0-alpha.16` 并部署到 NAS；真机 Safari 图标验收见文末。

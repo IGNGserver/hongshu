@@ -58,15 +58,15 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
 
 设计与隐私边界见 [MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)。所有接口沿用现有认证。
 
-- `GET /api/analysis/settings`：开关、暂停状态、队列计数、修订号；管理员额外读取非敏感配置及 key_set。
-- `PUT /api/analysis/settings`：仅管理员；完整配置 enabled、paused、protocol、endpoint、model、timeout_seconds、requests_per_minute、daily_limit、redact；protocol 支持 `openai_responses`、`openai_chat_completions`、`anthropic_messages`、`gemini_generate_content`；api_key 留空保留，clear_key 显式清除。启用需 consent=true。
+- `GET /api/analysis/settings`：开关、暂停状态、队列计数、修订号；管理员额外读取非敏感配置及 key_set。队列计数包含验证码；旧规则已完成但尚未 AI 复核的验证码行计为等待。
+- `PUT /api/analysis/settings`：仅管理员；完整配置 enabled、paused、protocol、endpoint、model、timeout_seconds、requests_per_minute、daily_limit、redact；protocol 支持 `openai_responses`、`openai_chat_completions`、`anthropic_messages`、`gemini_generate_content`；api_key 留空保留，clear_key 显式清除。启用需 consent=true；同意范围包含验证码正文。`redact=true` 仍遮蔽链接与邮箱，但规则命中验证码或正文含强验证码关键词的短信不遮蔽数字，以便提取验证码。
 - `POST /api/analysis/test`：仅管理员，以固定合成文本测试已保存配置，不发送短信。
 - `POST /api/analysis/retry`：管理员恢复全局失败任务；单条使用消息分类接口 retry。
-- `PATCH /api/messages/{id}/category`：授权设备设置 category=personal/notification/promotion/spam；category=auto 恢复自动分类；category=retry 重试失败项。
+- `PATCH /api/messages/{id}/category`：授权设备设置 category=otp/personal/notification/promotion/spam；category=auto 恢复自动分类；category=retry 重试失败项。验证码消息也可人工改分类：改成非 otp 时服务端保留规则提取值但不再对外返回，改回 otp 可恢复展示。
 - `GET /api/analysis?after=N&limit=200`：独立元数据增量，返回 items、cursor、more、epoch；游标超过修订头返回 409 analysis_cursor_changed。客户端将结果和游标同事务保存。
-- `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other。`GET /api/conversations` 返回项包含 `unread_count` 会话未读数。
+- `GET /api/messages`、`GET /api/conversations` 新增 group=otp/other/personal/notification/promotion/spam/pending；空值或 all 为全部。AI 关闭时仅允许 otp/other；AI 开启且消息分析完成时按 AI category 分组（otp 即验证码组），未完成/失败时回退规则验证码，否则 pending。`GET /api/conversations` 返回项包含 `unread_count` 会话未读数。
 - `GET /api/analysis/counts`：接受 q/sim/device/sender 筛选，返回消息数 counts（不是会话数）。
-- `/api/me` 新增 ai_enabled、analysis_revision、global_watermark_id、unread_count。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；原消息 ID 与 /sync 不因分类更新而改变。
+- `/api/me` 新增 ai_enabled、analysis_revision、global_watermark_id、unread_count。消息新增 analysis 对象（otp、expires_at、category、manual、state、error、revision）；`analysis.otp` 是当前应展示的验证码，AI 最终分类不是 otp 时为空；原消息 ID 与 /sync 不因分类更新而改变。
 
 ## 收发方向（outgoing_sms）
 
@@ -79,6 +79,9 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
   → `d56c4a02e82f207e4a4436d1c2ef37c27e942d3883e7232b770334b13bff0adc`。
 - 发出的短信不计入 `unread_count` / 会话 `unread_count`，不生成 Web Push 任务，不提取验证码，
   也不进入 AI 分类队列（analysis 直接为 `state=complete`、`otp=""`）。它仍推进 sync 游标并触发实时变更通知。
+- 收到的验证码短信与其它入站消息一样进入持久 AI 队列；AI 返回 `category` 与 `otp` 两个字段，
+  `category=otp` 表示验证码。AI 完成前 `analysis.otp` 为规则结果，用户可立即复制；AI 完成且分类不是 otp 时
+  `analysis.otp` 返回空，原始规则值仍保留在派生表，改回 otp 或在关闭 AI 后重新查看即可恢复。
 - 能力协商：Android 只在 `/api/me` 的 `features` 含 `outgoing_sms` 时上传 `direction:"out"`。
   旧中枢会忽略未知字段，把发出的短信当作“从收件人收到的短信”保存，所以不能无条件上传。
 - 旧客户端读取新中枢时看不到 `direction`，会把发出的短信显示为收到的短信；Web 与 Android 需随中枢一起升级。

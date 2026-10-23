@@ -590,7 +590,17 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     fun aiEnabled(): Boolean = meta("ai_enabled") != 0L
     fun rememberAI(enabled: Boolean) {
         if (aiEnabled() == enabled) return
-        writableDatabase.execSQL("UPDATE meta SET value=? WHERE key='ai_enabled'", arrayOf(if (enabled) 1 else 0))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE meta SET value=? WHERE key='ai_enabled'", arrayOf(if (enabled) 1 else 0))
+            // The server's effective OTP and category suppression depend on
+            // ai_enabled. Re-read derived metadata instead of keeping a stale code.
+            db.execSQL("UPDATE meta SET value=0 WHERE key='analysis_cursor'")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
         changes.value++
     }
     fun analysisCursor(): Long = meta("analysis_cursor")
@@ -2355,7 +2365,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 // A verification code occupies exactly one channel: a durable intent when it
                 // can be shown while valid, otherwise the ordinary summary. The intent is
                 // committed with the page, so a process death still shows the code later.
-                val otp = analysis.otp.ifEmpty { extractOtp(m.getString("body")).orEmpty() }
+                val otp = analysis.otp.ifEmpty {
+                    if (analysis.revision == 0L) extractOtp(m.getString("body")).orEmpty() else ""
+                }
                 val expiresAt = otpNotificationExpiry(m.getLong("timestamp"), analysis.expiresAt)
                 if (
                     otp.isNotEmpty() &&
@@ -2417,6 +2429,19 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     private fun contactSearchClause(column: String, senders: Set<String>): String =
         if (senders.isEmpty()) "" else " OR $column IN (${senders.joinToString(",") { android.database.DatabaseUtils.sqlEscapeString(it) }})"
 
+    // Mirrors the server's effectiveGroup: a manual decision is always final;
+    // a completed AI category is final only while AI is enabled; otherwise the
+    // rule OTP (or pending) wins. The `enriched` CTE and message_analysis table
+    // expose `manual/state/category/otp` under these names.
+    private fun effectiveGroupSQL(prefix: String): String {
+        val finalCategory =
+            "((${prefix}manual<>0" +
+                (if (aiEnabled()) " OR ${prefix}state='complete'" else "") +
+                ") AND COALESCE(${prefix}category,'')<>'')"
+        return "CASE WHEN $finalCategory THEN ${prefix}category " +
+            "WHEN COALESCE(${prefix}otp,'')<>'' THEN 'otp' ELSE 'pending' END"
+    }
+
     fun groupCounts(q: String = "", sim: String = "", localContactSenders: Set<String> = emptySet()): Map<String, Int> {
         val result = messageGroupLabels.keys.associateWith { 0 }.toMutableMap()
         val args = mutableListOf<String>()
@@ -2431,7 +2456,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             result["all"] = result.getValue("all") + n
             if (group != "otp") result["other"] = result.getValue("other") + n
         }
-        readableDatabase.rawQuery("SELECT CASE WHEN COALESCE(a.otp,'')<>'' THEN 'otp' WHEN COALESCE(a.category,'')<>'' THEN a.category ELSE 'pending' END g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
+        readableDatabase.rawQuery("SELECT ${effectiveGroupSQL("a.")} g,COUNT(*) FROM inbox i LEFT JOIN message_analysis a ON a.message_id=i.id WHERE $where GROUP BY g", args.toTypedArray()).use { c ->
             while (c.moveToNext()) add(c.getString(0), c.getInt(1))
         }
         val local = localMessages(q = q, sim = sim, localContactSenders = localContactSenders)
@@ -2451,12 +2476,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     ): List<CachedMessage> {
         var where = "1=1"
         val args = mutableListOf<String>()
+        val effectiveGroup = effectiveGroupSQL("")
         when (group) {
             "", "all" -> Unit
-            "otp" -> where += " AND otp<>''"
-            "other" -> where += " AND otp=''"
-            "pending" -> where += " AND otp='' AND category=''"
-            else -> { where += " AND otp='' AND category=?"; args.add(group) }
+            "otp" -> where += " AND $effectiveGroup='otp'"
+            "other" -> where += " AND $effectiveGroup<>'otp'"
+            "pending" -> where += " AND $effectiveGroup='pending'"
+            else -> { where += " AND $effectiveGroup=?"; args.add(group) }
         }
         if (before != Long.MAX_VALUE) {
             val timestamp =
@@ -2562,7 +2588,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         localContactSenders: Set<String> = emptySet(),
     ): List<CachedMessage> {
         val remote = messages(sender, q, sim, limit = limit, group = group, localContactSenders = localContactSenders)
-        val candidates = localMessages(sender, q, sim, localContactSenders).filter { it.matchesGroup(group) }
+        val candidates = localMessages(sender, q, sim, localContactSenders).filter { it.matchesGroup(group, aiEnabled()) }
         val synced = syncedLocalIds(candidates)
         val local = candidates.filterNot { it.id in synced }
         val unreadMap = if (sender.isEmpty()) unreadCounts() else emptyMap()

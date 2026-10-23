@@ -957,15 +957,20 @@ private fun MessageBubble(
                 }
             }
         }
-        // The user's own messages are not classified.
-        if (aiEnabled && otp == null && !isOutgoing) {
-            Text("${messageGroupLabels[msg.analysis.category] ?: "待分析"} · ${if (msg.local) "上传后分析" else msg.analysis.label()}", style = MaterialTheme.typography.labelSmall)
+        // The user's own messages are not classified. OTP messages expose the
+        // AI review state too: the rule card is immediate, AI may confirm or move
+        // the message, and a failed review stays retryable.
+        if (aiEnabled && !isOutgoing) {
+            val groupLabel =
+                if (msg.local && otp != null) messageGroupLabels.getValue("otp")
+                else msg.analysis.groupLabel()
+            Text("$groupLabel · ${if (msg.local) "上传后分析" else msg.analysis.label()}", style = MaterialTheme.typography.labelSmall)
             if (!msg.local) {
                 var adjusting by remember(msg.id) { mutableStateOf(false) }
                 TextButton(onClick = { adjusting = !adjusting }) { Text("调整分类") }
                 if (adjusting) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(listOf("personal", "notification", "promotion", "spam", "auto") + if (msg.analysis.state == "failed") listOf("retry") else emptyList()) { category ->
+                        items(listOf("otp", "personal", "notification", "promotion", "spam", "auto") + if (msg.analysis.state == "failed") listOf("retry") else emptyList()) { category ->
                             TextButton(onClick = { adjusting = false; onChangeCategory(category) }) {
                                 Text(messageGroupLabels[category] ?: if (category == "auto") "恢复自动分类" else "重试分析")
                             }

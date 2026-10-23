@@ -38,8 +38,8 @@ fun AnalysisSettingsPage(host: SettingsHost) {
         settingsItem("status") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(status)
-                Text("关闭 AI 时仅分验证码和其他短信。开启后，历史和新增非验证码正文将发往管理员配置的服务；脱敏不能保证匿名。垃圾分组不删除短信。")
-                Text("AI 配置、暂停、恢复和批量重试由 Web 管理员操作；本机可在短信详情调整分类或重试单条失败消息。")
+                Text("关闭 AI 时仅分验证码和其他短信。开启后，历史和新增短信（包括验证码正文）将发往管理员配置的服务；验证码短信的数字不脱敏，链接和邮箱仍遮蔽，脱敏不能保证匿名。垃圾分组不删除短信。")
+                Text("AI 配置、暂停、恢复和批量重试由 Web 管理员操作；本机可在短信详情调整分类（含验证码）或重试单条失败消息。")
                 TextButton(onClick = { host.navigate(SettingsPage.Hub) }) { Text("同步与连接") }
                 if (host.config.url.isNotEmpty()) TextButton(onClick = {
                     runCatching { host.activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(host.config.url))) }
