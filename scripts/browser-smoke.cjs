@@ -57,11 +57,17 @@ async function request(path, token, method = "GET", body) {
       for await (const chunk of req) raw += chunk;
       const data = JSON.parse(raw);
       const body = data.messages[1].content;
-      assert.ok(!body.includes("482913") && !body.includes("验证码"), "OTP leaked to classifier");
+      const isOtp = body.includes("482913");
+      if (isOtp) {
+        assert.ok(body.includes("验证码"), "OTP fixture lost its keyword");
+      } else {
+        assert.ok(!body.includes("482913"), "OTP leaked to classifier");
+      }
       aiCalls++;
-      const category = body.includes("fixture-personal") ? "personal" : body.includes("fixture-promotion") ? "promotion" : body.includes("fixture-spam") ? "spam" : body.includes("fixture-unknown") ? "unknown" : "notification";
+      const category = isOtp ? "otp" : body.includes("fixture-personal") ? "personal" : body.includes("fixture-promotion") ? "promotion" : body.includes("fixture-spam") ? "spam" : body.includes("fixture-unknown") ? "unknown" : "notification";
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({category})}}]}));
+      const result = isOtp ? {category:"otp", otp:"482913"} : {category, otp:""};
+      res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(result)}}]}));
     });
     await new Promise((resolve) => ai.listen(0, "127.0.0.1", resolve));
     const aiEndpoint = `http://127.0.0.1:${ai.address().port}/v1/chat/completions`;
@@ -251,7 +257,7 @@ async function request(path, token, method = "GET", body) {
     await page.getByLabel("模型", {exact:true}).fill("synthetic");
     await page.getByLabel("每分钟调用上限").fill("60");
     await page.getByLabel("启用 AI 分组", {exact:true}).check();
-    await page.getByLabel("我了解开启后会自动分析历史与新增非验证码短信").check();
+    await page.getByLabel("我了解开启后会自动分析历史与新增短信（包括验证码正文）").check();
     await page.getByRole("button", {name:"保存 AI 设置",exact:true}).click();
     await page.getByText("AI 设置已保存", {exact:true}).waitFor();
     await page.getByRole("button", {name:"返回收件箱",exact:true}).click();
