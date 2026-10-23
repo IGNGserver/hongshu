@@ -5,7 +5,7 @@
 版本及 Release 状态以根目录 `VERSION` 和 GitHub Release 页面为准；alpha/beta/rc 均为预发布版本，不是稳定版。
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.18 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.19 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 docker compose ps
@@ -20,7 +20,7 @@ docker compose ps
 仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.18 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.19 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```
@@ -149,7 +149,7 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 
 升级步骤：
 1. 停机前做好数据备份；
-2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.18`），不自动选择 latest；
+2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.19`），不自动选择 latest；
 3. 拉取新镜像并重启 hub 服务：
    ```bash
    docker compose pull hub
