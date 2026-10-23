@@ -12,6 +12,11 @@ fun visibleMessageGroups(enabled: Boolean): List<String> =
     if (enabled) listOf("all", "otp", "personal", "notification", "promotion", "spam", "pending")
     else listOf("all", "otp", "other")
 
+// While AI is pending the rule code already makes the message a verification
+// message; show that instead of the unclassified placeholder.
+fun MessageAnalysis.groupLabel(): String =
+    messageGroupLabels[category] ?: if (otp.isNotEmpty()) messageGroupLabels.getValue("otp") else messageGroupLabels.getValue("pending")
+
 data class MessageAnalysis(
     val otp: String = "",
     val expiresAt: Long = 0,
@@ -39,18 +44,32 @@ data class MessageAnalysis(
     }
 }
 
-// A code the user sent is not one they are waiting for.
-internal fun messageOtp(message: CachedMessage): String? =
-    if (message.outgoing) null
-    else message.analysis.otp.ifEmpty { extractOtp(message.body).orEmpty() }.ifEmpty { null }
+// A manual decision is final even when AI is off. Otherwise only an enabled hub
+// treats a completed AI category as the final group, matching the server.
+internal fun MessageAnalysis.finalCategory(aiEnabled: Boolean): String =
+    if ((manual || (aiEnabled && state == "complete")) && category.isNotEmpty()) category else ""
 
-fun CachedMessage.matchesGroup(group: String): Boolean {
+// A code the user sent is not one they are waiting for. A server analysis row
+// (revision > 0) already carries the effective code: it hides the rule value when
+// AI moved the message away, so local extraction must not resurrect it.
+internal fun messageOtp(message: CachedMessage): String? {
+    if (message.outgoing) return null
+    val analysis = message.analysis
+    val code = analysis.otp.ifEmpty {
+        if (analysis.revision == 0L) extractOtp(message.body).orEmpty() else ""
+    }
+    return code.ifEmpty { null }
+}
+
+fun CachedMessage.matchesGroup(group: String, aiEnabled: Boolean = false): Boolean {
+    val category = analysis.finalCategory(aiEnabled)
     val otp = messageOtp(this).orEmpty()
+    val isOtp = category == "otp" || (category.isEmpty() && otp.isNotEmpty())
     return when (group) {
         "", "all" -> true
-        "otp" -> otp.isNotEmpty()
-        "other" -> otp.isEmpty()
-        "pending" -> otp.isEmpty() && analysis.category.isEmpty()
-        else -> otp.isEmpty() && analysis.category == group
+        "otp" -> isOtp
+        "other" -> !isOtp
+        "pending" -> category.isEmpty() && !isOtp
+        else -> category == group
     }
 }

@@ -282,12 +282,11 @@ const errors = {
   invalid_push_endpoint: "浏览器推送地址不可达或不被允许",
   ai_secret_required: "请先在中枢部署环境配置 HONGSHU_AI_SECRET，再保存 API 密钥",
   invalid_ai_endpoint: "AI 地址需为完整 HTTPS 接口；本地服务须由部署者加入允许主机名单",
-  ai_consent_or_config_required: "请填写 AI 配置并同意历史和新增短信分析说明",
+  ai_consent_or_config_required: "请填写 AI 配置并同意历史和新增短信（包括验证码正文）分析说明",
   invalid_ai_settings: "请检查 AI 参数范围",
   invalid_ai_protocol: "请选择受支持的 AI 协议",
   ai_budget_or_rate_limit: "已达到调用限速或今日额度，请稍后再试",
   ai_disabled: "AI 已关闭，请刷新页面",
-  otp_rule_managed: "验证码由规则管理，不能手动修改 AI 分类",
 };
 
 // SVG Icon Assets (Google Material Symbols / Icons)
@@ -1717,6 +1716,15 @@ function messageStamp(msg) {
   return el("div", "message-stamp", [formatClock(msg.timestamp), deviceName, receiver, isOutgoing(msg) ? "已发送" : "", msg.historical ? "历史补齐" : ""].filter(Boolean).join(" · "));
 }
 
+export function analysisGroupLabel(msg) {
+  const analysis = msg.analysis;
+  if (analysis?.category) return GROUP_LABELS[analysis.category] || "待分析";
+  // The rule code is already present while AI is pending; keep the provisional
+  // result labelled as 验证码 instead of making it look unclassified.
+  if (analysis?.otp) return GROUP_LABELS.otp;
+  return GROUP_LABELS.pending;
+}
+
 function bubble(msg, fresh) {
   const outgoing = isOutgoing(msg);
   const b = el("div", "bubble" + (outgoing ? " bubble-out" : "") + (fresh ? " bubble-new" : ""));
@@ -1724,12 +1732,14 @@ function bubble(msg, fresh) {
   if (otp) b.append(otpCard(msg));
   b.append(linkedText(msg.body));
 
-  // The user's own messages are not classified, so they get no analysis state or menu.
-  if (state.me?.ai_enabled && !otp && !outgoing) {
+  // The user's own messages are not classified. OTP messages now also expose
+  // the AI review state: the rule card appears immediately, then AI may confirm
+  // or move the message, and a failed review is visible and retryable.
+  if (state.me?.ai_enabled && !outgoing) {
     const a = msg.analysis;
     // A plain automatic result needs no label; pending, failed and manual states do.
     if (!a || a.state !== "complete" || a.manual) {
-      b.append(el("small", "analysis-message-state", `${GROUP_LABELS[a?.category] || "待分析"} · ${analysisLabel(a)}`));
+      b.append(el("small", "analysis-message-state", `${analysisGroupLabel(msg)} · ${analysisLabel(a)}`));
     }
   }
 
@@ -1738,14 +1748,14 @@ function bubble(msg, fresh) {
     await copyText(msg.body);
     toast("已复制短信");
   }));
-  if (state.me?.ai_enabled && !otp && !outgoing) {
+  if (state.me?.ai_enabled && !outgoing) {
     const correction = el("details", "category-actions");
     const summary = el("summary");
     summary.innerHTML = ICONS.label;
     summary.append(el("span", "sr-only", "调整分类"));
     summary.title = "调整分类";
     const menu = el("div", "category-menu");
-    for (const category of ["personal", "notification", "promotion", "spam", "auto", ...(msg.analysis?.state === "failed" ? ["retry"] : [])]) {
+    for (const category of ["otp", "personal", "notification", "promotion", "spam", "auto", ...(msg.analysis?.state === "failed" ? ["retry"] : [])]) {
       menu.append(button(GROUP_LABELS[category] || (category === "auto" ? "恢复自动分类" : "重试分析"), async () => {
         correction.open = false;
         await api(`/messages/${msg.id}/category`, "PATCH", { category });
@@ -2271,7 +2281,7 @@ async function renderAISettings(group) {
   group.append(settingsRow({
     icon: ICONS.autoAwesome,
     title: "AI 短信分组",
-    summary: "开启后，历史及新增非验证码短信会自动发送到配置的 AI 服务分析。验证码仅用规则提取；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。",
+    summary: "开启后，历史及新增短信（包括验证码）会自动发送到配置的 AI 服务分析；验证码先由规则即时显示，AI 再复核分类并提取验证码。验证码短信中的数字不遮蔽，链接和邮箱仍遮蔽；脱敏不能保证匿名。垃圾分组不会删除或拦截短信。",
     trailing: el("span", "badge" + (s.enabled && !s.paused ? " badge-on" : ""), label),
   }));
   const usage = el("div", "settings-summary");
@@ -2346,8 +2356,8 @@ async function renderAISettings(group) {
   for (const [name,label,min,max] of [["timeout_seconds","超时（秒）",2,60],["requests_per_minute","每分钟调用上限",1,60],["daily_limit","每日调用上限（含失败与连接测试）",1,10000]]) {
     const input = field(name,label,"number",s[name],numbers); input.min = min; input.max = max; input.required = true; input.inputMode = "numeric";
   }
-  field("redact", "遮蔽长数字、邮箱和链接", "checkbox", s.redact);
-  field("consent", "我了解开启后会自动分析历史与新增非验证码短信", "checkbox", false);
+  field("redact", "遮蔽链接、邮箱和非验证码短信的长数字", "checkbox", s.redact);
+  field("consent", "我了解开启后会自动分析历史与新增短信（包括验证码正文）", "checkbox", false);
   const actions = el("div", "setting-actions");
   actions.append(button("保存 AI 设置", async () => {
     if (!form.reportValidity()) return;

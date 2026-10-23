@@ -342,11 +342,12 @@ func TestAnalysisCandidateProgressDuringEveryScanUpload(t *testing.T) {
 		release := awaitAnalysisCandidate(t, ctx, gate)
 		defer release()
 		// Every selection sees an intervening committed upload, never a quiet
-		// window. Both uploads advance the global head, neither should displace
-		// the selected candidate: OTP is ineligible, timestamp=0 history is older.
-		otp := Incoming{Receiver: "+123456789", Sender: "synthetic", Body: "验证码为 482913，5分钟内有效", Timestamp: int64(100 + round), SubscriptionID: 1}
+		// window. Both uploads advance the global head; the sent message never
+		// enters the queue and the timestamp=0 history is older, so neither should
+		// displace the selected candidate.
+		sent := Incoming{Receiver: "+123456789", Sender: "synthetic", Body: fmt.Sprintf("synthetic sent reply %d", round), Timestamp: int64(100 + round), SubscriptionID: 1, Direction: directionOut}
 		history := Incoming{Receiver: "+123456789", Sender: "synthetic", Body: fmt.Sprintf("synthetic older history %d", round), Timestamp: 0, SubscriptionID: 1, Historical: true}
-		uploadAnalysisFixture(t, a, d, otp, history)
+		uploadAnalysisFixture(t, a, d, sent, history)
 		release()
 		select {
 		case got := <-result:
@@ -365,7 +366,7 @@ func TestAnalysisCandidateProgressDuringEveryScanUpload(t *testing.T) {
 		t.Fatal("uploads or quota lost during concurrent progress", usage, messages, err)
 	}
 	if err := a.db.QueryRow("SELECT SUM(state='processing'),SUM(state='pending'),SUM(state='complete'),SUM(attempts) FROM message_analysis").Scan(&processing, &pending, &complete, &attempts); err != nil || processing != rounds || pending != rounds || complete != rounds || attempts != rounds {
-		t.Fatal("task loss, duplicate attempt, or OTP entered AI queue", processing, pending, complete, attempts, err)
+		t.Fatal("task loss, duplicate attempt, or sent message entered AI queue", processing, pending, complete, attempts, err)
 	}
 	if _, err := a.db.Exec("UPDATE ai_settings SET next_call=0 WHERE id=1"); err != nil {
 		t.Fatal(err)
@@ -391,6 +392,40 @@ func TestAnalysisCandidateProgressDuringEveryScanUpload(t *testing.T) {
 	}
 }
 
+func TestAnalysisClaimsRuleOnlyOTP(t *testing.T) {
+	a, _ := analysisClaimFixture(t, 1)
+	// Simulate a row written by the previous release: the rule finished it before
+	// AI existed. It must become claimable without a bulk state rewrite.
+	if _, err := a.db.Exec("UPDATE message_analysis SET otp='482913',state='complete' WHERE message_id=1"); err != nil {
+		t.Fatal(err)
+	}
+	c := selectedAnalysis(t, a.db)
+	if c.ID != 1 || c.OTP != "482913" {
+		t.Fatalf("rule OTP not selected: id=%d otp=%q", c.ID, c.OTP)
+	}
+	job, err := a.claimAnalysisCandidate(context.Background(), c)
+	if err != nil || job == nil || job.ID != 1 || job.OTP != "482913" {
+		t.Fatalf("rule OTP not claimed: job=%v error=%v", job, err)
+	}
+	var state string
+	if err := a.db.QueryRow("SELECT state FROM message_analysis WHERE message_id=1").Scan(&state); err != nil || state != "processing" {
+		t.Fatal("rule OTP lease not persisted", state, err)
+	}
+	if err := a.finishAnalysis(context.Background(), job, "otp", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	var otp string
+	if err := a.db.QueryRow("SELECT otp FROM message_analysis WHERE message_id=1").Scan(&otp); err != nil || otp != "482913" {
+		t.Fatal("AI confirmation lost the rule code", otp, err)
+	}
+	if _, err := a.db.Exec("UPDATE ai_settings SET next_call=0"); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := a.claimAnalysis(context.Background()); err != nil || job != nil {
+		t.Fatal("completed OTP requeued", err)
+	}
+}
+
 func TestAnalysisCandidateUsesLatestConfiguration(t *testing.T) {
 	a, _ := analysisClaimFixture(t, 1)
 	c := selectedAnalysis(t, a.db)
@@ -412,7 +447,6 @@ func TestAnalysisCandidateRevalidation(t *testing.T) {
 		{"quota", "UPDATE ai_settings SET usage_count=daily_limit WHERE id=1"},
 		{"task_revision", "UPDATE message_analysis SET revision=revision+1 WHERE message_id=1"},
 		{"manual", "UPDATE message_analysis SET manual_override=TRUE WHERE message_id=1"},
-		{"otp", "UPDATE message_analysis SET otp='123456' WHERE message_id=1"},
 		{"category", "UPDATE message_analysis SET category='personal' WHERE message_id=1"},
 		{"state", "UPDATE message_analysis SET state='failed' WHERE message_id=1"},
 		{"backoff", "UPDATE message_analysis SET next_at=9223372036854775807 WHERE message_id=1"},

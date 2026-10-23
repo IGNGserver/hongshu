@@ -23,6 +23,7 @@ class MessageAnalysisTest {
         assertNull(extractOtp("验证码 1234 或 5678"))
         assertNull(extractOtp("Your code is 1234 or 5678"))
         assertEquals("482913", extractOtp("code 482913. ".repeat(5000)))
+        assertNull(extractOtp("验证码已发送，登录口令是 654321"))
         assertEquals(listOf("all", "otp", "other"), visibleMessageGroups(false))
         assertFalse(visibleMessageGroups(true).contains("other"))
         assertTrue(visibleMessageGroups(true).contains("pending"))
@@ -57,6 +58,78 @@ class MessageAnalysisTest {
                 assertTrue(store.messages().isEmpty())
             }
         } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun aiCategoryIsFinalAndRuleReturnsWhenAIOff() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val name = "analysis-ai-${java.util.UUID.randomUUID()}.db"
+        try {
+            Store(context, name).use { store ->
+                fun message(id: Long, sender: String, body: String) =
+                    JSONObject().put("id", id).put("device_id", "remote")
+                        .put("receiver", "+8613800000000").put("sender", sender).put("body", body)
+                        .put("timestamp", id).put("historical", false)
+                store.applySync(
+                    JSONArray()
+                        .put(message(1, "10086", "验证码为 482913"))
+                        .put(message(2, "10010", "验证码已发送，登录口令是 654321")),
+                    2,
+                    pageEpoch = 1,
+                )
+                store.rememberAI(true)
+                // The server suppresses the rule code when AI moves a message away
+                // and sends an AI-rescued code the rule did not extract.
+                store.applyAnalysis(
+                    JSONArray()
+                        .put(JSONObject().put("id", 1).put("analysis", JSONObject()
+                            .put("otp", "").put("category", "promotion").put("manual", false)
+                            .put("state", "complete").put("revision", 5)))
+                        .put(JSONObject().put("id", 2).put("analysis", JSONObject()
+                            .put("otp", "654321").put("category", "otp").put("manual", false)
+                            .put("state", "complete").put("revision", 6))),
+                    6,
+                    1,
+                )
+                assertEquals(listOf(2L), store.messages(group = "otp").map { it.id })
+                assertEquals(listOf(1L), store.messages(group = "promotion").map { it.id })
+                val counts = store.groupCounts()
+                assertEquals(2, counts["all"])
+                assertEquals(1, counts["otp"])
+                assertEquals(1, counts["promotion"])
+                // AI off returns the rule result; the cached body still has the rule code.
+                store.rememberAI(false)
+                store.applyAnalysis(
+                    JSONArray().put(JSONObject().put("id", 1).put("analysis", JSONObject()
+                        .put("otp", "482913").put("category", "promotion").put("manual", false)
+                        .put("state", "complete").put("revision", 7))),
+                    7,
+                    1,
+                )
+                assertEquals(listOf(2L, 1L), store.messages(group = "otp").map { it.id })
+                assertTrue(store.messages(group = "promotion").isEmpty())
+                // Manual otp restores the code; manual promotion hides it again.
+                store.rememberAI(true)
+                store.applyAnalysis(
+                    JSONArray().put(JSONObject().put("id", 1).put("analysis", JSONObject()
+                        .put("otp", "482913").put("category", "otp").put("manual", true)
+                        .put("state", "complete").put("revision", 8))),
+                    8,
+                    1,
+                )
+                assertEquals(listOf(2L, 1L), store.messages(group = "otp").map { it.id })
+                store.applyAnalysis(
+                    JSONArray().put(JSONObject().put("id", 1).put("analysis", JSONObject()
+                        .put("otp", "").put("category", "promotion").put("manual", true)
+                        .put("state", "complete").put("revision", 9))),
+                    9,
+                    1,
+                )
+                assertEquals(listOf(2L), store.messages(group = "otp").map { it.id })
+                assertEquals(listOf(1L), store.messages(group = "promotion").map { it.id })
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
     }
 
     @Test fun versionSixUpgradePreservesCapturedAndSyncedMessages() {

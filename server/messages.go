@@ -256,7 +256,7 @@ func filters(r *http.Request) (string, []any) {
 	args := []any{}
 	if g := r.URL.Query().Get("group"); g != "" && g != "all" {
 		if g == "other" {
-			where += " AND COALESCE(x.otp,'')=''"
+			where += " AND " + effectiveGroup + "<>'otp'"
 		} else {
 			where += " AND " + effectiveGroup + "=?"
 			args = append(args, g)
