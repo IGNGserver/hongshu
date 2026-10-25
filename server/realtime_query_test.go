@@ -23,6 +23,7 @@ type wsQueryStore struct {
 	revision int64
 	metadata int64
 	epoch    int64
+	calls    int64
 	states   int
 	denied   []string
 }
@@ -48,12 +49,12 @@ func (c *wsQueryConn) QueryContext(_ context.Context, query string, _ []driver.N
 		return &wsQueryRows{columns: []string{"id", "name", "kind", "admin", "upload", "notify", "revoked", "created_at"}, values: []driver.Value{"synthetic", "Synthetic", "web", true, false, true, false, int64(0)}}, nil
 	}
 	lower := strings.ToLower(query)
-	if strings.Contains(lower, "messages") || strings.Contains(lower, "conversation_reads") || strings.Contains(lower, "count(") || !strings.Contains(lower, "read_state") || !strings.Contains(lower, "updated_at") || !strings.Contains(lower, "sync_clock") || !strings.Contains(lower, "ai_settings") || !strings.Contains(lower, "metadata_clock") {
+	if strings.Contains(lower, "messages") || strings.Contains(lower, "from calls") || !strings.Contains(lower, "call_clock") || strings.Contains(lower, "conversation_reads") || strings.Contains(lower, "count(") || !strings.Contains(lower, "read_state") || !strings.Contains(lower, "updated_at") || !strings.Contains(lower, "sync_clock") || !strings.Contains(lower, "ai_settings") || !strings.Contains(lower, "metadata_clock") {
 		c.store.denied = append(c.store.denied, query)
 		return nil, errors.New("websocket must query singleton state only")
 	}
 	c.store.states++
-	return &wsQueryRows{columns: []string{"seq", "revision", "updated_at", "metadata_revision", "epoch"}, values: []driver.Value{int64(10), int64(20), c.store.revision, c.store.metadata, c.store.epoch}}, nil
+	return &wsQueryRows{columns: []string{"seq", "revision", "updated_at", "metadata_revision", "epoch", "call_seq"}, values: []driver.Value{int64(10), int64(20), c.store.revision, c.store.metadata, c.store.epoch, c.store.calls}}, nil
 }
 
 type wsQueryRows struct {
@@ -113,6 +114,17 @@ func TestWebSocketReadHintsNeverScanMessages(t *testing.T) {
 	store.epoch++
 	store.mu.Unlock()
 	readHint()
+	// A new call record moves only its own clock; the hint carries it without touching
+	// the SMS cursor, and the socket still never scans the calls table.
+	store.mu.Lock()
+	store.calls = 7
+	store.mu.Unlock()
+	a.broadcastChange()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var callHint map[string]any
+	if err := conn.ReadJSON(&callHint); err != nil || callHint["call_cursor"] != float64(7) || callHint["cursor"] != float64(10) {
+		t.Fatal("call change hint missing or moved the SMS cursor", callHint, err)
+	}
 	store.mu.Lock()
 	store.revision++
 	store.mu.Unlock()

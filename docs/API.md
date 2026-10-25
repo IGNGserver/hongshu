@@ -10,7 +10,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | --- | --- |
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
-| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot` |
+| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`；`call_cursor` 为通话记录提交头 |
 | GET /api/metadata?since=N | 一致性元数据快照；`revision,epoch,unchanged`，有变化时另含 devices/sims/contacts；需 `metadata_revision` 能力 |
 | GET /api/recent?limit=50 | 最近会话头消息展示快照：messages/head/epoch；head 不可用于推进可靠同步游标，需 `recent_snapshot` 能力 |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
@@ -25,7 +25,11 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET /api/sync?after=N&limit=L | `{messages, cursor, more, epoch}`，按 ID 升序；不得跨过未处理页面。epoch 与客户端已记录的值不同表示数据库已回档，必须丢弃已同步缓存并从 0 重拉；未上传队列保留。`after` 大于当前 sequence 返回 `epoch_changed`，旧客户端不得把空页当成已经同步完成 |
 | GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按发件人分组、每个发件人只返回最新消息并按时间降序；搜索发件人/名称/正文；offset 分页。返回消息中的 receiver 仅表示该会话最新消息的接收号码 |
 | GET /api/messages?sender=&q=&sim=&device=&before=&limit= | 按短信时间、ID 降序；before 指向上一页最早消息的 ID，服务端按该消息的时间/ID 二元游标分页 |
-| GET /api/ws | 同源 cookie 或 bearer WS，`{type:"changed",cursor:N}`；无重放保证，必须补齐 |
+| GET /api/ws | 同源 cookie 或 bearer WS，`{type:"changed",cursor:N,call_cursor:M}`；无重放保证，必须补齐 |
+| POST /api/calls | Android 上传通话记录，见下文“通话记录” |
+| GET /api/calls?before=&limit= | 通话记录列表，按开始时间、ID 降序 |
+| GET /api/calls/{id} | 单条通话记录详情 |
+| GET /api/calls/sync?after=N&limit=L | 通话记录可靠增量，按 ID 升序 |
 | PUT/DELETE /api/push | Web 订阅 `{endpoint,keys:{p256dh,auth}}` / 注销本设备订阅 |
 | POST /api/push/test | 仅向当前设备已有的订阅直接发送一条通用测试通知，不写入短信或 Push 队列；未配置 VAPID 返回 503 `push_not_configured`，未订阅返回 404 `push_not_subscribed`，`notify=false` 返回 409 `push_disabled`，推送服务拒绝返回 502 `push_delivery_failed`；404/410 会删除该设备的订阅与积压任务并返回 410 `push_subscription_expired` |
 | GET/PATCH /api/settings | 管理员可修改 `{title}`，不允许远程修改凭据/DB/HTTPS |
@@ -87,3 +91,33 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
 - 旧客户端读取新中枢时看不到 `direction`，会把发出的短信显示为收到的短信；Web 与 Android 需随中枢一起升级。
 - 回滚迁移 011 会**删除**所有 `direction='out'` 的消息（而不是改成收到），手机端仍保留系统短信库中的原件，
   重新升级后可再次上传。
+
+## 通话记录（call_log）
+
+只同步、只读：中枢保存手机系统通话记录的条目，供各端查看列表与详情。不拨号、不回拨、
+不产生来电通知/Web Push、不计未读、不进 AI 队列；手机上删除记录不会同步删除，中枢无自动清理。
+
+- 通话是与短信独立的数据流：独立的 `calls` 表和单例 `call_clock` 提交时钟（迁移 013）。
+  `sync_clock.seq`、`/me.cursor`、已读水位与 `/api/sync` 都只属于短信，上传通话不改变它们；
+  数据库代次共用 `sync_clock.epoch`，回档后客户端同时重置短信与通话缓存。
+- 字段：`number` 对端号码（隐藏号码时为空）、`receiver` 本机线路号码（无法识别线路时为空）、
+  `type` 为 `incoming`/`outgoing`/`missed`/`rejected`/`blocked`/`voicemail`/`answered_externally`/`unknown`、
+  `timestamp` 通话开始时间（毫秒）、`duration` 通话秒数（0..2592000）、`subscription_id`（本机映射，未知为 -1）、
+  `video`、`presentation` 为 `allowed`/`restricted`/`unknown`/`payphone`（省略视为 `allowed`）、
+  `location` 系统提供的号码归属地（最多 100 字符，可为空）、`historical` 是否为开启同步前的旧记录。
+  返回项另含 `id`、`device_id`（来源设备）与 `contact`（中枢别名，按 `number` 匹配，隐藏号码不匹配）。
+- `POST /api/calls`：`{calls:[...]}` 最多 100 条，与短信上传相同的权限（`kind=android` 且 `upload=true`）。
+  按请求顺序返回等长 `{acks:[{id,duplicate,error?,fingerprint}],cursor}`。格式非法只拒绝该条
+  `invalid_call`；`receiver` 非空但不是本设备已注册的号码只拒绝该条 `sim_not_confirmed`；
+  `receiver` 为空表示线路未知，照常入库并在详情显示“未知线路”。`presentation=allowed` 时 `number` 必须非空。
+- 指纹（同设备幂等）：`SHA-256("call" NUL number NUL timestamp NUL type NUL duration)`，不含线路，
+  以免手机之后才确认 SIM 时生成第二条。跨端向量：number `13900000000`、timestamp `1700000000000`、
+  type `incoming`、duration `75` → `bf4ef9880762b3b21e9f1cf296615e8af7492beea5aaa2020f18afceb543ae97`。
+- `GET /api/calls?before=&limit=`：返回 `{calls,more,head,epoch}`，按 `timestamp`、`id` 降序；
+  `before` 是上一页最后一条的 ID（不存在返回 400 `invalid_cursor`）；`head` 是同一快照下的 `call_clock`。
+- `GET /api/calls/{id}`：`{call}`；不存在返回 404 `not_found`。
+- `GET /api/calls/sync?after=N&limit=L`：`{calls,cursor,more,epoch}`，语义同 `/api/sync`；
+  `after` 大于当前通话提交头返回 409 `epoch_changed`。客户端将本地通话与游标同事务保存。
+- 能力协商：Android 只在 `/api/me` 的 `features` 含 `call_log` 时上传通话；旧中枢没有该接口，
+  通话记录留在本机队列。查看端同样只在有该能力时显示“通话”入口。
+- 回滚迁移 013 会**删除**全部已上传的通话记录；手机系统通话记录仍在。
