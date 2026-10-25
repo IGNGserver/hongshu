@@ -19,6 +19,8 @@ web/dist/
 web/.vite/
 web/coverage/
 web/.env.local
+website/node_modules/
+website/.wrangler/
 npm-debug.log*
 pnpm-debug.log*
 

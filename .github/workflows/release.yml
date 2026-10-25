@@ -206,3 +206,8 @@ jobs:
           RELEASE_OWNER: ${{ github.repository_owner }}
         run: |
           bash scripts/publish-release.sh
+
+      - name: Trigger website deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${GITHUB_REPOSITORY}/dispatches" -f event_type=release-published

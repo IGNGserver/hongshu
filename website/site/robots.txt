@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hongshu.igng.net/sitemap.xml

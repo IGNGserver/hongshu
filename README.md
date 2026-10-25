@@ -6,6 +6,8 @@ PWA 后台通知使用浏览器官方 Push 通道（iOS APNs、Android Chrome FC
 
 当前预发布版本见根目录 `VERSION`。实际测试结果和未完成验收见 [验证记录](docs/VALIDATION.md)，不要将构建通过等同于真机兼容性认证。
 
+> 官网与下载入口：<https://hongshu.igng.net/>
+
 ## 实现范围
 
 - **Android**：Kotlin、Compose、Material 3 Expressive，会话、对话、搜索、SIM 筛选；
