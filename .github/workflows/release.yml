@@ -104,7 +104,7 @@ jobs:
 
       - name: Test and build Web/PWA
         working-directory: web
-        run: npm test && npm run check && npm run build
+        run: npm ci && npm test && npm run check && npm run build
 
       - name: Install browser smoke dependencies
         run: |

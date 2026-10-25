@@ -6,6 +6,7 @@
 
 验证码、可选 AI 分组、持久队列和独立元数据同步见 [MESSAGE_GROUPING.md](MESSAGE_GROUPING.md)。
 多端分层加载、公共壳缓存、元数据修订与最近展示快照见 [LOADING_PERFORMANCE.md](LOADING_PERFORMANCE.md)。
+PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md)。
 通话记录（只同步、只读，独立的 `calls` 表与 `call_clock` 提交时钟）见 [CALL_LOG.md](CALL_LOG.md)。
 
 ## 可靠性与业务标识

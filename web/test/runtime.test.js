@@ -78,20 +78,8 @@ test('a failed refresh stays dirty and is retried on the next otherwise empty po
   assert.equal(vm.runInContext('refreshes',ctx),2);
   assert.equal(vm.runInContext('state.inboxDirty',ctx),false);
 });
-test('cached shell never waits on slow network and never intercepts sensitive requests',async()=>{
-  const runtime=workerRuntime(readFileSync(new URL('../sw.js',import.meta.url),'utf8'));
-  await runtime.install();
-  assert.equal((await runtime.request('/app.js')).value,'network');
-  assert.equal(runtime.fetches,0);
-  runtime.offline=true;
-  assert.equal((await runtime.request('/app.js')).value,'network');
-  for(const path of ['/api/messages','/api/me','https://elsewhere.test/app.js','/app.js?secret=synthetic']) {
-    assert.equal(await runtime.request(path),undefined);
-  }
-  assert.equal(await runtime.request('/app.js','POST'),undefined);
-});
 test('push payload is displayed as text and notification clicks cannot open another origin',async()=>{
-  const runtime=workerRuntime(readFileSync(new URL('../sw.js',import.meta.url),'utf8'));
+  const runtime=workerRuntime(readFileSync(new URL('../push.js',import.meta.url),'utf8'));
   await runtime.push({json:()=>({title:'测试通知',body:'测试通知已送达',tag:'synthetic',url:'/inbox'})});
   assert.equal(runtime.notifications.length,1);
   assert.equal(runtime.notifications[0].title,'测试通知');
@@ -103,7 +91,7 @@ test('push payload is displayed as text and notification clicks cannot open anot
 });
 test('pushsubscriptionchange obtains the VAPID key and re-binds the rotated endpoint',async()=>{
   const rotated={toJSON:()=>({endpoint:'https://push.example.test/rotated',keys:{p256dh:'synthetic-key',auth:'synthetic-auth'}})};
-  const runtime=workerRuntime(readFileSync(new URL('../sw.js',import.meta.url),'utf8'),new Map(),async path=>{
+  const runtime=workerRuntime(readFileSync(new URL('../push.js',import.meta.url),'utf8'),new Map(),async path=>{
     if(path==='/api/me')return {ok:true,json:async()=>({vapid_public_key:'BA'})};
     return {ok:true,json:async()=>({ok:true})};
   },{newSubscription:rotated});

@@ -44,7 +44,7 @@ func TestStaticCachePolicyNeverAppliesToAPI(t *testing.T) {
 		path, cache string
 		status      int
 	}{
-		{"/", "no-cache", 200}, {"/app.js", "no-cache", 200}, {"/sw.js", "no-cache", 200},
+		{"/", "no-store, no-cache, max-age=0, must-revalidate", 200}, {"/app.js", "no-store, no-cache, max-age=0, must-revalidate", 200}, {"/sw.js", "no-store, no-cache, max-age=0, must-revalidate", 200},
 		{"/assets/0123456789abcdef-app.js", "public, max-age=31536000, immutable", 200},
 		{"/api/unknown", "no-store", 404}, {"/assets/0123456789abcdef-package.json", "no-store", 404},
 	} {
@@ -144,7 +144,7 @@ func TestStaticCompressionNegotiatesWithoutWeakeningCacheIsolation(t *testing.T)
 		if (w.Header().Get("Content-Encoding") == "gzip") != want || w.Header().Get("Vary") != "Accept-Encoding" {
 			t.Fatalf("wrong encoding negotiation %q", encoding)
 		}
-		if w.Header().Get("Cache-Control") != "no-cache" {
+		if w.Header().Get("Cache-Control") != "no-store, no-cache, max-age=0, must-revalidate" {
 			t.Fatal("legacy name became immutable")
 		}
 	}
