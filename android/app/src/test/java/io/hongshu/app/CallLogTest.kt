@@ -226,7 +226,7 @@ class CallLogTest {
         }
         store.close()
         store = Store(context, name)
-        assertEquals(16, store.readableDatabase.version)
+        assertEquals(17, store.readableDatabase.version)
         assertEquals(CallQueueCounts(0, 0), store.callQueueCounts())
         assertFalse(store.hubSupportsCallLog())
         store.rememberHubCallLog(true)

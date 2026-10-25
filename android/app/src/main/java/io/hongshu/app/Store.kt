@@ -83,7 +83,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 16), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 17), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -153,6 +153,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createOutgoing(db)
         createLoadingState(db)
         createCallLog(db)
+        createCallCache(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -188,6 +189,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 14) createOutgoing(db)
         if (oldVersion < 15) createLoadingState(db)
         if (oldVersion < 16) createCallLog(db)
+        if (oldVersion < 17) createCallCache(db)
     }
 
     // Derived heads only: migration never drops captured SMS or resets cursors.
@@ -2636,6 +2638,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            db.delete("calls", null, null)
             db.delete("local_conversation_heads", null, null)
             db.delete("preview_messages", null, null)
             db.delete("message_analysis", null, null)
@@ -2672,6 +2675,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.beginTransaction()
         try {
             db.delete("inbox", null, null)
+            // Calls share the restore generation: a rewound hub reuses their IDs too.
+            db.delete("calls", null, null)
+            db.execSQL("UPDATE meta SET value=0 WHERE key='call_cursor'")
             db.delete("local_conversation_heads", null, null)
             db.delete("preview_messages", null, null)
             db.delete("message_analysis", null, null)

@@ -124,6 +124,7 @@ private data class HomeLists(
     val pending: PendingCounts = PendingCounts(),
     val aiEnabled: Boolean = false,
     val groupCounts: Map<String, Int> = emptyMap(),
+    val callLog: Boolean = false,
 )
 
 @Composable
@@ -154,6 +155,9 @@ fun HongshuUI(activity: MainActivity) {
     var loadedHomeMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
     var loadedSearchMessages by remember { mutableStateOf<List<CachedMessage>?>(null) }
     var messageLimit by remember { mutableIntStateOf(200) }
+    var homeView by remember { mutableStateOf(HomeView.SMS) }
+    var callLimit by remember { mutableIntStateOf(200) }
+    var loadedCalls by remember { mutableStateOf<List<CachedCall>?>(null) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -225,6 +229,14 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
+    LaunchedEffect(changes, callLimit, homeView, visible, destination) {
+        if (!visible || destination is AppDestination.Settings || homeView != HomeView.CALLS) return@LaunchedEffect
+        loadedCalls =
+            withContext(Dispatchers.IO) {
+                repo.store.readUnlessClosed(emptyList()) { cachedCalls(callLimit) }
+            }
+    }
+
     val searchSenders by produceState<Set<String>>(emptySet(), changes, searchQuery, contactRevision) {
         value = emptySet()
         value = withContext(Dispatchers.IO) {
@@ -258,10 +270,17 @@ fun HongshuUI(activity: MainActivity) {
                             pending = pendingCounts(),
                             aiEnabled = aiEnabled(),
                             groupCounts = groupCounts(activeQuery, simFilter, searchSenders),
+                            callLog = hubSupportsCallLog(),
                         )
                     }
                 }
         }
+    LaunchedEffect(lists.callLog) {
+        if (!lists.callLog && homeView == HomeView.CALLS) {
+            homeView = HomeView.SMS
+            navigationStack = listOf(AppDestination.Home)
+        }
+    }
     LaunchedEffect(lists.aiEnabled) {
         aiEnabled = lists.aiEnabled
         if (group !in visibleMessageGroups(aiEnabled)) group = "all"
@@ -298,6 +317,22 @@ fun HongshuUI(activity: MainActivity) {
             if (navigationStack.lastOrNull() is AppDestination.Conversation) {
                 replaceTopDestination(navigationStack, destination)
             } else pushDestination(navigationStack, destination)
+    }
+
+    fun navigateCall(id: Long) {
+        val destination = AppDestination.Call(id)
+        navigationStack =
+            if (navigationStack.lastOrNull() is AppDestination.Call) replaceTopDestination(navigationStack, destination)
+            else pushDestination(navigationStack, destination)
+    }
+
+    // Switching between SMS and calls starts from that view's list.
+    fun switchView(view: HomeView) {
+        if (view == homeView) return
+        homeView = view
+        callLimit = 200
+        searchQuery = ""
+        navigationStack = listOf(AppDestination.Home)
     }
 
     fun popNavigation() {
@@ -341,6 +376,9 @@ fun HongshuUI(activity: MainActivity) {
             },
             onMessage = ::showMessage,
             onGroupChange = { group = it },
+            onViewChange = ::switchView,
+            onSelectCall = ::navigateCall,
+            onLoadMoreCalls = { callLimit += 200 },
             onChangeCategory = { id, category ->
                 action {
                     identityMutex.withLock { repo.api.request("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
@@ -408,6 +446,10 @@ fun HongshuUI(activity: MainActivity) {
                                     group = group,
                                     aiEnabled = aiEnabled,
                                     groupCounts = lists.groupCounts,
+                                    view = homeView,
+                                    callLogAvailable = lists.callLog,
+                                    calls = loadedCalls,
+                                    callLimit = callLimit,
                                 ),
                             actions = homeActions,
                             twoPane = isExpanded,
