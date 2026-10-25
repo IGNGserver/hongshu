@@ -9,6 +9,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -82,30 +83,24 @@ class NetworkTest {
         }
     }
 
+    private fun cancelSyncWork(context: Context) {
+        val manager = WorkManager.getInstance(context)
+        // The application's periodic sync starts immediately on a fresh emulator.
+        // It must not drain a test's queue concurrently with its explicit sync calls.
+        for (name in listOf("hongshu-sync", "hongshu-periodic", "hongshu-capture", "hongshu-capture-periodic"))
+            manager.cancelUniqueWork(name).result.get()
+    }
+
     private fun withConfig(test: (Context, Config) -> Unit) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = context.getSharedPreferences("hongshu", Context.MODE_PRIVATE)
         val saved = prefs.all
         try {
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
-            // The application's periodic sync starts immediately on a fresh emulator.
-            // It must not drain this test's queue concurrently with its explicit sync calls.
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-periodic").result.get()
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
-            WorkManager.getInstance(context)
-                .cancelUniqueWork("hongshu-capture-periodic")
-                .result
-                .get()
+            cancelSyncWork(context)
             prefs.edit().clear().commit()
             test(context, Config(context))
         } finally {
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-sync").result.get()
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-periodic").result.get()
-            WorkManager.getInstance(context).cancelUniqueWork("hongshu-capture").result.get()
-            WorkManager.getInstance(context)
-                .cancelUniqueWork("hongshu-capture-periodic")
-                .result
-                .get()
+            cancelSyncWork(context)
             val editor = prefs.edit().clear()
             for ((key, value) in saved) when (value) {
                 is String -> editor.putString(key, value)
@@ -316,18 +311,36 @@ class NetworkTest {
                         val keys = records.map { "provider:${it.first}" }
                         try {
                             store.captureProviders(records, false)
-                             for (round in 1..21) {
-                                 assertFalse(runBlocking { SyncEngine.run(context) })
-                                 assertEquals((2005 - round * 100).coerceAtLeast(0), store.pendingCount())
-                                 assertEquals(2, registrations.get())
-                             }
-                             // A final successor catches up data committed by the last upload.
-                             assertTrue(runBlocking { SyncEngine.run(context) })
-                            assertEquals(0, store.pendingCount())
-                            assertEquals(2005, uploaded.get())
-                            // Accepted registrations are cached per hub device across runs.
-                            assertEquals(2, registrations.get())
-                            assertTrue(registered.contains("+9876543210"))
+                            // Cancelling work in withConfig does not stop every background sync:
+                            // a CaptureWorker that is already running finishes its blocking body
+                            // and enqueues a SyncWorker once it sees this test's upload switch and
+                            // queue, that worker chains successors while the queue is non-empty,
+                            // and syncNow() enqueues asynchronously. Each such pass drains one more
+                            // batch between two rounds (seen on API 28 as exactly 200 rows
+                            // fewer than expected). Holding the sync mutex makes such a worker
+                            // wait instead, so every batch counted here is one of these runs.
+                            runBlocking {
+                                identityMutex.withLock {
+                                    try {
+                                        for (round in 1..21) {
+                                            assertFalse(SyncEngine.runLocked(context))
+                                            assertEquals((2005 - round * 100).coerceAtLeast(0), store.pendingCount())
+                                            assertEquals(2, registrations.get())
+                                        }
+                                        // A final successor catches up data committed by the last upload.
+                                        assertTrue(SyncEngine.runLocked(context))
+                                        assertEquals(0, store.pendingCount())
+                                        assertEquals(2005, uploaded.get())
+                                        // Accepted registrations are cached per hub device across runs.
+                                        assertEquals(2, registrations.get())
+                                        assertTrue(registered.contains("+9876543210"))
+                                    } finally {
+                                        // Cancel a waiting worker while it is still suspended on
+                                        // the mutex, before it can run against this hub.
+                                        cancelSyncWork(context)
+                                    }
+                                }
+                            }
                         } finally {
                             store.ack(keys)
                         }
