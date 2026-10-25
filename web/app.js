@@ -126,6 +126,59 @@ export function avatarColor(identifier) {
 export const CLUSTER_GAP_MS = 5 * 60 * 1000;
 // A message the source phone sent. Hubs before outgoing support omit the field: received.
 export const isOutgoing = (m) => m?.direction === "out";
+
+// Call log (hub feature "call_log", docs/CALL_LOG.md): read-only records of who called whom.
+export const hasCallLog = (me) => Array.isArray(me?.features) && me.features.includes("call_log");
+export const CALL_TYPE_LABELS = { incoming: "呼入", outgoing: "呼出", missed: "未接来电", rejected: "已拒接", blocked: "已拦截", voicemail: "语音信箱", answered_externally: "其他设备已接听", unknown: "通话" };
+export const CALL_PRESENTATION_LABELS = { restricted: "隐藏号码", unknown: "未知号码", payphone: "公用电话" };
+export const isMissedCall = (c) => c?.type === "missed" || c?.type === "rejected" || c?.type === "blocked";
+export const callTypeLabel = (c) => CALL_TYPE_LABELS[c?.type] || CALL_TYPE_LABELS.unknown;
+export function formatCallDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), r = total % 60;
+  if (h) return `${h} 小时 ${m} 分 ${r} 秒`;
+  if (m) return `${m} 分 ${r} 秒`;
+  return `${r} 秒`;
+}
+// One line under the party: what happened, with a duration only when the call connected.
+export function callSummary(c) {
+  const label = callTypeLabel(c);
+  const kind = c?.video ? "视频" : "";
+  if (isMissedCall(c)) return [label, kind].filter(Boolean).join(" · ");
+  const outcome = c?.duration > 0 ? formatCallDuration(c.duration) : (c?.type === "incoming" || c?.type === "outgoing" ? "未接通" : "");
+  return [label, kind, outcome].filter(Boolean).join(" · ");
+}
+// The best available name: local/hub contact, then the number, then why there is none.
+export function callParty(c, name = "") {
+  return name || c?.number || CALL_PRESENTATION_LABELS[c?.presentation] || "未知号码";
+}
+// Detail rows in display order; empty values are omitted.
+export function callFacts(c, { line = "", device = "" } = {}) {
+  return [
+    ["类型", `${callTypeLabel(c)} · ${c?.video ? "视频通话" : "语音通话"}`],
+    ["时间", new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(c.timestamp))],
+    ["通话时长", c?.duration > 0 ? formatCallDuration(c.duration) : "未接通"],
+    ["号码", c?.number || CALL_PRESENTATION_LABELS[c?.presentation] || "未知号码"],
+    ["本机线路", line || "未知线路"],
+    ["来源手机", device || "来源手机"],
+    ["归属地", c?.location || ""],
+    ["记录来源", c?.historical ? "开启同步前的历史记录" : ""],
+  ].filter(([, value]) => value);
+}
+export const CALL_PAGE = 100;
+const callOrder = (a, b) => (b.timestamp - a.timestamp) || b.id - a.id;
+// Newest first. A refreshed head page replaces everything it covers and keeps older pages
+// that scrolling already loaded, so a new call does not throw the reader back to the top.
+export function mergeCallPages(head, loaded, headIsFull) {
+  if (!headIsFull || !head.length) return head.slice().sort(callOrder);
+  const ids = new Set(head.map((c) => c.id));
+  const floor = head.reduce((low, c) => (callOrder(low, c) < 0 ? c : low));
+  return head.concat(loaded.filter((c) => !ids.has(c.id) && callOrder(floor, c) < 0)).sort(callOrder);
+}
+export function appendCallPage(loaded, page) {
+  const ids = new Set(loaded.map((c) => c.id));
+  return loaded.concat(page.filter((c) => !ids.has(c.id))).sort(callOrder);
+}
 const localDay = (t) => new Date(t).toDateString();
 export function clusterMessages(messages) {
   const clusters = [];
@@ -248,6 +301,15 @@ const state = {
   seenMessageId: 0,
   arrivalsPending: false,
   unreadCount: 0,
+  view: "sms",
+  calls: [],
+  callsLoaded: false,
+  callsHasMore: false,
+  callsLoadingMore: false,
+  callsDirty: false,
+  callCursor: 0,
+  callId: 0,
+  callDetail: null,
 };
 
 const inboxQueryKey = () => JSON.stringify([state.group, state.q, state.sim, state.device]);
@@ -287,6 +349,7 @@ const errors = {
   invalid_ai_protocol: "请选择受支持的 AI 协议",
   ai_budget_or_rate_limit: "已达到调用限速或今日额度，请稍后再试",
   ai_disabled: "AI 已关闭，请刷新页面",
+  not_found: "该记录已不存在",
 };
 
 // SVG Icon Assets (Google Material Symbols / Icons)
@@ -316,6 +379,13 @@ const ICONS = {
   visibility: `<svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`,
   visibilityOff: `<svg viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>`,
   arrowDownward: `<svg viewBox="0 0 24 24"><path d="M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"/></svg>`,
+  call: `<svg viewBox="0 0 24 24"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>`,
+  callReceived: `<svg viewBox="0 0 24 24"><path d="M20 5.41 18.59 4 7 15.59V9H5v10h10v-2H8.41z"/></svg>`,
+  callMade: `<svg viewBox="0 0 24 24"><path d="M9 5v2h6.59L4 18.59 5.41 20 17 8.41V15h2V5z"/></svg>`,
+  callMissed: `<svg viewBox="0 0 24 24"><path d="M19.59 7 12 14.59 6.41 9H11V7H3v8h2v-4.59l7 7 9-9z"/></svg>`,
+  block: `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM4 12c0-4.42 3.58-8 8-8 1.85 0 3.55.63 4.9 1.69L5.69 16.9C4.63 15.55 4 13.85 4 12zm8 8c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1C19.37 8.45 20 10.15 20 12c0 4.42-3.58 8-8 8z"/></svg>`,
+  videocam: `<svg viewBox="0 0 24 24"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>`,
+  voicemail: `<svg viewBox="0 0 24 24"><path d="M18.5 6C15.46 6 13 8.46 13 11.5c0 1.33.47 2.55 1.26 3.5H9.74c.79-.95 1.26-2.17 1.26-3.5C11 8.46 8.54 6 5.5 6S0 8.46 0 11.5 2.46 17 5.5 17h13c3.04 0 5.5-2.46 5.5-5.5S21.54 6 18.5 6zm-13 9C3.57 15 2 13.43 2 11.5S3.57 8 5.5 8 9 9.57 9 11.5 7.43 15 5.5 15zm13 0c-1.93 0-3.5-1.57-3.5-3.5S16.57 8 18.5 8 22 9.57 22 11.5 20.43 15 18.5 15z"/></svg>`,
   markEmailRead: `<svg viewBox="0 0 24 24"><path d="M12 19c0-3.87 3.13-7 7-7 1.08 0 2.09.25 3 .68V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h9.08c-.05-.33-.08-.66-.08-1zM4 6l8 5 8-5v2l-8 5-8-5V6zm13.35 12.85l-1.77-1.77-1.42 1.41 3.19 3.19 5.66-5.66-1.42-1.41-4.24 4.24z"/></svg>`,
   emptyMessages: `<svg viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="80" cy="80" r="70" fill="currentColor" fill-opacity="0.12"/>
@@ -361,6 +431,8 @@ function contactsChanged(broadcast = true) {
     const top = stream?.scrollTop;
     renderConversations();
     renderDetail();
+    renderCalls();
+    renderCallDetail();
     if (top !== undefined && $(".messages")) $(".messages").scrollTop = top;
     $(".local-contact-search")?.replaceWith(localContactSearch());
   }
@@ -843,7 +915,7 @@ function shell() {
 
   if (state.page === "settings") settingsView();
   else inboxView();
-  document.body.dataset.detail = String(state.page === "inbox" && Boolean(state.sender));
+  document.body.dataset.detail = String(state.page === "inbox" && Boolean(state.view === "calls" ? state.callId : state.sender));
 
   setStatus(
     state.ws?.readyState === 1 ? "实时连接" : "自动补齐",
@@ -867,15 +939,7 @@ function setStatus(text, online) {
 // -------------------------------------------------------------
 // Inbox column: brand header, pill search, one row of chips, list
 // -------------------------------------------------------------
-function inboxView() {
-  const main = $(".main");
-
-  // Visually hidden page heading for screen readers and the browser smoke test
-  main.append(el("h1", "sr-only", "短信收件箱"));
-
-  const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
-  const inbox = el("div", "inbox");
-
+function inboxHeader({ markAll = true } = {}) {
   const header = el("header", "inbox-header");
   const logo = el("img", "brand-logo");
   logo.src = "/icon.svg";
@@ -902,9 +966,62 @@ function inboxView() {
     el("strong", "brand-title", "鸿枢"),
     status,
     el("span", "spacer"),
-    markAllBtn,
+    ...(markAll ? [markAllBtn] : []),
     iconButton(ICONS.settings, "设置", openSettings),
   );
+  return header;
+}
+
+// 短信 / 通话 tabs, shown only when the hub announces call_log.
+function viewSwitch() {
+  if (!hasCallLog(state.me)) return document.createDocumentFragment();
+  const bar = el("div", "view-switch");
+  bar.setAttribute("role", "tablist");
+  bar.setAttribute("aria-label", "内容类型");
+  for (const [view, label, icon] of [["sms", "短信", ICONS.sms], ["calls", "通话", ICONS.call]]) {
+    const selected = state.view === view;
+    const tab = el("button", "view-tab" + (selected ? " active" : ""));
+    tab.type = "button";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.innerHTML = icon;
+    tab.append(el("span", "", label));
+    tab.onclick = () => switchView(view);
+    bar.append(tab);
+  }
+  return bar;
+}
+
+function switchView(view) {
+  if (state.view === view) return;
+  contactSearchRequest++;
+  if (state.sender) {
+    rememberDetail();
+    state.sender = "";
+    state.messages = [];
+    state.seenMessageId = 0;
+  }
+  state.callId = 0;
+  state.callDetail = null;
+  // The open detail owns a history entry; drop it so back leaves the app as on the list.
+  leaveDetailHistory();
+  state.view = view;
+  shell();
+}
+
+function inboxView() {
+  const main = $(".main");
+  if (state.view === "calls") {
+    if (hasCallLog(state.me)) { callsView(main); return; }
+    state.view = "sms";
+  }
+
+  // Visually hidden page heading for screen readers and the browser smoke test
+  main.append(el("h1", "sr-only", "短信收件箱"));
+
+  const layout = el("section", "layout" + (state.sender ? " has-detail" : ""));
+  const inbox = el("div", "inbox");
+  const header = inboxHeader();
 
   const searchContainer = el("div", "search-container");
   searchContainer.innerHTML = `<span class="search-icon">${ICONS.search}</span>`;
@@ -967,7 +1084,7 @@ function inboxView() {
       void loadMoreConversations().catch((e) => toast(e.message));
     }
   }, { passive: true });
-  inbox.append(header, searchContainer, localContactSearch(), chipRow, el("p", "analysis-status"), list);
+  inbox.append(header, viewSwitch(), searchContainer, localContactSearch(), chipRow, el("p", "analysis-status"), list);
   layout.append(inbox, el("article", "detail"));
   if (state.returning) playReturn(layout);
   main.append(layout);
@@ -1594,6 +1711,7 @@ async function markDisplayedRead(sender, message_id) {
 }
 
 function renderDetail() {
+  if (state.view === "calls") return 0; // The call view owns .detail.
   const detail = $(".detail");
   if (!detail) return 0;
   detail.replaceChildren();
@@ -1693,6 +1811,215 @@ function renderDetail() {
   };
   detail.append(messages, jump);
   return freshCount;
+}
+
+// -------------------------------------------------------------
+// Call log: list and single-record detail (read-only)
+// -------------------------------------------------------------
+let callsRequest = 0;
+
+function callsView(main) {
+  main.append(el("h1", "sr-only", "通话记录"));
+  const layout = el("section", "layout" + (state.callId ? " has-detail" : ""));
+  const inbox = el("div", "inbox");
+  const list = el("div", "call-list");
+  list.setAttribute("aria-label", "通话记录");
+  list.addEventListener("scroll", () => {
+    if (list.scrollHeight - list.scrollTop - list.clientHeight < 240) {
+      void loadMoreCalls().catch((e) => toast(e.message));
+    }
+  }, { passive: true });
+  inbox.append(inboxHeader({ markAll: false }), viewSwitch(), list);
+  layout.append(inbox, el("article", "detail"));
+  if (state.returning) playReturn(layout);
+  main.append(layout);
+  renderCalls();
+  renderCallDetail();
+  void refreshCalls().catch((e) => toast(e.message));
+}
+
+async function refreshCalls() {
+  if (!state.me || !hasCallLog(state.me)) return false;
+  const request = ++callsRequest;
+  const generation = state.generation;
+  const epoch = state.epoch;
+  try {
+    const d = await api("/calls?" + query({ limit: CALL_PAGE }));
+    if (request !== callsRequest || generation !== state.generation || epoch !== state.epoch) return false;
+    const headIsFull = d.calls.length >= CALL_PAGE;
+    const merged = mergeCallPages(d.calls, state.calls, headIsFull);
+    // Older pages kept from scrolling still decide whether more remain below them.
+    state.callsHasMore = merged.length > d.calls.length ? state.callsHasMore : Boolean(d.more);
+    state.calls = merged;
+    state.callsLoaded = true;
+    const shown = state.calls.find((c) => c.id === state.callId);
+    if (shown) state.callDetail = shown;
+    renderCalls();
+    renderCallDetail();
+    return true;
+  } catch (error) {
+    if (error.name === "AbortError") return false;
+    const list = $(".call-list");
+    if (list && !state.callsLoaded && request === callsRequest) {
+      list.replaceChildren(emptyState(ICONS.warning, "通话记录暂未加载", "网络较慢或中枢暂不可用，请重试。"),
+        button("重试", () => refreshCalls()));
+    }
+    throw error;
+  }
+}
+
+async function loadMoreCalls() {
+  if (!state.me || !state.callsHasMore || state.callsLoadingMore || !state.calls.length) return;
+  const generation = state.generation;
+  const epoch = state.epoch;
+  state.callsLoadingMore = true;
+  $(".call-list .list-more")?.removeAttribute("hidden");
+  try {
+    const d = await api("/calls?" + query({ limit: CALL_PAGE, before: state.calls.at(-1).id }));
+    if (generation !== state.generation || epoch !== state.epoch) return;
+    state.calls = appendCallPage(state.calls, d.calls);
+    state.callsHasMore = Boolean(d.more);
+  } finally {
+    state.callsLoadingMore = false;
+  }
+  renderCalls();
+}
+
+function callIcon(c) {
+  if (c.type === "outgoing") return ICONS.callMade;
+  if (c.type === "missed" || c.type === "rejected") return ICONS.callMissed;
+  if (c.type === "blocked") return ICONS.block;
+  if (c.type === "voicemail") return ICONS.voicemail;
+  return ICONS.callReceived;
+}
+
+function callName(c) {
+  return c.number ? displayContact(c.number, c.contact || "") : "";
+}
+
+function callLine(receiver) {
+  if (!receiver) return "";
+  const label = simLabel(receiver);
+  return label === receiver ? receiver : `${label} ${receiver}`;
+}
+
+function renderCalls() {
+  if (state.view !== "calls") return;
+  const list = $(".call-list");
+  if (!list) return;
+  const top = list.scrollTop;
+  list.replaceChildren();
+  list.setAttribute("aria-busy", String(!state.callsLoaded));
+  if (!state.calls.length) {
+    if (!state.callsLoaded) { list.append(skeletonRows()); return; }
+    list.append(emptyState(ICONS.call, "暂无通话记录", "在 Android 手机的“采集方式”中开启“同步通话记录”后，通话会出现在这里。"));
+    return;
+  }
+  let lastDay = "";
+  for (const c of state.calls) {
+    const day = dateDay(c.timestamp);
+    if (day !== lastDay) {
+      list.append(el("div", "call-day", day));
+      lastDay = day;
+    }
+    const selected = state.callId === c.id;
+    const row = el("button", "conversation call-row" + (selected ? " selected" : "") + (isMissedCall(c) ? " call-missed" : ""));
+    row.type = "button";
+    row.dataset.id = String(c.id);
+    if (selected) row.setAttribute("aria-current", "true");
+    attachRipple(row);
+    row.onclick = () => openCall(c);
+    const name = callName(c);
+    const preview = el("div", "preview");
+    const head = el("div", "preview-top");
+    head.append(el("strong", "", callParty(c, name)), el("time", "", formatClock(c.timestamp)));
+    const bottom = el("div", "preview-bottom");
+    const icon = el("span", "call-type-icon");
+    icon.innerHTML = callIcon(c);
+    icon.setAttribute("aria-hidden", "true");
+    bottom.append(icon, el("p", "", [callSummary(c), c.receiver ? simLabel(c.receiver) : ""].filter(Boolean).join(" · ")));
+    preview.append(head, bottom);
+    row.append(avatar(name, c.number), preview);
+    list.append(row);
+  }
+  const more = el("div", "list-more", "正在加载更早的通话…");
+  more.hidden = !state.callsLoadingMore;
+  list.append(more);
+  list.scrollTop = top;
+}
+
+async function openCall(c) {
+  state.callId = c.id;
+  state.callDetail = c;
+  setDetailOpen(true);
+  enterDetailHistory();
+  renderCalls();
+  renderCallDetail();
+  const generation = state.generation;
+  try {
+    const d = await api("/calls/" + c.id);
+    if (generation !== state.generation || state.callId !== c.id) return;
+    state.callDetail = d.call;
+    renderCallDetail();
+  } catch (error) {
+    if (error.name !== "AbortError") toast(error.message);
+  }
+}
+
+function closeCallDetail() {
+  const wasOpen = Boolean(state.callId);
+  state.callId = 0;
+  state.callDetail = null;
+  setDetailOpen(false);
+  renderCalls();
+  renderCallDetail();
+  if (wasOpen) playReturn($(".layout"), "returning-list");
+}
+
+function renderCallDetail() {
+  if (state.view !== "calls") return;
+  const detail = $(".detail");
+  if (!detail) return;
+  detail.replaceChildren();
+  const c = state.callDetail;
+  if (!c) {
+    detail.append(emptyState(ICONS.call, "选择一条通话记录", "点击左侧的通话，查看时间、时长、线路与来源手机"));
+    return;
+  }
+  const name = callName(c);
+  const head = el("header", "detail-head");
+  head.append(iconButton(ICONS.arrowBack, "返回", () => {
+    if (history.state?.[DETAIL_HISTORY]) history.back();
+    else closeCallDetail();
+  }, "back"));
+  const info = el("div", "detail-head-info");
+  const text = el("div");
+  text.append(el("strong", "", callParty(c, name)), el("div", "sub-info", name ? c.number : callTypeLabel(c)));
+  info.append(avatar(name, c.number, "avatar-detail"), text);
+  head.append(info);
+  if (c.number) {
+    const actions = el("div", "detail-head-actions");
+    actions.append(iconButton(ICONS.contentCopy, "复制号码", async () => {
+      await copyText(c.number);
+      toast("已复制号码 " + c.number);
+    }));
+    head.append(actions);
+  }
+  detail.append(head);
+
+  const body = el("div", "call-detail");
+  const summary = el("div", "call-detail-summary" + (isMissedCall(c) ? " call-missed" : ""));
+  const icon = el("span", "call-type-icon");
+  icon.innerHTML = c.video ? ICONS.videocam : callIcon(c);
+  icon.setAttribute("aria-hidden", "true");
+  summary.append(icon, el("span", "", callSummary(c)));
+  const facts = el("dl", "call-facts");
+  const device = state.devices.find((d) => d.id === c.device_id)?.name || "";
+  for (const [term, value] of callFacts(c, { line: callLine(c.receiver), device })) {
+    facts.append(el("dt", "", term), el("dd", "", value));
+  }
+  body.append(summary, facts);
+  detail.append(body);
 }
 
 // Shown when the reader has scrolled away from the newest message. A message that
@@ -2476,6 +2803,12 @@ function disconnect() {
   state.renderedRows = new Map();
   state.seenMessageId = 0;
   state.unreadCount = 0;
+  state.view = "sms";
+  state.calls = [];
+  state.callsLoaded = state.callsHasMore = state.callsLoadingMore = state.callsDirty = false;
+  state.callCursor = state.callId = 0;
+  state.callDetail = null;
+  callsRequest++;
   updateAppBadge(0);
 }
 
@@ -2519,7 +2852,12 @@ async function catchUp() {
     // An arrival and a read can cancel in the total; cursor changes also recheck tail rows.
     state.conversationsDirty ||= analysisChanged || unreadChanged || cursorChanged;
     state.arrivalsPending ||= me.cursor > state.cursor && !epochReset(state.epochSeen, state.epoch, me.epoch);
+    // Calls have their own commit clock; a restore resets both streams.
+    state.callsDirty ||= (me.call_cursor ?? 0) !== state.callCursor || epochReset(state.epochSeen, state.epoch, me.epoch);
+    state.callCursor = me.call_cursor ?? 0;
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
+      state.calls = [];
+      state.callsLoaded = state.callsHasMore = false;
       detailCache.clear(); metadataRevision = null; metadataUpdatedAt = 0;
       state.pendingDisplayedRead = null;
       state.messages = [];
@@ -2548,14 +2886,24 @@ async function catchUp() {
         if (previousMetadata !== JSON.stringify([state.devices, state.sims, state.contacts])) {
           detailCache.clear();
           metadataChanges++;
-          renderFilterMenu(); renderConversations();
+          renderFilterMenu(); renderConversations(); renderCalls(); renderCallDetail();
           // A contact rename can change the search result and older detail labels.
           state.inboxDirty = state.historyDirty = state.conversationsDirty = true;
         }
       }).catch(() => {});
     }
     if (generation !== state.generation || !state.me) return;
-    if (state.page === "inbox" && state.inboxDirty) {
+    if (state.view === "calls" && !hasCallLog(me)) {
+      state.view = "sms";
+      state.callId = 0;
+      state.callDetail = null;
+      if (state.page === "inbox") shell();
+    }
+    if (state.page === "inbox" && state.view === "calls" && state.callsDirty) {
+      const refreshed = await refreshCalls();
+      if (generation === state.generation && refreshed !== false) state.callsDirty = false;
+    }
+    if (state.page === "inbox" && state.view !== "calls" && state.inboxDirty) {
       const metadataVersion = metadataChanges;
       state.readRetry = false;
       const refreshed = await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: state.historyDirty, revalidateConversations: state.conversationsDirty, arrivals: state.arrivalsPending });
@@ -2584,6 +2932,7 @@ async function start() {
   state.me = await api("/me");
   if (generation !== state.generation) return;
   state.cursor = state.me.cursor;
+  state.callCursor = state.me.call_cursor ?? 0;
   state.epoch = state.me.epoch;
   state.epochSeen = true;
   state.loggedOut = false;
@@ -2600,7 +2949,7 @@ async function start() {
   void reloadLocalContacts().catch(error => toast(error.message));
   void reloadMetadata().then(() => {
     if (sessionGeneration !== state.generation || !state.me) return;
-    renderFilterMenu(); renderConversations();
+    renderFilterMenu(); renderConversations(); renderCalls(); renderCallDetail();
   }).catch(() => toast("附加信息暂不可用，短信仍可查看"));
   void browserPushEnabled().catch((error) => {
     if (error.name !== "AbortError") toast("通知订阅恢复失败，请在设置中重新开启");
@@ -2635,6 +2984,7 @@ if (typeof document !== "undefined") {
       return;
     }
     if (!event.state?.[DETAIL_HISTORY] && state.sender) closeDetail();
+    if (!event.state?.[DETAIL_HISTORY] && state.callId) closeCallDetail();
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.me) {
