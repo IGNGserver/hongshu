@@ -31,6 +31,7 @@ class HongshuApp : Application() {
         schedule(this)
         SimMonitor.start(this)
         SmsInboxObserver.ensure(this)
+        CallLogObserver.ensure(this)
     }
 }
 
@@ -180,12 +181,22 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             } catch (_: Exception) {
                 config.outgoingPending = false
             }
+            // Calls are their own source and queue; a failure here never holds back SMS.
+            try {
+                CallLogObserver.ensure(applicationContext)
+                config.callLogStatus = scanCallLog(applicationContext)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                config.callLogPending = false
+            }
             // Wake upload without enqueueing another capture worker in a completion loop.
             Store(applicationContext).use {
                 // Apply the user's queue policy after pairing/scanning, so a row that was just
                 // enriched by this pass is not hidden before it had a chance to resolve.
                 it.autoIgnoreUnassigned()
-                if (config.upload && it.pendingCount() > 0) enqueueSyncOnly(applicationContext)
+                if (config.upload && (it.pendingCount() > 0 || it.callQueueCounts().pending > 0))
+                    enqueueSyncOnly(applicationContext)
             }
             // Paging through a large inbox is progress, not failure: a retry would back off
             // exponentially and hold the shared capture chain (and new-SMS recovery) for hours.
@@ -193,7 +204,8 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 config.upload &&
                     ((config.historyEnabled && config.inboxScanPending) ||
                         (config.recoveryEnabled && config.recoveryPending) ||
-                        (config.outgoingEnabled && config.outgoingPending))
+                        (config.outgoingEnabled && config.outgoingPending) ||
+                        (config.callLogEnabled && config.callLogPending))
             )
                 enqueueCaptureContinuation(applicationContext)
             Result.success()
@@ -368,6 +380,7 @@ object SyncEngine {
                     val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
                     c.serverUploadAllowed = serverUpload
                     store.rememberHubOutgoing(hubFeatures(session).contains(HUB_FEATURE_OUTGOING))
+                    store.rememberHubCallLog(hubFeatures(session).contains(HUB_FEATURE_CALL_LOG))
                     if (me.has("name")) c.deviceName = me.getString("name")
                     if (store.captureSince() == 0L) {
                         store.initializeCaptureSince(me.getLong("created_at"))
@@ -422,6 +435,52 @@ object SyncEngine {
                         }
                         return null
                     }
+                    // Calls never fail the SMS sync: an error is reported and retried on the next
+                    // sync instead of backing off message delivery. True only when a bounded
+                    // pass made progress and left more queued.
+                    fun uploadCallSlice(): Boolean {
+                        val queued = store.callQueueCounts().pending
+                        if (queued == 0) {
+                            c.callLogUploadStatus = ""
+                            return false
+                        }
+                        if (!c.upload || !serverUpload || !c.serverUploadAllowed) return false
+                        if (!store.hubSupportsCallLog()) {
+                            c.callLogUploadStatus = "$queued 条在本机排队 · 当前中枢版本还不支持通话记录"
+                            return false
+                        }
+                        return try {
+                            val registrations = SimRegistrations(repo.api, c)
+                            val sims = store.sims()
+                            val more = uploadCalls(
+                                repo.api,
+                                store,
+                                // Keep the user's SIM label; only a line no longer mapped gets a generic one.
+                                ensure = { call ->
+                                    val sim = sims.find { it.phone == call.receiver }
+                                    registrations.ensure(call.receiver, sim?.label ?: "SIM", sim?.sub ?: call.subscriptionId)
+                                },
+                                enabled = { c.upload && c.serverUploadAllowed },
+                            )
+                            val left = store.callQueueCounts()
+                            c.callLogUploadStatus =
+                                when {
+                                    left.pending > 0 -> "待上传 ${left.pending} 条"
+                                    left.blocked > 0 -> "${left.blocked} 条被中枢拒收"
+                                    else -> "已全部上传"
+                                }
+                            more
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: ApiException) {
+                            if (e.status == 401) throw e
+                            c.callLogUploadStatus = "上传失败，下次同步重试：${e.message}"
+                            false
+                        } catch (_: Exception) {
+                            c.callLogUploadStatus = "上传失败，下次同步重试"
+                            false
+                        }
+                    }
                     var uploaded = false
                     if (session.has("global_watermark_id")) {
                         store.updateGlobalWatermark(session.optLong("global_watermark_id"))
@@ -467,6 +526,7 @@ object SyncEngine {
                             val analysisMore = syncMessageAnalysis(repo, session)
                             uploadReadReceipts(repo.api, store)
                             val readsComplete = syncReadState(store) { repo.api.request(it) }
+                            val callsMore = uploadCallSlice()
                             c.lastSync = System.currentTimeMillis()
                             c.lastSyncError = ""
                             c.syncHealthy = true
@@ -483,7 +543,7 @@ object SyncEngine {
                             // off and retries without having blocked receiving.
                             uploadFailure?.let { throw it }
                             // Successful bounded work gets a successor, not failure backoff.
-                            return@withContext !uploadProgress && !analysisMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
+                            return@withContext !uploadProgress && !analysisMore && !callsMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                                 (serverUpload &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
