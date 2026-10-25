@@ -366,205 +366,207 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 object SyncEngine {
     private val mutex = identityMutex
 
-    suspend fun run(context: Context): Boolean =
-        mutex.withLock {
-            withContext(Dispatchers.IO) {
-                val repo = Repository(context)
-                val c = repo.config
-                val store = repo.store
-                try {
-                    if (c.token.isEmpty()) return@withContext true
-                    c.lastSyncAttempt = System.currentTimeMillis()
-                    val session = repo.api.request("/me", timeoutMillis = 15_000)
-                    val me = session.getJSONObject("device")
-                    val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
-                    c.serverUploadAllowed = serverUpload
-                    store.rememberHubOutgoing(hubFeatures(session).contains(HUB_FEATURE_OUTGOING))
-                    store.rememberHubCallLog(hubFeatures(session).contains(HUB_FEATURE_CALL_LOG))
-                    if (me.has("name")) c.deviceName = me.getString("name")
-                    if (store.captureSince() == 0L) {
-                        store.initializeCaptureSince(me.getLong("created_at"))
+    suspend fun run(context: Context): Boolean = mutex.withLock { runLocked(context) }
+
+    // The caller holds identityMutex. Instrumented tests hold it across a sequence of runs so
+    // that a background SyncWorker cannot slip a pass in between and drain the same queue.
+    internal suspend fun runLocked(context: Context): Boolean =
+        withContext(Dispatchers.IO) {
+            val repo = Repository(context)
+            val c = repo.config
+            val store = repo.store
+            try {
+                if (c.token.isEmpty()) return@withContext true
+                c.lastSyncAttempt = System.currentTimeMillis()
+                val session = repo.api.request("/me", timeoutMillis = 15_000)
+                val me = session.getJSONObject("device")
+                val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
+                c.serverUploadAllowed = serverUpload
+                store.rememberHubOutgoing(hubFeatures(session).contains(HUB_FEATURE_OUTGOING))
+                store.rememberHubCallLog(hubFeatures(session).contains(HUB_FEATURE_CALL_LOG))
+                if (me.has("name")) c.deviceName = me.getString("name")
+                if (store.captureSince() == 0L) {
+                    store.initializeCaptureSince(me.getLong("created_at"))
+                }
+                val epoch = session.optLong("epoch")
+                if (epochReset(store.epochSeen(), store.epoch(), epoch))
+                    store.resetSyncedCache(epoch)
+                else store.rememberEpoch(epoch)
+                store.initializeSyncHead(session.getLong("cursor"))
+                c.notify = me.getBoolean("notify")
+                // Display preview rows never acknowledge the reliable history log.
+                if (hubFeatures(session).contains("recent_snapshot") &&
+                    session.getLong("cursor") > store.cursor() &&
+                    (!store.initialComplete() || session.getLong("cursor") - store.cursor() > 200) &&
+                    store.previewHead() != session.getLong("cursor")) {
+                    try {
+                        store.applyRecent(repo.api.request("/recent?limit=50", timeoutMillis = 8_000))
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: ApiException) { if (e.status == 401) throw e }
+                    catch (_: Exception) { /* reliable sync remains authoritative */ }
+                }
+                // Local capture remains independent; denial never deletes its queue.
+                var uploadFailure: Exception? = null
+                var uploadProgress = false
+                fun uploadSlice(): Exception? {
+                    if (!c.upload || !serverUpload || !c.serverUploadAllowed) return null
+                    try {
+                        val registrations = SimRegistrations(repo.api, c)
+                        for (sim in store.sims())
+                            registrations.ensure(sim.phone, sim.label, sim.sub)
+                        val candidates = store.uploadCandidates(0)
+                        val pending = candidates.take(uploadBatchCount(
+                            candidates.map { it.second.json().toString().toByteArray().size },
+                            budget = if (c.lowSpeed || loadingNetwork.slow) 128_000 else 900_000,
+                        ))
+                        if (pending.isEmpty()) return null
+                        // Register historical receiver snapshots without rewriting them.
+                        for (message in pending.map { it.second }.distinctBy { it.receiver to it.subscriptionId }) {
+                            registrations.ensure(message.receiver, "SIM", message.subscriptionId)
+                        }
+                        uploadPending(repo.api, store, pending, enabled = { c.upload && c.serverUploadAllowed })
+                        uploadProgress = true
+                        // Retry stale cached registrations once; fresh rejections stay blocked.
+                        registrations.forgetRejected(store.simRejectedReceivers())
+                            .takeIf { it.isNotEmpty() }?.let { store.releaseSimRejections(it) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: ApiException) {
+                        if (e.status == 401) throw e else return e
+                    } catch (e: Exception) {
+                        return e
                     }
-                    val epoch = session.optLong("epoch")
-                    if (epochReset(store.epochSeen(), store.epoch(), epoch))
-                        store.resetSyncedCache(epoch)
-                    else store.rememberEpoch(epoch)
-                    store.initializeSyncHead(session.getLong("cursor"))
-                    c.notify = me.getBoolean("notify")
-                    // Display preview rows never acknowledge the reliable history log.
-                    if (hubFeatures(session).contains("recent_snapshot") &&
-                        session.getLong("cursor") > store.cursor() &&
-                        (!store.initialComplete() || session.getLong("cursor") - store.cursor() > 200) &&
-                        store.previewHead() != session.getLong("cursor")) {
-                        try {
-                            store.applyRecent(repo.api.request("/recent?limit=50", timeoutMillis = 8_000))
-                        } catch (e: CancellationException) { throw e }
-                        catch (e: ApiException) { if (e.status == 401) throw e }
-                        catch (_: Exception) { /* reliable sync remains authoritative */ }
+                    return null
+                }
+                // Calls never fail the SMS sync: an error is reported and retried on the next
+                // sync instead of backing off message delivery. True only when a bounded
+                // pass made progress and left more queued.
+                fun uploadCallSlice(): Boolean {
+                    val queued = store.callQueueCounts().pending
+                    if (queued == 0) {
+                        c.callLogUploadStatus = ""
+                        return false
                     }
-                    // Local capture remains independent; denial never deletes its queue.
-                    var uploadFailure: Exception? = null
-                    var uploadProgress = false
-                    fun uploadSlice(): Exception? {
-                        if (!c.upload || !serverUpload || !c.serverUploadAllowed) return null
-                        try {
-                            val registrations = SimRegistrations(repo.api, c)
-                            for (sim in store.sims())
-                                registrations.ensure(sim.phone, sim.label, sim.sub)
-                            val candidates = store.uploadCandidates(0)
-                            val pending = candidates.take(uploadBatchCount(
-                                candidates.map { it.second.json().toString().toByteArray().size },
-                                budget = if (c.lowSpeed || loadingNetwork.slow) 128_000 else 900_000,
-                            ))
-                            if (pending.isEmpty()) return null
-                            // Register historical receiver snapshots without rewriting them.
-                            for (message in pending.map { it.second }.distinctBy { it.receiver to it.subscriptionId }) {
-                                registrations.ensure(message.receiver, "SIM", message.subscriptionId)
+                    if (!c.upload || !serverUpload || !c.serverUploadAllowed) return false
+                    if (!store.hubSupportsCallLog()) {
+                        c.callLogUploadStatus = "$queued 条在本机排队 · 当前中枢版本还不支持通话记录"
+                        return false
+                    }
+                    return try {
+                        val registrations = SimRegistrations(repo.api, c)
+                        val sims = store.sims()
+                        val more = uploadCalls(
+                            repo.api,
+                            store,
+                            // Keep the user's SIM label; only a line no longer mapped gets a generic one.
+                            ensure = { call ->
+                                val sim = sims.find { it.phone == call.receiver }
+                                registrations.ensure(call.receiver, sim?.label ?: "SIM", sim?.sub ?: call.subscriptionId)
+                            },
+                            enabled = { c.upload && c.serverUploadAllowed },
+                        )
+                        val left = store.callQueueCounts()
+                        c.callLogUploadStatus =
+                            when {
+                                left.pending > 0 -> "待上传 ${left.pending} 条"
+                                left.blocked > 0 -> "${left.blocked} 条被中枢拒收"
+                                else -> "已全部上传"
                             }
-                            uploadPending(repo.api, store, pending, enabled = { c.upload && c.serverUploadAllowed })
-                            uploadProgress = true
-                            // Retry stale cached registrations once; fresh rejections stay blocked.
-                            registrations.forgetRejected(store.simRejectedReceivers())
-                                .takeIf { it.isNotEmpty() }?.let { store.releaseSimRejections(it) }
-                        } catch (e: CancellationException) {
-                            throw e
+                        more
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: ApiException) {
+                        if (e.status == 401) throw e
+                        c.callLogUploadStatus = "上传失败，下次同步重试：${e.message}"
+                        false
+                    } catch (_: Exception) {
+                        c.callLogUploadStatus = "上传失败，下次同步重试"
+                        false
+                    }
+                }
+                var uploaded = false
+                if (session.has("global_watermark_id")) {
+                    store.updateGlobalWatermark(session.optLong("global_watermark_id"))
+                }
+                if (session.optLong("unread_count", -1L) == 0L) {
+                    context.getSystemService(NotificationManager::class.java).cancel(2)
+                }
+                val pairedAt = me.optLong("created_at")
+                for (page in 0 until 4) {
+                    val data =
+                        try {
+                            repo.api.request("/sync?after=${store.cursor()}&limit=200")
                         } catch (e: ApiException) {
-                            if (e.status == 401) throw e else return e
-                        } catch (e: Exception) {
-                            return e
-                        }
-                        return null
-                    }
-                    // Calls never fail the SMS sync: an error is reported and retried on the next
-                    // sync instead of backing off message delivery. True only when a bounded
-                    // pass made progress and left more queued.
-                    fun uploadCallSlice(): Boolean {
-                        val queued = store.callQueueCounts().pending
-                        if (queued == 0) {
-                            c.callLogUploadStatus = ""
-                            return false
-                        }
-                        if (!c.upload || !serverUpload || !c.serverUploadAllowed) return false
-                        if (!store.hubSupportsCallLog()) {
-                            c.callLogUploadStatus = "$queued 条在本机排队 · 当前中枢版本还不支持通话记录"
-                            return false
-                        }
-                        return try {
-                            val registrations = SimRegistrations(repo.api, c)
-                            val sims = store.sims()
-                            val more = uploadCalls(
-                                repo.api,
-                                store,
-                                // Keep the user's SIM label; only a line no longer mapped gets a generic one.
-                                ensure = { call ->
-                                    val sim = sims.find { it.phone == call.receiver }
-                                    registrations.ensure(call.receiver, sim?.label ?: "SIM", sim?.sub ?: call.subscriptionId)
-                                },
-                                enabled = { c.upload && c.serverUploadAllowed },
-                            )
-                            val left = store.callQueueCounts()
-                            c.callLogUploadStatus =
-                                when {
-                                    left.pending > 0 -> "待上传 ${left.pending} 条"
-                                    left.blocked > 0 -> "${left.blocked} 条被中枢拒收"
-                                    else -> "已全部上传"
-                                }
-                            more
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: ApiException) {
-                            if (e.status == 401) throw e
-                            c.callLogUploadStatus = "上传失败，下次同步重试：${e.message}"
-                            false
-                        } catch (_: Exception) {
-                            c.callLogUploadStatus = "上传失败，下次同步重试"
-                            false
-                        }
-                    }
-                    var uploaded = false
-                    if (session.has("global_watermark_id")) {
-                        store.updateGlobalWatermark(session.optLong("global_watermark_id"))
-                    }
-                    if (session.optLong("unread_count", -1L) == 0L) {
-                        context.getSystemService(NotificationManager::class.java).cancel(2)
-                    }
-                    val pairedAt = me.optLong("created_at")
-                    for (page in 0 until 4) {
-                        val data =
-                            try {
-                                repo.api.request("/sync?after=${store.cursor()}&limit=200")
-                            } catch (e: ApiException) {
-                                if (e.code != "epoch_changed") {
-                                    if (e.status != 401 && !uploaded) { uploadSlice(); uploaded = true }
-                                    throw e
-                                }
-                                val recovered = repo.api.request("/me")
-                                store.resetSyncedCache(recovered.getLong("epoch"))
-                                store.initializeSyncHead(recovered.getLong("cursor"))
-                                continue
-                            } catch (e: java.io.IOException) {
-                                if (!uploaded) { uploadSlice(); uploaded = true }
+                            if (e.code != "epoch_changed") {
+                                if (e.status != 401 && !uploaded) { uploadSlice(); uploaded = true }
                                 throw e
                             }
-                        if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) {
-                            store.resetSyncedCache(data.getLong("epoch"))
-                            store.initializeSyncHead(repo.api.request("/me").getLong("cursor"))
+                            val recovered = repo.api.request("/me")
+                            store.resetSyncedCache(recovered.getLong("epoch"))
+                            store.initializeSyncHead(recovered.getLong("cursor"))
                             continue
+                        } catch (e: java.io.IOException) {
+                            if (!uploaded) { uploadSlice(); uploaded = true }
+                            throw e
                         }
-                        applyMessagePage(context, c, store, data, pairedAt)
-                        val pendingNotice = store.pendingNotification()
-                        if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
-                            store.acknowledgeNotification(pendingNotice)
-                        if (!uploaded) {
-                            uploadFailure = uploadSlice()
-                            uploaded = true
-                        }
-                        if (!data.getBoolean("more")) {
-                            val contactsHealthy = refreshContactSnapshot(repo, session)
-                            c.contactsHealthy = contactsHealthy
-                            // Cosmetic analysis has a separate cursor and never creates notifications.
-                            val analysisMore = syncMessageAnalysis(repo, session)
-                            uploadReadReceipts(repo.api, store)
-                            val readsComplete = syncReadState(store) { repo.api.request(it) }
-                            val callsMore = uploadCallSlice()
-                            // Same isolation as call uploads: a failure is retried next sync.
-                            val callPagesMore =
-                                try {
-                                    syncCallLog(store, { repo.api.request(it) })
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: ApiException) {
-                                    if (e.status == 401) throw e
-                                    false
-                                } catch (_: Exception) {
-                                    false
-                                }
-                            c.lastSync = System.currentTimeMillis()
-                            c.lastSyncError = ""
-                            c.syncHealthy = true
-                            if (c.captureFailure == CaptureFailure.SCHEDULING)
-                                c.captureFailure = CaptureFailure.NONE
-                            c.status =
-                                // Queue counts are shown by the pending views; the sync status
-                                // only describes the sync itself.
-                                if (c.upload && c.historyEnabled && c.inboxScanPending)
-                                    "同步完成 · 历史短信采集中，自动继续"
-                                else "同步完成"
-                            if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
-                            // Download completed; report the upload failure so the worker backs
-                            // off and retries without having blocked receiving.
-                            uploadFailure?.let { throw it }
-                            // Successful bounded work gets a successor, not failure backoff.
-                            return@withContext !uploadProgress && !analysisMore && !callsMore && !callPagesMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
-                                (serverUpload &&
-                                    store.pending(allowFallback = false).isNotEmpty()))
-                        }
+                    if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) {
+                        store.resetSyncedCache(data.getLong("epoch"))
+                        store.initializeSyncHead(repo.api.request("/me").getLong("cursor"))
+                        continue
                     }
-                    uploadFailure?.let { throw it }
-                    false
-                } finally {
-                    store.close()
+                    applyMessagePage(context, c, store, data, pairedAt)
+                    val pendingNotice = store.pendingNotification()
+                    if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
+                        store.acknowledgeNotification(pendingNotice)
+                    if (!uploaded) {
+                        uploadFailure = uploadSlice()
+                        uploaded = true
+                    }
+                    if (!data.getBoolean("more")) {
+                        val contactsHealthy = refreshContactSnapshot(repo, session)
+                        c.contactsHealthy = contactsHealthy
+                        // Cosmetic analysis has a separate cursor and never creates notifications.
+                        val analysisMore = syncMessageAnalysis(repo, session)
+                        uploadReadReceipts(repo.api, store)
+                        val readsComplete = syncReadState(store) { repo.api.request(it) }
+                        val callsMore = uploadCallSlice()
+                        // Same isolation as call uploads: a failure is retried next sync.
+                        val callPagesMore =
+                            try {
+                                syncCallLog(store, { repo.api.request(it) })
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: ApiException) {
+                                if (e.status == 401) throw e
+                                false
+                            } catch (_: Exception) {
+                                false
+                            }
+                        c.lastSync = System.currentTimeMillis()
+                        c.lastSyncError = ""
+                        c.syncHealthy = true
+                        if (c.captureFailure == CaptureFailure.SCHEDULING)
+                            c.captureFailure = CaptureFailure.NONE
+                        c.status =
+                            // Queue counts are shown by the pending views; the sync status
+                            // only describes the sync itself.
+                            if (c.upload && c.historyEnabled && c.inboxScanPending)
+                                "同步完成 · 历史短信采集中，自动继续"
+                            else "同步完成"
+                        if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
+                        // Download completed; report the upload failure so the worker backs
+                        // off and retries without having blocked receiving.
+                        uploadFailure?.let { throw it }
+                        // Successful bounded work gets a successor, not failure backoff.
+                        return@withContext !uploadProgress && !analysisMore && !callsMore && !callPagesMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
+                            (serverUpload &&
+                                store.pending(allowFallback = false).isNotEmpty()))
+                    }
                 }
+                uploadFailure?.let { throw it }
+                false
+            } finally {
+                store.close()
             }
         }
 }
