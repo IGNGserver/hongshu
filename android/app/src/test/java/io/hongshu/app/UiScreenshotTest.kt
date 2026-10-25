@@ -243,4 +243,94 @@ class UiScreenshotTest {
             )
         }
     }
+
+    private fun seedCalls() {
+        val calls = org.json.JSONArray()
+        listOf(
+                arrayOf(1L, "13812345678", "incoming", now - 26 * hour, 185L, "+8613800138000", "allowed", false),
+                arrayOf(2L, "", "missed", now - 5 * hour, 0L, "", "restricted", false),
+                arrayOf(3L, "10086", "outgoing", now - 3 * hour, 0L, "+8613900139999", "allowed", false),
+                arrayOf(4L, "13812345678", "outgoing", now - 2 * hour, 3725L, "+8613800138000", "allowed", true),
+                arrayOf(5L, "+8613711112222", "rejected", now - hour / 3, 0L, "+8613800138000", "allowed", false),
+            )
+            .forEach { c ->
+                calls.put(
+                    org.json.JSONObject()
+                        .put("id", c[0]).put("device_id", "d1").put("receiver", c[5]).put("number", c[1])
+                        .put("contact", "").put("type", c[2]).put("timestamp", c[3]).put("duration", c[4])
+                        .put("subscription_id", 1).put("video", c[7]).put("presentation", c[6])
+                        .put("location", if (c[1] == "13812345678") "上海" else "").put("historical", false)
+                )
+            }
+        Store(compose.activity).use {
+            it.rememberEpoch(1)
+            it.rememberHubCallLog(true)
+            it.applyContacts(org.json.JSONObject().put("13812345678", "张三"))
+            it.applyCallPage(org.json.JSONObject().put("calls", calls).put("cursor", 5).put("more", false).put("epoch", 1))
+        }
+    }
+
+    private fun callModel(): HomeModel {
+        seedCalls()
+        val calls = Store(compose.activity).use { it.cachedCalls(50) }
+        return HomeModel(
+            repo = Repository(compose.activity),
+            messages = sample,
+            searchQuery = "",
+            simFilter = "",
+            receivers = sims.map { it.phone },
+            sims = sims,
+            facts = SetupFacts(connected = true),
+            messageLimit = 200,
+            changes = 0,
+            busy = false,
+            refreshing = false,
+            setup = setupProgress(SetupFacts(connected = true), true, dismissed = true),
+            view = HomeView.CALLS,
+            callLogAvailable = true,
+            calls = calls,
+        )
+    }
+
+    @Test
+    fun homeCalls() {
+        val model = callModel()
+        shot("home-calls") { MainSurface(AppDestination.Home, model, actions, twoPane = false) }
+    }
+
+    @Test
+    fun homeCallsDark() {
+        val model = callModel()
+        shot("home-calls-dark", dark = true) { MainSurface(AppDestination.Home, model, actions, twoPane = false) }
+    }
+
+    @Test
+    fun callDetail() {
+        val model = callModel()
+        shot("call-detail") { MainSurface(AppDestination.Call(4), model, actions, twoPane = false) }
+    }
+
+    @Test
+    fun hiddenCallDetailDark() {
+        val model = callModel()
+        shot("call-detail-hidden-dark", dark = true) { MainSurface(AppDestination.Call(2), model, actions, twoPane = false) }
+    }
+
+    @Test
+    fun homeSmsWithCallSwitch() {
+        val model = callModel()
+        shot("home-sms-switch") {
+            MainSurface(AppDestination.Home, HomeModel(model.repo, sample, "", "", model.receivers, sims, model.facts, 200, 0, false, false, model.setup, callLogAvailable = true), actions, twoPane = false)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w1024dp-h640dp-xhdpi")
+    fun tabletCalls() {
+        val model = callModel()
+        shot("tablet-calls") {
+            val spec = rememberAdaptiveLayoutSpec()
+            MainSurface(AppDestination.Call(5), model, actions, twoPane = spec.twoPane, layoutSpec = spec)
+        }
+    }
 }

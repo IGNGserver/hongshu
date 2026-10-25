@@ -134,6 +134,10 @@ class HomeModel(
     val group: String = "all",
     val aiEnabled: Boolean = false,
     val groupCounts: Map<String, Int> = emptyMap(),
+    val view: HomeView = HomeView.SMS,
+    val callLogAvailable: Boolean = false,
+    val calls: List<CachedCall>? = null,
+    val callLimit: Int = 200,
 )
 
 /** Callbacks from the main screen back to its owner. */
@@ -151,6 +155,9 @@ class HomeActions(
     val onGroupChange: (String) -> Unit = {},
     val onChangeCategory: (Long, String) -> Unit = { _, _ -> },
     val onMarkAllRead: () -> Unit = {},
+    val onViewChange: (HomeView) -> Unit = {},
+    val onSelectCall: (Long) -> Unit = {},
+    val onLoadMoreCalls: () -> Unit = {},
 )
 
 private fun formatClock(timestamp: Long): String =
@@ -166,6 +173,8 @@ fun MainSurface(
     layoutSpec: AdaptiveLayoutSpec = rememberAdaptiveLayoutSpec(),
 ) {
     val conversation = destination as? AppDestination.Conversation
+    val call = destination as? AppDestination.Call
+    val callsView = model.view == HomeView.CALLS
     val compactHeight = layoutSpec.compactHeight
     Box(
         Modifier.fillMaxSize()
@@ -180,7 +189,8 @@ fun MainSurface(
                 horizontalArrangement = Arrangement.spacedBy(layoutSpec.paneSpacing),
             ) {
                 Box(Modifier.width(layoutSpec.listPaneWidth).fillMaxHeight()) {
-                    ConversationListPane(model, actions, searching, conversation, compactHeight = compactHeight)
+                    if (callsView) CallListPane(model, actions, call?.id, compactHeight)
+                    else ConversationListPane(model, actions, searching, conversation, compactHeight = compactHeight)
                 }
                 Surface(
                     Modifier.weight(1f)
@@ -194,25 +204,42 @@ fun MainSurface(
                     val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
                     val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
                     AnimatedContent(
-                        targetState = conversation,
+                        targetState = call ?: conversation,
                         transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
-                        contentKey = { it?.let { c -> c.sender } },
+                        contentKey = {
+                            when (it) {
+                                is AppDestination.Conversation -> "conversation:${it.sender}"
+                                is AppDestination.Call -> "call:${it.id}"
+                                else -> if (callsView) "calls" else null
+                            }
+                        },
                         label = "detail pane",
                     ) { selected ->
-                        if (selected == null) DetailPlaceholder()
-                        else
-                            ConversationPane(
-                                selected,
-                                model,
-                                actions,
-                                showBack = false,
-                                inDetailCard = true,
-                                maxContentWidth = layoutSpec.conversationMaxWidth,
-                                bubbleMaxWidth = layoutSpec.bubbleMaxWidth,
-                            )
+                        when (selected) {
+                            is AppDestination.Conversation ->
+                                ConversationPane(
+                                    selected,
+                                    model,
+                                    actions,
+                                    showBack = false,
+                                    inDetailCard = true,
+                                    maxContentWidth = layoutSpec.conversationMaxWidth,
+                                    bubbleMaxWidth = layoutSpec.bubbleMaxWidth,
+                                )
+                            is AppDestination.Call ->
+                                CallDetailPane(selected.id, model, false, actions.onBack, actions.onMessage, layoutSpec.conversationMaxWidth)
+                            else ->
+                                if (callsView)
+                                    CallPlaceholder()
+                                else DetailPlaceholder()
+                        }
                     }
                 }
             }
+        } else if (call != null) {
+            CallDetailPane(call.id, model, true, actions.onBack, actions.onMessage, layoutSpec.conversationMaxWidth)
+        } else if (callsView) {
+            CallListPane(model, actions, null, compactHeight)
         } else if (conversation != null) {
             ConversationPane(
                 conversation,
@@ -286,6 +313,7 @@ private fun ConversationListPane(
             onMarkAllRead = actions.onMarkAllRead,
             compactHeight = compactHeight,
         )
+        if (model.callLogAvailable && !searching) HomeViewSwitch(model.view, actions.onViewChange)
         AnimatedVisibility(showSims) {
             SimFilterRow(model.receivers, model.sims, model.simFilter, actions.onSimFilterChange)
         }

@@ -1,3 +1,31 @@
+# 2026-10-25 通话记录同步（只读）
+
+基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：
+[#91](https://github.com/IGNGserver/hongshu/pull/91) 中枢 → [#92](https://github.com/IGNGserver/hongshu/pull/92) Web →
+[#93](https://github.com/IGNGserver/hongshu/pull/93) Android 采集 → 本 PR（Android 查看）。设计见
+[CALL_LOG.md](CALL_LOG.md)，契约见 [API.md](API.md)“通话记录”。
+
+- 中枢：迁移 013（`calls` + `call_clock`），`POST/GET /api/calls`、`/api/calls/{id}`、`/api/calls/sync`；
+  `/me.call_cursor`、`features: call_log`；不改变短信游标、未读与推送。
+- Web：“短信 / 通话”切换、按天分组的列表、详情面板；只刷新通话列表。
+- Android：`READ_CALL_LOG` 采集（默认关闭）、`call_outbox`/`call_ledger`（v16）、上传；
+  `/api/calls/sync` 缓存（v17）、列表与详情、`AppDestination.Call`。
+
+| PR | 本机验证（macos-dev2，scratch 在 `~/.build/短信同步系统/<slug>`） | PR CI |
+| --- | --- | --- |
+| #91 | `go test -race`/`go vet`/`go build`/gofmt、verify、diff check 通过；本机无 MySQL，集成测试跳过 | [40161315482](https://github.com/IGNGserver/hongshu/actions/runs/40161315482) 全部通过；`TestIntegrationCallLog`、`TestIntegrationBackupRestore` 在真实 MySQL 上 PASS |
+| #92 | `npm test` 106 项、`check`、`build`；内置浏览器 + 合成假中枢实测桌面/手机/深色/分页 | [40162650076](https://github.com/IGNGserver/hongshu/actions/runs/40162650076) 全部通过（rebase 前一次 android 28 仪器测试计数不稳定，与本 PR 无关） |
+| #93 | Gradle 单测 292（0 失败）、lint 0 error、assemble 通过 | [40163384189](https://github.com/IGNGserver/hongshu/actions/runs/40163384189) 全部通过（含 android 28/33/35 instrumentation） |
+| 本 PR | Gradle 单测 306（0 失败，含 `CallViewTest` 8 项）、lint 0 error、assemble 通过；Robolectric 截图核对手机/平板/深色 | 见 PR |
+
+**尚未真机验证**（编译与模拟器不能代替）：
+
+1. 来电接听、来电未接、拒接、去电接通、去电未接通各一次，确认类型、时长、时间与线路。
+2. 双卡分别拨打/接听，确认“本机线路”与 SIM 对应；澎湃 OS 的 `PHONE_ACCOUNT_ID` 能否解析。
+3. 隐藏号码来电显示“隐藏号码”；通讯录联系人显示姓名。
+4. 通话结束到其他设备可见的时延（应用在前台/后台/被杀三种状态）。
+5. 开启“历史补齐”后旧通话一次性补齐且不重复；关闭开关后不再上传。
+
 # 2026-10-23 验证码 AI 复核与提取
 
 基线 `c68fa5e`（`0.2.0-alpha.18`），任务分支 `agent/ai-otp-analysis`，PR

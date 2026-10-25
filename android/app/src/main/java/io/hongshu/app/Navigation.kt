@@ -109,6 +109,8 @@ sealed interface AppDestination {
 
     data class Conversation(val sender: String) : AppDestination
 
+    data class Call(val id: Long) : AppDestination
+
     data class Settings(val page: SettingsPage) : AppDestination
 }
 
@@ -238,6 +240,7 @@ internal fun AppDestination.screenKey(twoPane: Boolean): String =
         AppDestination.Home,
         AppDestination.Search -> "main"
         is AppDestination.Conversation -> if (twoPane) "main" else "conversation:$sender"
+        is AppDestination.Call -> if (twoPane) "main" else "call:$id"
         is AppDestination.Settings -> if (twoPane) "settings" else "settings:${page.name}"
     }
 

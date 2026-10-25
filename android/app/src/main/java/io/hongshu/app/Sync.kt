@@ -527,6 +527,18 @@ object SyncEngine {
                             uploadReadReceipts(repo.api, store)
                             val readsComplete = syncReadState(store) { repo.api.request(it) }
                             val callsMore = uploadCallSlice()
+                            // Same isolation as call uploads: a failure is retried next sync.
+                            val callPagesMore =
+                                try {
+                                    syncCallLog(store, { repo.api.request(it) })
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: ApiException) {
+                                    if (e.status == 401) throw e
+                                    false
+                                } catch (_: Exception) {
+                                    false
+                                }
                             c.lastSync = System.currentTimeMillis()
                             c.lastSyncError = ""
                             c.syncHealthy = true
@@ -543,7 +555,7 @@ object SyncEngine {
                             // off and retries without having blocked receiving.
                             uploadFailure?.let { throw it }
                             // Successful bounded work gets a successor, not failure backoff.
-                            return@withContext !uploadProgress && !analysisMore && !callsMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
+                            return@withContext !uploadProgress && !analysisMore && !callsMore && !callPagesMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                                 (serverUpload &&
                                     store.pending(allowFallback = false).isNotEmpty()))
                         }
