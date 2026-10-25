@@ -8,7 +8,7 @@ Default branch: main
 Baseline: main
 Integration: user-authorized PR only
 Release: manual-on-explicit-request
-Validation: `bash scripts/verify-repository.sh`、`git diff --check`、`cd server && go test -race ./... && go vet ./... && go build -o "$HONGSHU_BUILD_DIR/hongshu" .`、`cd web && npm test && npm run check && npm run build`、`cd android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`
+Validation: `bash scripts/verify-repository.sh`、`git diff --check`、`cd server && go test -race ./... && go vet ./... && go build -o "$HONGSHU_BUILD_DIR/hongshu" .`、`cd web && npm test && npm run check && npm run build`、`cd android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`、`cd website && python3 scripts/check-site.py`
 Worktree: `~/项目/.wt/短信同步系统/<slug>`
 
 ## 项目范围
@@ -83,6 +83,18 @@ Go 构建命令：`cd server && go build -trimpath -o "$HONGSHU_BUILD_DIR/hongsh
 
 所有带 `-alpha.N`、`-beta.N`、`-rc.N` 的 GitHub Release 都必须标记 **Pre-release**；stable
 Release 必须由用户明确要求。日常开发不自动递增版本、不创建 tag、不创建 Release；本轮不创建正式 Release。
+
+## 官网（website/）
+
+官网源码在 `website/`，首版是零构建静态页面（`website/site/`），没有 npm 依赖；`website/scripts/check-site.py`
+做静态检查。`.github/workflows/website.yml` 在 `main` 和 `release-published` 的 repository dispatch 时
+部署到 Cloudflare Pages 项目 `hongshu-website`（<https://hongshu.igng.net/>）。旧的 `hongshu-website`
+仓库已归档。
+
+- 站点不复制产品 `web/` 客户端代码；只放官网页面、样式、静态资源与站点文档。
+- 部署需要 `CLOUDFLARE_API_TOKEN`（Pages:Edit）和 `CLOUDFLARE_ACCOUNT_ID`；凭据不得写入仓库。
+- 完整页面结构/视觉/语言仍在 `website/docs/SITE.md` 的待决策项里；当前最小页面不构成最终设计结论。
+- `website/package.json` 只用于固定部署工具的包边界，不要添加前端依赖。
 
 ## 凭据与敏感数据
 

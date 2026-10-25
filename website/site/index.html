@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>鸿枢 Hongshu · 自部署的跨设备短信同步平台</title>
+  <meta name="description" content="鸿枢把你自己的短信可靠上传到自己的 MySQL 中枢，在所有授权 Android 与 Web/PWA 设备上查看。">
+  <meta name="theme-color" content="#0b0f14">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="canonical" href="https://hongshu.igng.net/">
+  <meta property="og:title" content="鸿枢 Hongshu">
+  <meta property="og:description" content="自部署的跨设备短信同步平台：短信可靠上传到自己的 MySQL 中枢。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://hongshu.igng.net/">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+
+  <header class="header">
+    <a class="brand" href="/" aria-label="鸿枢首页">
+      <img src="assets/favicon.svg" alt="" width="28" height="28">
+      <span>鸿枢 <small>Hongshu</small></span>
+    </a>
+    <nav aria-label="页面导航">
+      <a href="#boundaries">边界</a>
+      <a href="#start">开始</a>
+      <a href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero__copy">
+        <p class="eyebrow">HONGSHU · 自部署短信中枢</p>
+        <h1>短信留在<br>自己的中枢里。</h1>
+        <p class="lead">把手机短信可靠地上传到自己的 MySQL 中枢，长期保存，在所有授权 Android 与 Web/PWA 设备上查看。</p>
+        <div class="actions">
+          <a class="button button--primary" href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
+          <a class="button" href="https://github.com/IGNGserver/hongshu">查看源代码</a>
+        </div>
+        <p class="status"><span></span>首版官网 · 内容持续完善</p>
+      </div>
+
+      <div class="signal" aria-hidden="true">
+        <div class="signal__rings"></div>
+        <div class="signal__core"></div>
+        <span class="signal__label">PRIVATE RELAY</span>
+      </div>
+    </section>
+
+    <section class="section" id="boundaries">
+      <p class="eyebrow">01 · 边界</p>
+      <h2>能做什么，不能做什么。</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>收件与查看</h3>
+          <p>短信上传到你自己的中枢，并在所有授权 Android 与 Web/PWA 设备上查看。首版只收件、查看，不发送短信。</p>
+        </article>
+        <article class="card">
+          <h3>自己的基础设施</h3>
+          <p>Go + MySQL + Docker Compose。中枢镜像发布在 <code>ghcr.io/igngserver/hongshu</code>，部署与备份由你自己掌握。</p>
+        </article>
+        <article class="card">
+          <h3>隐私边界</h3>
+          <p>不处理 MMS/RCS，不提供端到端加密；站点与示例不展示真实短信内容、手机号或其他个人数据。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section section--start" id="start">
+      <p class="eyebrow">02 · 开始</p>
+      <h2>先读文档，再部署。</h2>
+      <p class="lead">产品仍在预发布阶段。请只从 GitHub Releases 下载已发布的 Android 安装包，并按产品仓库的部署文档选择固定版本。</p>
+      <div class="links">
+        <a href="https://github.com/IGNGserver/hongshu/releases">版本发布 <span>↗</span></a>
+        <a href="https://github.com/IGNGserver/hongshu/blob/main/docs/DEPLOYMENT.md">部署、备份与恢复 <span>↗</span></a>
+        <a href="https://github.com/IGNGserver/hongshu">产品仓库 <span>↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>鸿枢（Hongshu）· MIT</span>
+    <span>由 IGNGserver 维护 · 官网首版</span>
+  </footer>
+</body>
+</html>
