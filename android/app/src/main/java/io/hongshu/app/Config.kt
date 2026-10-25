@@ -152,6 +152,48 @@ class Config(context: Context) {
             prefs.edit().putString("outgoing_status", value).apply()
         }
 
+    // Call log sync (docs/CALL_LOG.md). Off by default: it needs a new sensitive permission.
+    // Older calls follow the history switch; without it only calls after enabling are read.
+    var callLogEnabled: Boolean
+        get() = prefs.getBoolean("call_log_enabled", false)
+        set(value) {
+            synchronized(identityLock) {
+                if (value != callLogEnabled)
+                    prefs
+                        .edit()
+                        .putBoolean("call_log_enabled", value)
+                        .putLong("call_log_since", if (value) System.currentTimeMillis() else 0)
+                        .putLong("call_log_generation", callLogGeneration + 1)
+                        .putBoolean("call_log_pending", false)
+                        .commit()
+            }
+        }
+
+    val callLogSince: Long
+        get() = prefs.getLong("call_log_since", 0)
+
+    val callLogGeneration: Long
+        get() = prefs.getLong("call_log_generation", 0)
+
+    var callLogPending: Boolean
+        get() = prefs.getBoolean("call_log_pending", false)
+        set(value) {
+            prefs.edit().putBoolean("call_log_pending", value).commit()
+        }
+
+    var callLogStatus: String
+        get() = prefs.getString("call_log_status", "尚未读取通话记录")!!
+        set(value) {
+            prefs.edit().putString("call_log_status", value).apply()
+        }
+
+    // Outcome of the last call upload attempt, shown next to the scan status.
+    var callLogUploadStatus: String
+        get() = prefs.getString("call_log_upload_status", "")!!
+        set(value) {
+            prefs.edit().putString("call_log_upload_status", value).apply()
+        }
+
     val recoveryGeneration: Long
         get() = prefs.getLong("recovery_generation", 0)
 

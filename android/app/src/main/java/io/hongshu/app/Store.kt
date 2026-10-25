@@ -83,7 +83,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 15), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 16), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -152,6 +152,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createCaptureEvents(db)
         createOutgoing(db)
         createLoadingState(db)
+        createCallLog(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -186,6 +187,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 13) createCaptureEvents(db)
         if (oldVersion < 14) createOutgoing(db)
         if (oldVersion < 15) createLoadingState(db)
+        if (oldVersion < 16) createCallLog(db)
     }
 
     // Derived heads only: migration never drops captured SMS or resets cursors.
@@ -2648,6 +2650,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 db.delete("upload_fingerprints", null, null)
                 db.delete("notification_receipts", null, null)
                 db.delete("captures", null, null)
+                // Calls queued for the old hub are not diverted to a different one; they are
+                // re-read from the system call log once upload is enabled for the new hub.
+                db.delete("call_outbox", null, null)
+                db.delete("call_ledger", null, null)
             }
             db.setTransactionSuccessful()
         } finally {

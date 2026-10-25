@@ -70,7 +70,7 @@ class ReadReceiptTest {
             s.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
         }
         Store(context, name).use { s ->
-            assertEquals(15, s.readableDatabase.version)
+            assertEquals(16, s.readableDatabase.version)
             assertEquals(1, s.unreadCounts()["10086"])
             assertTrue(s.pendingReads().isEmpty())
             assertTrue(s.markRead("10086", 2))

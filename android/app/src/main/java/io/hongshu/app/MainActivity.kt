@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
         updateRecentTaskVisibility(this, Config(this).hideFromRecents)
         SimMonitor.start(this)
         SmsInboxObserver.ensure(this)
+        CallLogObserver.ensure(this)
         syncNow(this)
         if (!RuntimeHealth.connection.value.running) startRealtimeIfEnabled(this)
     }

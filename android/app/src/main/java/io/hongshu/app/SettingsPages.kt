@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.automirrored.filled.ManageSearch
@@ -229,6 +230,26 @@ fun CapturePage(host: SettingsHost) {
             }
     }
 
+    fun setCallLog(enabled: Boolean) {
+        if (enabled)
+            host.enableWithPermission(
+                arrayOf(Manifest.permission.READ_CALL_LOG),
+                "未授予读取通话记录权限，通话记录没有开启",
+            ) {
+                c.callLogEnabled = true
+                CallLogObserver.ensure(activity)
+                syncNow(activity, manual = true)
+                if (c.historyEnabled) "已开启，将同时补齐以前的通话记录"
+                else "已开启，同步此后这台手机的来电与去电"
+            }
+        else
+            host.action {
+                c.callLogEnabled = false
+                syncNow(activity, manual = true)
+                "已停止同步通话记录，已上传的不受影响"
+            }
+    }
+
     fun setOutgoing(enabled: Boolean) {
         if (enabled)
             host.enableWithPermission(
@@ -401,6 +422,40 @@ fun CapturePage(host: SettingsHost) {
                         )
                     }
                 )
+                add(
+                    SettingsRow("call-log") {
+                        SettingsSwitchItem(
+                            title = "通话记录",
+                            summary =
+                                if (c.callLogEnabled && c.upload)
+                                    listOf(c.callLogStatus, c.callLogUploadStatus).filter { it.isNotEmpty() }.joinToString(" · ")
+                                else "把这台手机的来电、去电和未接记录上传，在各设备只读查看；以前的记录跟随历史补齐",
+                            icon = Icons.Default.Call,
+                            checked = c.callLogEnabled,
+                            enabled = sourcesEnabled,
+                            onCheckedChange = ::setCallLog,
+                        )
+                    }
+                )
+                if (c.upload && c.callLogEnabled && !hasPermission(activity, Manifest.permission.READ_CALL_LOG))
+                    add(
+                        SettingsRow("grant-call-log") {
+                            SettingsItem(
+                                title = "授予读取通话记录权限",
+                                summary = "同步通话记录需要读取系统通话记录",
+                                icon = Icons.Default.Key,
+                                status = StatusLevel.Attention to "需要授权",
+                                onClick = {
+                                    host.requestPermissions(arrayOf(Manifest.permission.READ_CALL_LOG)) { granted ->
+                                        if (granted) {
+                                            CallLogObserver.ensure(activity)
+                                            syncNow(activity, manual = true)
+                                        } else host.message("未授予读取通话记录权限")
+                                    }
+                                },
+                            )
+                        }
+                    )
                 if (c.upload && (c.recoveryEnabled || c.historyEnabled || c.outgoingEnabled) && !f.readSms)
                     add(
                         SettingsRow("grant-read") {
