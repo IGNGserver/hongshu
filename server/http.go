@@ -62,6 +62,10 @@ func (a *app) routes(web string) http.Handler {
 	mux.HandleFunc("GET /api/read-state", a.auth(a.readState))
 	mux.HandleFunc("GET /api/conversations", a.auth(a.conversations))
 	mux.HandleFunc("GET /api/sync", a.auth(a.syncMessages))
+	mux.HandleFunc("POST /api/calls", a.auth(a.uploadCalls))
+	mux.HandleFunc("GET /api/calls", a.auth(a.calls))
+	mux.HandleFunc("GET /api/calls/sync", a.auth(a.syncCalls))
+	mux.HandleFunc("GET /api/calls/{id}", a.auth(a.callDetail))
 	mux.HandleFunc("GET /api/ws", a.auth(a.ws))
 	mux.HandleFunc("PUT /api/push", a.auth(a.subscribe))
 	mux.HandleFunc("DELETE /api/push", a.auth(a.unsubscribe))
@@ -174,9 +178,9 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var seq, epoch, metadataRevision int64
+	var seq, epoch, metadataRevision, callSeq int64
 	var title string
-	e := tx.QueryRowContext(r.Context(), "SELECT seq,epoch,title,revision FROM sync_clock JOIN settings ON settings.id=sync_clock.id JOIN metadata_clock ON metadata_clock.id=sync_clock.id WHERE sync_clock.id=1").Scan(&seq, &epoch, &title, &metadataRevision)
+	e := tx.QueryRowContext(r.Context(), "SELECT sync_clock.seq,epoch,title,revision,call_clock.seq FROM sync_clock JOIN settings ON settings.id=sync_clock.id JOIN metadata_clock ON metadata_clock.id=sync_clock.id JOIN call_clock ON call_clock.id=sync_clock.id WHERE sync_clock.id=1").Scan(&seq, &epoch, &title, &metadataRevision, &callSeq)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -201,7 +205,7 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverTiming(w, started)
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "push_subscribed": pushSubscribed, "version": buildVersion, "ai_enabled": s.Enabled, "ai_paused": s.Paused, "analysis_revision": s.Revision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "features": hubFeatures})
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "push_subscribed": pushSubscribed, "version": buildVersion, "ai_enabled": s.Enabled, "ai_paused": s.Paused, "analysis_revision": s.Revision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "call_cursor": callSeq, "features": hubFeatures})
 }
 func timeDurationMS(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 2, 64)
