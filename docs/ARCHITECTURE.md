@@ -144,3 +144,7 @@ UI 定时刷新/轮询仅在页面可见时执行；退后台后由服务和 Wor
 - AndroidX `PredictiveBackHandler` 消费系统返回进度。当前页与上一级页面同时参与动画，页面位移方向跟随系统手势起始边缘；取消手势不改变目的地栈，低版本和非手势返回使用普通弹出动画。
 
 兼容性调研及未覆盖场景见 ANDROID_COMPATIBILITY.md；接口见 API.md。
+
+## 应用更新
+
+Android 在本机直接检查仓库清单并下载固定 Release 安装包，独立于中枢登录、短信同步和设备身份。通道、缓存、限流退避与安装校验规则见 [UPDATES.md](UPDATES.md)。Web/PWA 继续随服务部署与其缓存生命周期更新。

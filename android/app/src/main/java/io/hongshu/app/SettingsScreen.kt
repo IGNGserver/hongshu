@@ -861,6 +861,9 @@ private fun AboutPage(host: SettingsHost) {
                 SettingsRow("version") {
                     SettingsItem(title = "版本", summary = appVersion(host.activity))
                 },
+                SettingsRow("updates") {
+                    AppUpdateSettings(host)
+                },
                 SettingsRow("device") {
                     SettingsItem(
                         title = "本机",

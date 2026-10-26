@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <uses-feature android:name="android.hardware.telephony" android:required="false"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -22,5 +23,8 @@
         <receiver android:name=".OtpNotificationReceiver" android:exported="false"/>
         <service android:name=".SmsNotificationListener" android:exported="true" android:label="鸿枢短信通知兜底" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"><intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter></service>
         <service android:name=".RealtimeService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="remoteMessaging|dataSync"/>
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths"/>
+        </provider>
     </application>
 </manifest>
