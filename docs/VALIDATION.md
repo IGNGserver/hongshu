@@ -63,6 +63,17 @@ Go race/真实 MySQL/vet/build、Web build、浏览器及本地联系人 smoke �
 Service Worker 设计，并把短信 Push 刷新合并到 `web/push.js`，对应 Web 测试也改为直接
 覆盖模块。上述重基与 alpha.20 发布准备需由新的 PR CI 验证，不能沿用此旧 CI 结果。
 
+重基与发布准备的最终 PR CI：[PR #98](https://github.com/IGNGserver/hongshu/pull/98)，
+[run 40310579380](https://github.com/IGNGserver/hongshu/actions/runs/40310579380)，全部通过：
+`verify`、`web`、`server`（Go race、隔离 MySQL、vet/build、Chromium browser smoke）、
+`android (28)`、`android (33)`、`android (35)`。Android 28 完成 27 项 instrumentation，
+API 33/35 各完成 55 项；三个 API 的 debug 单测、lint、APK/设备测试 APK 构建也通过。
+PR head `8ab7d23` 包含 Workbox/PWA 重基及 `0.2.0-alpha.20` 版本准备。
+
+合并前 scratch 验证：仓库脚本 12 项通过；Web 110 项通过，`npm run check`、生产构建
+和官网静态检查通过。Web 依赖/构建产物在 `$HOME/.build/短信同步系统/background-realtime-delivery/`
+中，未写入 NAS 源码卷。真机后台/锁屏/Doze 仍未验收。
+
 # 2026-10-25 通话记录同步（只读）
 
 基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：
