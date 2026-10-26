@@ -1,3 +1,79 @@
+# 2026-10-26 后台短信实时执行与通知
+
+从 `1d1dec6` 开始，分支 `agent/background-realtime-delivery-resume`。初始验证时版本为
+`0.2.0-alpha.19`；用户随后明确授权创建 PR、合并、发布下一 alpha 预览版并更新 NAS 中枢。
+发布准备将 VERSION 递增为 `0.2.0-alpha.20`，不改为 stable；按授权执行后的 PR、Release、
+NAS 版本和健康检查结果将在本节续记。
+
+- Android：用户已开启的实时前台服务直接执行同步；广播/观察者/通知/界面唤醒执行器，
+  WorkManager 保留持久兜底。网络和最近收件箱采集独立合并触发，可靠游标、ACK 和通知
+  仍复用原事务。最近 100 行不推进前向水位，不等待历史或 SIM 服务。
+- 实时路径跳过附加元数据；普通 Worker 让出附加工作后保留后继，失败的实时请求不
+  无限饿死维护。通知配对的提前复读与到期同步都有服务内定时器，停止服务时取消。
+- 连接通知区分握手与真实同步，20 秒未完成显示延迟；诊断新增最近触发/开始/成功/
+  中枢提示时间。不增加权限或存储短信内容日志。
+- PWA：Push 独立向已打开页面发送无正文刷新提示，不依赖旧 WS 恢复；仍不在 Worker
+  下载或缓存短信正文，不能以此声称修复了目标设备上的 APNs/FCM 投递问题。
+
+本机验证（ubuntu-dev，依赖与产物仅在 `/home/lvziw/.build/`）：
+
+- `TMPDIR=本机scratch bash scripts/verify-repository.sh`：通过，12 项运维测试。
+- `git diff --check`：通过。
+- `cd web && HONGSHU_TEST_TMP=本机scratch npm test && npm run check`：109 项通过，0 失败。
+- `python3 website/scripts/check-site.py`：通过，未改官网。
+- Android scratch：`./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir
+  本机scratch :app:testDebugUnitTest :app:lintDebug :app:compileDebugAndroidTestKotlin`：
+  首轮恢复后通过，322 项中 302 执行、20 项既有截图按条件跳过、0 失败；lint 和设备测试
+  源码编译通过，2m48s。新增 `RealtimeDeliveryTest` 8 项、`RealtimeInboxTest` 8 项均执行。
+  最终功能代码重跑仍全部通过（3m04s）；后台测试夹具等待在途同步退出后再恢复配置，
+  该夹具调整后 `:app:compileDebugAndroidTestKotlin :app:lintDebug` 再次通过。
+
+早期离线运行因缺少依赖失败，在线补齐后针对性单测及 instrumentation 源码编译通过
+（6m01s）；没有把依赖缺失、超时或跳过算作验证成功。APK 构建、Go/真实 MySQL 和 API
+28/33/35 设备测试由任务分支 CI 执行，不在 NAS 工作区运行构建。
+
+**真机边界**：尚未连接用户手机，未验证目标 ROM 的锁屏/Doze、广播投递、双卡、断网恢复
+和真实 Push 到达；合成 provider/HTTP/WS、模拟器和编译均不替代真机验收。必须两端全程
+不打开应用，分别测普通短信与验证码；系统强制停止或扣留短信时不保证即时同步。
+
+原任务目录的 Git 登记在暂停期间消失；保留原目录与分支，未删除任何现场。经用户继续
+授权临时第 3 个工作区后，在新工作区逐文件核对恢复，未覆盖其他两个并行任务的修改。
+
+首轮 CI：[40303801620](https://github.com/IGNGserver/hongshu/actions/runs/40303801620)
+（提交 `ca27f66`）：`verify`、`web`、`android (33)`、`android (35)` 通过；API 28 的新增后台
+用例在首次打开数据库时失败，`SQLiteOpenHelper` 重复执行 `CREATE TABLE outbox`。为全部
+Store 实例的连接打开/版本检查增加进程锁，不吞建表错误、不删除数据；补充宿主和设备端
+共享的并发首次建库/升级合同，各自 8 个实例、3 轮，检查原队列和游标保留。
+`server` 的 Go race/真实 MySQL、vet、build 步骤通过，但后续 Playwright 系统依赖下载被
+Ubuntu 镜像网络拖至 15 分钟 job 超时取消；不是测试断言失败，浏览器验收没有完成。
+修复后本地 `:app:testDebugUnitTest --tests io.hongshu.app.StoreOpenHostTest --tests
+io.hongshu.app.StoreRobustnessTest --tests io.hongshu.app.RealtimeDeliveryTest --tests
+io.hongshu.app.RealtimeInboxTest :app:lintDebug :app:compileDebugAndroidTestKotlin` 通过
+（21 项、0 失败/跳过，1m54s）。仓库验证与 `git diff --check` 再次通过；变更文件凭据
+模式扫描 20 个文件、0 匹配（不代替专业安全审计）。随后触发完整 CI，不把首轮总体失败写成通过。
+
+重基前 CI：[40306871044](https://github.com/IGNGserver/hongshu/actions/runs/40306871044)
+（代码提交 `6cd12ce`，14m17s）六个 job 全部成功：`verify`、`web`、`server`、
+`android (28)`、`android (33)`、`android (35)`。API 28 完成 27 项设备测试，33/35 各完成
+55 项；包含退后台后接收并通知，以及并发建库/升级合同。Android 单测/lint/APK 构建、
+Go race/真实 MySQL/vet/build、Web build、浏览器及本地联系人 smoke 都通过。
+本任务两次完整 CI 与两次被并发组取消的 push 快检共约 83.58 job 分钟；仓库为 public，
+不消耗私仓每月分钟额度。收尾本地盘可用 63G，任务 scratch 39MB、共享 Gradle 缓存 2.0GB
+保留，均未写回 NAS 源码卷。其后主线合入 PR #97 的 Workbox PWA 架构；重基时保留该
+Service Worker 设计，并把短信 Push 刷新合并到 `web/push.js`，对应 Web 测试也改为直接
+覆盖模块。上述重基与 alpha.20 发布准备需由新的 PR CI 验证，不能沿用此旧 CI 结果。
+
+重基与发布准备的最终 PR CI：[PR #98](https://github.com/IGNGserver/hongshu/pull/98)，
+[run 40310579380](https://github.com/IGNGserver/hongshu/actions/runs/40310579380)，全部通过：
+`verify`、`web`、`server`（Go race、隔离 MySQL、vet/build、Chromium browser smoke）、
+`android (28)`、`android (33)`、`android (35)`。Android 28 完成 27 项 instrumentation，
+API 33/35 各完成 55 项；三个 API 的 debug 单测、lint、APK/设备测试 APK 构建也通过。
+PR head `8ab7d23` 包含 Workbox/PWA 重基及 `0.2.0-alpha.20` 版本准备。
+
+合并前 scratch 验证：仓库脚本 12 项通过；Web 110 项通过，`npm run check`、生产构建
+和官网静态检查通过。Web 依赖/构建产物在 `$HOME/.build/短信同步系统/background-realtime-delivery/`
+中，未写入 NAS 源码卷。真机后台/锁屏/Doze 仍未验收。
+
 # 2026-10-25 通话记录同步（只读）
 
 基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：

@@ -505,6 +505,14 @@ class Config(context: Context) {
             prefs.edit().putLong("last_sync", v).apply()
         }
 
+    var lastSyncRequested: Long
+        get() = prefs.getLong("last_sync_requested", 0)
+        set(v) { prefs.edit().putLong("last_sync_requested", v).apply() }
+
+    var lastHubHint: Long
+        get() = prefs.getLong("last_hub_hint", 0)
+        set(v) { prefs.edit().putLong("last_hub_hint", v).apply() }
+
     var token: String
         get() {
             if (identityChanging) return ""

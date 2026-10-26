@@ -89,6 +89,19 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     companion object {
         val changes = MutableStateFlow(0L)
+        // Older SQLiteOpenHelper reads user_version before acquiring the migration write
+        // lock. Two helpers can both see zero and the loser then recreates committed tables.
+        // Serialize the whole open/version check, not just onCreate/onUpgrade. Normal database
+        // reads, writes and network work do not hold this process-local lock.
+        private val databaseOpenLock = Any()
+    }
+
+    override fun getWritableDatabase(): SQLiteDatabase = synchronized(databaseOpenLock) {
+        super.getWritableDatabase()
+    }
+
+    override fun getReadableDatabase(): SQLiteDatabase = synchronized(databaseOpenLock) {
+        super.getReadableDatabase()
     }
 
     @Volatile private var closed = false
