@@ -2,9 +2,9 @@ name: Hongshu validation
 
 on:
   push:
-    paths: ['server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', '.github/workflows/ci.yml', '.github/workflows/website.yml', 'compose.yml', '.env.example', 'VERSION']
+    paths: ['.dockerignore', 'Dockerfile', 'server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', '.github/workflows/ci.yml', '.github/workflows/website.yml', 'compose.yml', '.env.example', 'VERSION']
   pull_request:
-    paths: ['server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', '.github/workflows/ci.yml', '.github/workflows/website.yml', 'compose.yml', '.env.example', 'VERSION']
+    paths: ['.dockerignore', 'Dockerfile', 'server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', '.github/workflows/ci.yml', '.github/workflows/website.yml', 'compose.yml', '.env.example', 'VERSION']
   workflow_dispatch:
 
 permissions:
@@ -96,6 +96,14 @@ jobs:
         env:
           PLAYWRIGHT_MODULE: "${{ runner.temp }}/pwa-browser-tools/node_modules/playwright"
           WEB_BUILD_DIR: "${{ runner.temp }}/hongshu-web"
+  container-image:
+    name: Build release container without pushing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image using the release context
+        run: docker build --tag hongshu:ci-check .
   android:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
