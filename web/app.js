@@ -2829,6 +2829,11 @@ function disconnect() {
   updateAppBadge(0);
 }
 
+export async function handlePushUpdate(event) {
+  if (event.data?.type !== "MESSAGES_CHANGED" || !state.me || state.loggedOut) return;
+  await catchUp();
+}
+
 function realtime() {
   const gen = state.generation;
   const ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/ws");
@@ -2994,6 +2999,9 @@ if (typeof document !== "undefined") {
   applyTheme(readTheme());
   try { networkProfile.manual = localStorage.getItem(LOW_SPEED_KEY) === "true"; } catch { /* default */ }
   void registerShell();
+  navigator.serviceWorker?.addEventListener("message", event => {
+    void handlePushUpdate(event).catch(() => {});
+  });
   setInterval(() => {
     if (state.me && document.visibilityState === "visible") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));

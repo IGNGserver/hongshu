@@ -1,3 +1,42 @@
+# 2026-10-26 后台短信实时执行与通知
+
+恢复基线 `1d1dec6`，分支 `agent/background-realtime-delivery-resume`，版本保持
+`0.2.0-alpha.19`。本轮仅开发、验证和推送任务分支，不创建 PR、不合并、不发布、不部署。
+
+- Android：用户已开启的实时前台服务直接执行同步；广播/观察者/通知/界面唤醒执行器，
+  WorkManager 保留持久兜底。网络和最近收件箱采集独立合并触发，可靠游标、ACK 和通知
+  仍复用原事务。最近 100 行不推进前向水位，不等待历史或 SIM 服务。
+- 实时路径跳过附加元数据；普通 Worker 让出附加工作后保留后继，失败的实时请求不
+  无限饿死维护。通知配对的提前复读与到期同步都有服务内定时器，停止服务时取消。
+- 连接通知区分握手与真实同步，20 秒未完成显示延迟；诊断新增最近触发/开始/成功/
+  中枢提示时间。不增加权限或存储短信内容日志。
+- PWA：Push 独立向已打开页面发送无正文刷新提示，不依赖旧 WS 恢复；仍不在 Worker
+  下载或缓存短信正文，不能以此声称修复了目标设备上的 APNs/FCM 投递问题。
+
+本机验证（ubuntu-dev，依赖与产物仅在 `/home/lvziw/.build/`）：
+
+- `TMPDIR=本机scratch bash scripts/verify-repository.sh`：通过，12 项运维测试。
+- `git diff --check`：通过。
+- `cd web && HONGSHU_TEST_TMP=本机scratch npm test && npm run check`：109 项通过，0 失败。
+- `python3 website/scripts/check-site.py`：通过，未改官网。
+- Android scratch：`./gradlew --no-daemon --offline --max-workers=2 --project-cache-dir
+  本机scratch :app:testDebugUnitTest :app:lintDebug :app:compileDebugAndroidTestKotlin`：
+  首轮恢复后通过，322 项中 302 执行、20 项既有截图按条件跳过、0 失败；lint 和设备测试
+  源码编译通过，2m48s。新增 `RealtimeDeliveryTest` 8 项、`RealtimeInboxTest` 8 项均执行。
+  最终功能代码重跑仍全部通过（3m04s）；后台测试夹具等待在途同步退出后再恢复配置，
+  该夹具调整后 `:app:compileDebugAndroidTestKotlin :app:lintDebug` 再次通过。
+
+早期离线运行因缺少依赖失败，在线补齐后针对性单测及 instrumentation 源码编译通过
+（6m01s）；没有把依赖缺失、超时或跳过算作验证成功。APK 构建、Go/真实 MySQL 和 API
+28/33/35 设备测试由任务分支 CI 执行，不在 NAS 工作区运行构建。
+
+**真机边界**：尚未连接用户手机，未验证目标 ROM 的锁屏/Doze、广播投递、双卡、断网恢复
+和真实 Push 到达；合成 provider/HTTP/WS、模拟器和编译均不替代真机验收。必须两端全程
+不打开应用，分别测普通短信与验证码；系统强制停止或扣留短信时不保证即时同步。
+
+原任务目录的 Git 登记在暂停期间消失；保留原目录与分支，未删除任何现场。经用户继续
+授权临时第 3 个工作区后，在新工作区逐文件核对恢复，未覆盖其他两个并行任务的修改。
+
 # 2026-10-25 通话记录同步（只读）
 
 基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：

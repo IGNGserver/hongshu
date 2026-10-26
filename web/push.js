@@ -11,15 +11,23 @@ self.addEventListener("push", (e) => {
   const body = notificationText(payload.body, "有新短信，打开应用查看", 200);
   const tag = notificationText(payload.tag, "hongshu-new", 100);
   const url = notificationPath(payload.url);
-  e.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      tag,
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
-      data: { url },
-    }),
-  );
+  const notify = self.registration.showNotification(title, {
+    body,
+    tag,
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    data: { url },
+  });
+  // Push is an independent change hint when an open page's socket has gone stale.
+  // Never fetch or persist SMS content in the service worker.
+  const refresh = tag === "hongshu-new" ? self.clients
+    .matchAll({ type: "window", includeUncontrolled: true })
+    .then(clients => {
+      for (const client of clients) {
+        try { client.postMessage({ type: "MESSAGES_CHANGED" }); } catch { /* closed client */ }
+      }
+    }).catch(() => {}) : Promise.resolve();
+  e.waitUntil(Promise.all([notify, refresh]));
 });
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();

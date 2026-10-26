@@ -20,6 +20,8 @@ import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,12 +29,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class BackgroundTest {
     // Real loopback HTTP/WebSocket transport: no production server, SMS or credentials.
-    private class Hub(private val unauthorized: Boolean = false) : AutoCloseable {
+    private class Hub(private val unauthorized: Boolean = false, private val withMessage: Boolean = false) : AutoCloseable {
         private val server = ServerSocket(0, 10, InetAddress.getByName("127.0.0.1"))
         private val clients = CopyOnWriteArrayList<Socket>()
         private val sockets = CopyOnWriteArrayList<Socket>()
         val connections = AtomicInteger()
         val requests = AtomicInteger()
+        private val arrived = java.util.concurrent.atomic.AtomicBoolean()
         val url = "http://127.0.0.1:${server.localPort}"
         private val acceptor =
             thread(isDaemon = true) {
@@ -107,10 +110,14 @@ class BackgroundTest {
                                             """{"items":[],"global_watermark_id":0,"revision":0,"head":0,"epoch":1,"more":false,"next":""}"""
                                         else when (path) {
                                             "/api/me" ->
-                                                """{"cursor":0,"epoch":1,"device":{"notify":false,"upload":false,"created_at":1}}"""
+                                                """{"cursor":${if (arrived.get()) 1 else 0},"epoch":1,"device":{"notify":$withMessage,"upload":false,"created_at":1}}"""
                                             "/api/contacts" -> """{"contacts":{}}"""
-                                            else ->
-                                                """{"messages":[],"cursor":0,"more":false,"epoch":1}"""
+                                            else -> {
+                                                val messages = if (arrived.get() && path.contains("after=0&"))
+                                                    """[{"id":1,"device_id":"remote-fixture","receiver":"+123456789","sender":"background-fixture","body":"synthetic ordinary SMS","timestamp":${System.currentTimeMillis()},"historical":false}]"""
+                                                else "[]"
+                                                """{"messages":$messages,"cursor":${if (arrived.get()) 1 else 0},"more":false,"epoch":1}"""
+                                            }
                                         }).toByteArray()
                                     output.write(
                                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
@@ -133,6 +140,16 @@ class BackgroundTest {
 
         fun disconnect() {
             sockets.forEach { it.close() }
+        }
+
+        fun publishMessage() {
+            arrived.set(true)
+            sockets.forEach { client ->
+                client.getOutputStream().apply {
+                    write(byteArrayOf(0x81.toByte(), 2, '{'.code.toByte(), '}'.code.toByte()))
+                    flush()
+                }
+            }
         }
 
         override fun close() {
@@ -158,6 +175,7 @@ class BackgroundTest {
         val manager = WorkManager.getInstance(context)
         context.stopService(Intent(context, RealtimeService::class.java))
         awaitState { !RuntimeHealth.connection.value.running }
+        runBlocking { identityMutex.withLock { /* drain an already in-flight service pass */ } }
         manager.cancelUniqueWork("hongshu-sync").result.get()
         try {
             prefs.edit().clear().commit()
@@ -166,6 +184,7 @@ class BackgroundTest {
             Config(context).keepAlive = false
             context.stopService(Intent(context, RealtimeService::class.java))
             awaitState { !RuntimeHealth.connection.value.running }
+            runBlocking { identityMutex.withLock { /* do not restore prefs under a live request */ } }
             manager.cancelUniqueWork("hongshu-sync").result.get()
             val editor = prefs.edit().clear()
             for ((key, value) in saved) when (value) {
@@ -310,6 +329,36 @@ class BackgroundTest {
                             .getSystemService(NotificationManager::class.java)
                             .activeNotifications
                             .none { it.id == 1 }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun aMessageArrivingAfterLeavingTheActivityIsDownloadedAndNotified() =
+        withConfig { context, config ->
+            if (Build.VERSION.SDK_INT >= 33) {
+                InstrumentationRegistry.getInstrumentation().uiAutomation
+                    .executeShellCommand("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+                    .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
+            }
+            context.getSystemService(NotificationManager::class.java).cancel(2)
+            Store(context).use { it.resetSyncedCache(1) }
+            Hub(withMessage = true).use { hub ->
+                config.url = hub.url
+                config.token = "s".repeat(64)
+                config.deviceId = "viewer-fixture"
+                config.keepAlive = true
+                config.lastSync = 0
+                ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                    awaitState { RuntimeHealth.connection.value.connected && config.lastSync > 0 }
+                    scenario.onActivity { it.leaveForBackground() }
+                    hub.publishMessage()
+                    awaitState {
+                        Store(context).use { it.messages(sender = "background-fixture").any { m -> m.id == 1L } }
+                    }
+                    awaitState {
+                        context.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == 2 }
                     }
                 }
             }
