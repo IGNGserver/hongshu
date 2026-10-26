@@ -8,4 +8,3 @@ runtime-data
 **/.gradle
 **/test-results
 web/test
-web/package.json
