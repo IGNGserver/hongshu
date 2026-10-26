@@ -50,6 +50,15 @@ io.hongshu.app.RealtimeInboxTest :app:lintDebug :app:compileDebugAndroidTestKotl
 （21 项、0 失败/跳过，1m54s）。仓库验证与 `git diff --check` 再次通过；变更文件凭据
 模式扫描 20 个文件、0 匹配（不代替专业安全审计）。随后触发完整 CI，不把首轮总体失败写成通过。
 
+最终 CI：[40306871044](https://github.com/IGNGserver/hongshu/actions/runs/40306871044)
+（代码提交 `6cd12ce`，14m17s）六个 job 全部成功：`verify`、`web`、`server`、
+`android (28)`、`android (33)`、`android (35)`。API 28 完成 27 项设备测试，33/35 各完成
+55 项；包含退后台后接收并通知，以及并发建库/升级合同。Android 单测/lint/APK 构建、
+Go race/真实 MySQL/vet/build、Web build、浏览器及本地联系人 smoke 都通过。
+本任务两次完整 CI 与两次被并发组取消的 push 快检共约 83.58 job 分钟；仓库为 public，
+不消耗私仓每月分钟额度。收尾本地盘可用 63G，任务 scratch 39MB、共享 Gradle 缓存 2.0GB
+保留，均未写回 NAS 源码卷；最后仅补文档，不把文档提交冒充另一次完整 CI。
+
 # 2026-10-25 通话记录同步（只读）
 
 基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：
