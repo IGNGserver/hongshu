@@ -30,9 +30,8 @@ test("prepending history preserves the visible scroll offset", () => {
   assert.equal(restoreScrollPosition(240, 1200, 1680), 720);
   assert.equal(restoreScrollPosition(240, 1200, 1100), 240);
 });
-test("service worker never caches API or SMS content and bounds notification text", async () => {
-  const sw = await readFile(new URL("../sw.js", import.meta.url), "utf8");
-  assert.ok(sw.includes("!ASSETS.includes"));
+test("push notification text is bounded and never reads SMS content", async () => {
+  const sw = await readFile(new URL("../push.js", import.meta.url), "utf8");
   assert.ok(!sw.includes("e.data.json"));
   assert.ok(sw.includes("notificationText"));
   assert.ok(sw.includes("有新短信，打开应用查看"));

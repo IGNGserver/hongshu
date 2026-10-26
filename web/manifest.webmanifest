@@ -5,6 +5,8 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "orientation": "any",
+  "prefer_related_applications": false,
   "background_color": "#10172a",
   "theme_color": "#10172a",
   "lang": "zh-CN",
@@ -42,12 +44,6 @@
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/favicon-32.png",
-      "sizes": "32x32",
       "type": "image/png",
       "purpose": "any"
     }

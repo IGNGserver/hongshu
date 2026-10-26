@@ -55,15 +55,14 @@ test("icon.svg is self-contained so <img> and favicon can render it", () => {
   assert.ok(refs.every((ref) => ref.startsWith("data:image/png;base64,")), "no external file references");
 });
 
-test("manifest keeps high-resolution any and maskable icons separate and the shell caches them", () => {
+test("manifest keeps high-resolution any and maskable icons separate and the build ships them", () => {
   const manifest = JSON.parse(read("manifest.webmanifest"));
   assert.ok(manifest.icons.every((icon) => icon.purpose === "any" || icon.purpose === "maskable"));
   const maskable = manifest.icons.filter((icon) => icon.purpose === "maskable");
   assert.deepEqual(maskable.map((icon) => icon.src), ["/icon-maskable-1024.png", "/icon-maskable-512.png", "/icon-maskable-192.png"]);
   const any = manifest.icons.filter((icon) => icon.purpose === "any");
-  assert.deepEqual(any.map((icon) => icon.src), ["/icon-1024.png", "/icon-512.png", "/icon-192.png", "/favicon-32.png"]);
+  assert.deepEqual(any.map((icon) => icon.src), ["/icon-1024.png", "/icon-512.png", "/icon-192.png"]);
   assert.equal(manifest.icons[0].sizes, "1024x1024", "macOS Safari reads the high-resolution maskable icon for Dock and Launchpad");
-  const worker = read("sw.js");
   const build = read("build.mjs");
   for (const file of [
     "icon-1024.png",
@@ -78,7 +77,6 @@ test("manifest keeps high-resolution any and maskable icons separate and the she
     "favicon-16.png",
     "favicon.ico",
   ]) {
-    assert.ok(worker.includes(`"/${file}"`), `sw.js precaches ${file}`);
     assert.ok(build.includes(`"${file}"`), `build.mjs ships ${file}`);
   }
   const html = read("index.html");

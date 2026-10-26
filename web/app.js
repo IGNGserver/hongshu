@@ -850,8 +850,10 @@ function authView() {
       "单用户中枢，无需用户名。所有设备统一使用中枢密码连接；短信不会离线保存在浏览器。",
     ),
   );
+  card.append(button("安装鸿枢", showPwaHelp, "text-button pwa-install-entry"));
   root.append(card);
-  password.focus();
+  syncInstallEntries();
+  if (!window.matchMedia?.("(pointer: coarse)").matches) password.focus();
 }
 
 // -------------------------------------------------------------
@@ -1116,7 +1118,17 @@ function installChipRail(rail, scroller, previous, next) {
   };
   previous.onclick = () => move(-1);
   next.onclick = () => move(1);
-  scroller.addEventListener("scroll", update, { passive: true });
+  let layoutFrame = 0;
+  let resizeObserver = null;
+  const queueUpdate = () => {
+    if (layoutFrame) return;
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = 0;
+      if (!scroller.isConnected) { resizeObserver?.disconnect(); return; }
+      update();
+    });
+  };
+  scroller.addEventListener("scroll", queueUpdate, { passive: true });
   scroller.addEventListener("wheel", (event) => {
     if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || scroller.scrollWidth <= scroller.clientWidth) return;
     event.preventDefault();
@@ -1164,8 +1176,11 @@ function installChipRail(rail, scroller, previous, next) {
       scroller.scrollBy({ left: event.key === "PageDown" ? step : -step, behavior: reducedMotion() ? "auto" : "smooth" });
     }
   });
-  if (typeof ResizeObserver !== "undefined") new ResizeObserver(update).observe(scroller);
-  requestAnimationFrame(update);
+  if (typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(queueUpdate);
+    resizeObserver.observe(scroller);
+  }
+  queueUpdate();
 }
 
 // SIM and device filters share one chip and one menu; it only appears when there is
@@ -2558,6 +2573,7 @@ function settingsView() {
     settingsRow({ icon: ICONS.notifications, title: "浏览器通知", summaryNode: summary, trailing: toggle }),
     settingsRow({ icon: ICONS.info, title: "测试通知", summary: "只向本浏览器发送一条通用通知，不依赖真实短信，也不包含短信内容。", trailing: sendTest, cls: "settings-wrap" }),
     settingsRow({ icon: ICONS.palette, title: "主题", summary: "只影响这台浏览器", trailing: themeControl(), cls: "settings-wrap" }),
+    settingsRow({ icon: ICONS.info, title: "安装鸿枢", summary: "从主屏幕直接打开此中枢", trailing: button("安装说明", showPwaHelp, "text-button"), cls: "pwa-install-row settings-wrap" }),
   ]).section);
   inner.append(localContactsSettings());
 
@@ -2588,6 +2604,7 @@ function settingsView() {
   };
   inner.append(settingsGroup("账户", [logoutRow]).section);
   main.append(container);
+  syncInstallEntries();
 
   void browserPushEnabled().then((enabled) => {
     toggle.setChecked(enabled);
@@ -2957,6 +2974,10 @@ async function start() {
   realtime();
 }
 
+let pwaPrompt = null;
+let pwaRegistration = null;
+let pwaDialog = null;
+
 if (typeof document !== "undefined") {
   void contactPickerProperties(navigator, window.isSecureContext, window.top === window).then(properties => {
     pickerProperties = properties;
@@ -2968,6 +2989,8 @@ if (typeof document !== "undefined") {
       if (state.me) void reloadLocalContacts().catch(error => toast(error.message));
     };
   }
+  installMobileViewport(window, document);
+  installPwaEvents();
   applyTheme(readTheme());
   try { networkProfile.manual = localStorage.getItem(LOW_SPEED_KEY) === "true"; } catch { /* default */ }
   void registerShell();
@@ -2977,6 +3000,7 @@ if (typeof document !== "undefined") {
     }
   }, 30000);
   window.addEventListener("popstate", (event) => {
+    if (pwaDialog && !event.state?.hongshuPwaHelp) { pwaDialog.close(); return; }
     if (state.page === "settings" && !event.state?.[SETTINGS_HISTORY]) {
       state.page = "inbox";
       state.returning = true;
@@ -3001,19 +3025,136 @@ function startupFailure(error) {
   root.replaceChildren(emptyState(ICONS.warning, "暂时无法连接中枢", "网络较慢或服务暂不可用。登录状态不会因此丢失。"), button("重试", () => start().catch(startupFailure)));
 }
 
+export function viewportMetrics(viewport, innerHeight, editing) {
+  if (!viewport || viewport.scale !== 1) return null;
+  return { height: viewport.height, top: Math.max(0, viewport.offsetTop), keyboard: Boolean(editing && innerHeight - viewport.height > 120) };
+}
+
+export function installMobileViewport(win, doc) {
+  if (!win.visualViewport) return () => {};
+  const viewport = win.visualViewport;
+  const update = () => {
+    const metrics = viewportMetrics(viewport, win.innerHeight, doc.activeElement?.matches?.('input, textarea, [contenteditable="true"]'));
+    if (!metrics) return;
+    doc.documentElement.style.setProperty("--hs-viewport-height", `${metrics.height}px`);
+    doc.documentElement.style.setProperty("--hs-viewport-top", `${metrics.top}px`);
+    doc.documentElement.classList.toggle("keyboard-visible", metrics.keyboard);
+  };
+  const focus = () => win.requestAnimationFrame(update);
+  update();
+  viewport.addEventListener("resize", update);
+  viewport.addEventListener("scroll", update);
+  win.addEventListener("resize", update);
+  win.addEventListener("pageshow", update);
+  doc.addEventListener("focusin", focus);
+  doc.addEventListener("focusout", focus);
+  return () => {
+    viewport.removeEventListener("resize", update);
+    viewport.removeEventListener("scroll", update);
+    win.removeEventListener("resize", update);
+    win.removeEventListener("pageshow", update);
+    doc.removeEventListener("focusin", focus);
+    doc.removeEventListener("focusout", focus);
+  };
+}
+
+function syncInstallEntries() {
+  const installed = isStandaloneApp();
+  document.querySelectorAll(".pwa-install-entry, .pwa-install-row").forEach(entry => { entry.hidden = installed; });
+}
+
+function installPwaEvents() {
+  window.addEventListener("beforeinstallprompt", event => {
+    event.preventDefault();
+    pwaPrompt = event;
+    refreshInstallHelp();
+  });
+  window.addEventListener("appinstalled", () => {
+    pwaPrompt = null;
+    syncInstallEntries();
+    refreshInstallHelp();
+  });
+  window.matchMedia?.("(display-mode: standalone)").addEventListener("change", () => {
+    syncInstallEntries(); refreshInstallHelp();
+  });
+}
+
+function refreshInstallHelp() {
+  if (!pwaDialog) return;
+  const text = pwaDialog.querySelector(".pwa-install-status");
+  const action = pwaDialog.querySelector(".pwa-install-action");
+  action.hidden = !pwaPrompt || isStandaloneApp();
+  text.textContent = isStandaloneApp() ? "已从独立窗口打开鸿枢。"
+    : !window.isSecureContext ? "请通过 HTTPS 打开此中枢，再添加到主屏幕。"
+    : isIOSDevice() ? "在 Safari 分享菜单选择“添加到主屏幕”，保留“作为网页 App 打开”，然后从主屏幕图标打开。"
+    : pwaPrompt ? "可以把鸿枢安装到设备，从主屏幕直接打开。"
+    : "在浏览器菜单中查找“安装应用”或“添加到主屏幕”。不同浏览器的入口可能不同；如果当前浏览器未提供，可使用系统支持安装的浏览器打开同一地址。";
+}
+
+function showPwaHelp() {
+  if (pwaDialog) { pwaDialog.focus(); return; }
+  const previousFocus = document.activeElement;
+  const dialog = el("dialog", "pwa-help-dialog");
+  pwaDialog = dialog;
+  const title = el("h2", "", "安装鸿枢");
+  title.id = "pwa-help-title";
+  dialog.setAttribute("aria-labelledby", title.id);
+  dialog.append(title, el("p", "pwa-install-status"), el("p", "muted", "安装后仍连接当前中枢。首次启动需要联网登录；短信不会离线保存在浏览器。"));
+  const actions = el("div", "pwa-help-actions");
+  const install = button("安装鸿枢", async () => {
+    const prompt = pwaPrompt;
+    if (!prompt) return;
+    install.disabled = true;
+    try { await prompt.prompt(); await prompt.userChoice; }
+    catch { toast("请通过浏览器菜单添加到主屏幕。"); }
+    finally { pwaPrompt = null; install.disabled = false; refreshInstallHelp(); }
+  }, "primary pwa-install-action");
+  const close = () => { if (history.state?.hongshuPwaHelp) history.back(); else dialog.close(); };
+  actions.append(install, button("完成", close, "text-button"));
+  dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
+  dialog.append(actions);
+  dialog.addEventListener("close", () => {
+    pwaDialog = null;
+    dialog.remove();
+    if (previousFocus?.isConnected) previousFocus.focus();
+  }, { once: true });
+  history.pushState({ ...history.state, hongshuPwaHelp: true }, "");
+  document.body.append(dialog);
+  refreshInstallHelp();
+  dialog.showModal();
+}
+
+function offerShellUpdate() {
+  if (!pwaRegistration?.waiting || !navigator.serviceWorker.controller || $(".shell-update")) return;
+  const notice = el("aside", "shell-update");
+  notice.setAttribute("role", "status");
+  notice.append(el("span", "", "鸿枢有新版本可用。"));
+  const update = button("更新并打开", () => {
+    const dirty = [...document.querySelectorAll('input, textarea, select')]
+      .some(field => field.tagName === "SELECT" ? [...field.options].some(option => option.selected !== option.defaultSelected)
+        : ["checkbox", "radio"].includes(field.type) ? field.checked !== field.defaultChecked : field.value !== field.defaultValue);
+    if (dirty && !window.confirm("当前页面有尚未保存的输入，更新会重新打开页面。现在继续吗？")) return;
+    if (!pwaRegistration?.waiting) { toast("更新尚未就绪，请稍后重试。"); return; }
+    update.disabled = true;
+    navigator.serviceWorker.addEventListener("controllerchange", () => location.reload(), { once: true });
+    pwaRegistration.waiting.postMessage({ type: "ACTIVATE_UPDATE" });
+  }, "text-button");
+  notice.append(update, button("稍后", () => notice.remove(), "text-button"));
+  document.body.append(notice);
+}
+
 async function registerShell() {
-  if (!("serviceWorker" in navigator)) return;
+  if (!window.isSecureContext || !("serviceWorker" in navigator)
+    || document.querySelector('meta[name="hongshu-shell-revision"]')?.content === "development") return;
   try {
-    const registration = await navigator.serviceWorker.register("/sw.js");
-    const offer = () => {
-      if (!registration.waiting || $(".shell-update")) return;
-      const update = button("新版本已就绪，点击更新", () => {
-        navigator.serviceWorker.addEventListener("controllerchange", () => location.reload(), { once: true });
-        registration.waiting?.postMessage({ type: "ACTIVATE_UPDATE" });
-      }, "shell-update");
-      document.body.append(update);
-    };
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" });
+    pwaRegistration = registration;
+    const offer = () => offerShellUpdate();
     offer();
     registration.addEventListener("updatefound", () => registration.installing?.addEventListener("statechange", offer));
-  } catch { /* Online shell remains usable; a subsequent visit retries installation. */ }
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && navigator.onLine) { void registration.update().catch(() => {}); offer(); }
+    });
+    void registration.update().catch(() => {});
+  } catch { /* Online shell stays usable. A later visit retries registration. */ }
 }

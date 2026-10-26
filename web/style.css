@@ -265,8 +265,8 @@ input::placeholder { color: var(--md-sys-color-on-surface-variant); }
 @keyframes m3e-wavy-indeterminate { 0% { transform: translateX(-100%); } 50% { transform: translateX(20%); } 100% { transform: translateX(100%); } }
 
 /* ---------------------------------------------------------------- Shell */
-.shell { height: 100dvh; width: 100%; overflow: hidden; position: relative; }
-.main { height: 100dvh; display: flex; flex-direction: column; min-width: 0; position: relative; overflow: hidden; }
+.shell { height: 100%; width: 100%; overflow: hidden; position: relative; padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+.main { height: 100%; display: flex; flex-direction: column; min-width: 0; position: relative; overflow: hidden; }
 
 .security-banner {
   display: flex; align-items: center; gap: .75rem;
@@ -806,7 +806,7 @@ button.settings-item:hover { background: color-mix(in srgb, var(--md-sys-color-o
 }
 
 @media (min-width: 600px) and (max-width: 1023px) {
-  .inbox { width: 320px; flex-basis: 320px; }
+  .inbox { width: clamp(240px, 40%, 360px); flex-basis: clamp(240px, 40%, 360px); }
   .bubble-group { max-width: 86%; }
   .setting-numbers { grid-template-columns: 1fr; }
 }
@@ -877,3 +877,42 @@ button.settings-item:hover { background: color-mix(in srgb, var(--md-sys-color-o
 .local-contact-results { display: flex; flex-direction: column; max-height: 240px; overflow-y: auto; }
 .local-contact-results .text-button { text-align: left; overflow-wrap: anywhere; }
 .local-contact-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Available window space owns layout, including tablet split-screen and the keyboard. */
+html { height: 100%; }
+#app { position: fixed; inset-inline: 0; top: var(--hs-viewport-top, 0px); height: var(--hs-viewport-height, 100dvh); overflow: auto; overscroll-behavior: none; }
+[hidden] { display: none !important; }
+.auth { margin-top: max(16px, calc(10vh + env(safe-area-inset-top, 0px))); margin-bottom: max(16px, env(safe-area-inset-bottom, 0px)); max-width: min(420px, calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); }
+input, textarea, select { font-size: max(1rem, 16px); }
+.page-inner, .settings-group, .detail, .settings-form { min-width: 0; }
+.settings-form input, .settings-form select, .settings-form textarea { max-width: 100%; }
+.detail-head-actions { flex-wrap: wrap; justify-content: flex-end; }
+.messages, .page-container, .conversations, .call-list { overscroll-behavior: contain; }
+.pwa-help-dialog { width: min(480px, calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); max-height: calc(var(--hs-viewport-height, 100dvh) - 32px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); overflow: auto; padding: 24px; border: 0; border-radius: 24px; background: var(--hs-pane); color: var(--md-sys-color-on-surface); box-shadow: var(--md-sys-elevation-level3); }
+.pwa-help-dialog::backdrop { background: #0008; }
+.pwa-help-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.pwa-help-actions button { min-height: 44px; }
+.shell-update { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; width: min(560px, calc(100% - 32px)); max-height: calc(var(--hs-viewport-height, 100dvh) - 32px); overflow: auto; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface); }
+.shell-update .text-button { color: inherit; min-height: 44px; }
+.keyboard-visible .shell-update { bottom: calc(100dvh - var(--hs-viewport-height, 100dvh) - var(--hs-viewport-top, 0px) + 8px); }
+#toast { bottom: max(24px, env(safe-area-inset-bottom, 0px)); }
+@media (pointer: coarse) {
+  .icon-button, .text-button, .chip, .back { min-width: 44px; min-height: 44px; }
+  .settings-item { min-height: 64px; }
+}
+@media (max-height: 480px) {
+  .auth { margin-block: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-bottom, 0px)); padding: 16px; }
+  .auth form { margin-block: 12px; gap: 12px; }
+  .inbox-header, .detail-head { min-height: 52px; padding-block: 6px; }
+  .page-head { padding-block: 12px; }
+}
+.pwa-help-dialog { position: fixed; inset-block-start: calc(var(--hs-viewport-top, 0px) + 16px + env(safe-area-inset-top, 0px)); inset-block-end: auto; margin: 0 auto; }
+.inbox { container-type: inline-size; container-name: inbox; }
+@container inbox (max-width: 340px) {
+  .inbox-header { gap: 6px; padding-inline: 8px; }
+  .inbox-header .spacer { display: none; }
+  .inbox-header .status { padding-inline: 6px; margin-inline-end: auto; }
+  .inbox-header .status-label { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+/* Reserve edge-arrow space while scrolling so visibility cannot resize the observed rail. */
+.chip-rail.is-overflowing .chip-rail-button[hidden] { display: grid !important; visibility: hidden; pointer-events: none; }

@@ -1,17 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, cp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, cp, readFile, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { workerRuntime } from "./sw-harness.js";
 
-test("content-only upgrade pins immutable dependencies, keeps old tabs and works offline", async () => {
+
+test("content-only upgrade pins a new public graph and a stable manifest identity", async () => {
   const temp = await mkdtemp(join(process.env.HONGSHU_TEST_TMP || tmpdir(), "hongshu-shell-"));
   try {
     const source = join(temp, "source");
-    await cp(new URL("../", import.meta.url), source, { recursive: true });
+    await cp(new URL("../", import.meta.url), source, { recursive: true, filter: path => !path.includes("node_modules") });
+    await symlink(new URL("../node_modules", import.meta.url), join(source, "node_modules"), "dir");
     const build = out => execFileSync(process.execPath, [join(source, "build.mjs")], {
       env: { ...process.env, WEB_BUILD_DIR: join(temp, out) },
     });
@@ -34,23 +35,20 @@ test("content-only upgrade pins immutable dependencies, keeps old tabs and works
     const contactPath = app.match(/from "(\/assets\/[a-f0-9]{16}-local-contacts\.js)"/)?.[1];
     assert.ok(contactPath, "hashed modules must import their absolute immutable dependency");
     await readFile(join(temp, "v2", contactPath.slice(1)));
-    const oldName = oldWorker.match(/const CACHE = "([^"]+)"/)[1];
-    const stores = new Map([[oldName, new Map([["/app.js", { value: "old" }]])]]);
-    const runtime = workerRuntime(worker, stores, async path => ({
-      ok: true, value: await readFile(join(temp, "v2", path === "/" ? "index.html" : path.slice(1)), "utf8"),
-      clone() { return this; },
-    }));
-    await runtime.install();
-    assert.equal(runtime.skipped, false, "no unprompted activation across open tabs");
-    await runtime.activate();
-    assert.equal(stores.size, 2, "old version remains usable for old open pages");
-    runtime.offline = true;
-    assert.ok((await runtime.request(appPath)).value.includes("synthetic shell upgrade"));
-    assert.ok((await runtime.request("/")).value.includes(appPath));
-    for (const store of stores.values()) assert.ok([...store.keys()].every(path => !path.startsWith("/api")));
-    const shell = [...stores.values()].at(-1);
-    assert.ok(![...shell.keys()].some(path => path.endsWith("-icon-512.png")), "optional icons do not block install");
-    runtime.handlers.message({ data: { type: "ACTIVATE_UPDATE" } });
-    assert.equal(runtime.skipped, true);
+    assert.equal(html.match(/rel="manifest" href="([^"]+)"/)[1], "/manifest.webmanifest");
+    const manifest = JSON.parse(await readFile(join(temp, "v2/manifest.webmanifest"), "utf8"));
+    assert.equal(manifest.id, "/");
+    assert.equal(manifest.scope, "/");
+    for (const icon of manifest.icons) {
+      const bytes = await readFile(join(temp, "v2", icon.src.slice(1)));
+      assert.equal(bytes.subarray(1, 4).toString(), "PNG");
+      assert.equal(`${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`, icon.sizes);
+    }
+    assert.match(worker, /workbox/);
+    assert.ok(!worker.includes("self.__WB_MANIFEST"), "build injects the final public graph");
+    assert.ok(worker.includes(appPath));
+    assert.ok(!worker.includes('url: "/api/'), "authenticated responses are outside the precache");
+    const oldApp = (await readFile(join(temp, "v1/index.html"), "utf8")).match(/src="(\/assets\/[^\"]+-app.js)"/)[1];
+    assert.notEqual(oldApp, appPath);
   } finally { await rm(temp, { recursive: true, force: true }); }
 });

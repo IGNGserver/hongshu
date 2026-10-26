@@ -902,3 +902,28 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 
 仓库为 public，本轮 CI 不消耗私仓月度 2000 分钟配额。PR 尚未合并、未发布、未部署；本机仍无真机/adb，
 双卡、澎湃 OS 通知字段、后台进程回收与断网重连的端到端行为仍需目标设备验收。
+
+# 2026-10-26 PWA 与手机/平板统一
+
+基线 `1d1dec6`，任务分支 `agent/pwa-adaptive-unification`。本次没有递增版本、发布 Release、触发生产部署或更改 Cloudflare 全区设置。
+
+- 稳定 `/manifest.webmanifest`、`id=/`、`scope=/`；图标与页面脚本使用内容 hash，根图标兼容地址保留。Manifest 不再混入 32px favicon 候选。
+- Workbox 7.4.1 injectManifest + 本地打包运行时。新壳安装校验 HTML revision 和 JS/CSS MIME；旧 HTML 或不完整候选不能替代活动版本。更新需用户选择，未保存输入需确认；仅无打开文档时清理旧壳，公共 hash 资源有容量上限。Push、订阅轮换与消息隐私边界保留。
+- HTML/manifest/SW 的源站 Cache-Control 改为 `no-store, no-cache, max-age=0, must-revalidate`；hash 资源仍为 immutable。线上代理/CDN 的最终响应须在实际部署后另验。
+- 登录/设置均提供安装说明；iOS/iPadOS 指引通过分享菜单添加到主屏幕，缺少 beforeinstallprompt 不当作“不支持”。独立窗口隐藏安装入口。
+- 增加安全区、visualViewport、短视口滚动和触控目标。600px 窄平板左栏改为比例宽度；修复设置按钮溢出被详情遮挡，以及筛选栏 ResizeObserver 同步布局循环。保留手机单栏、平板双栏和原有品牌样式。
+
+验证均运行于 ubuntu-dev 本地盘 `~/.build/pwa-adaptive-hongshu`，未在项目卷写入 node_modules/构建目录。开始根盘可用77GiB，最终约68GiB（同期其他任务亦在使用）；本任务 scratch 约96MiB，共享Go缓存约253MiB。
+
+| 检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh` | 通过；12项operations测试 |
+| `git diff --check`、受影响Go文件gofmt检查 | 通过 |
+| `HONGSHU_TEST_TMP=本机scratch npm test` | 107项通过，0失败、0跳过 |
+| `npm run check` | 通过 |
+| `WEB_BUILD_DIR=本机scratch npm run build` | 通过；Workbox运行时本地打包、图标尺寸与依赖图检查通过 |
+| `go test -race -run 'Test(Manifest\|ShellAssets\|Static)' ./...`、`go vet ./...` | 通过；本轮仅定向静态资源/缓存契约，不冒充真实MySQL集成 |
+| Chromium：`scripts/pwa-browser-smoke.cjs` | 通过：图标、390/600/768/1024/1366px窗口、设置/登录短窗口、通话详情、安装事件、context离线、API隔离、旧HTML拒绝安装、输入保护、用户确认升级、旧hash资源 |
+| WebKit：同一脚本，`PWA_BROWSER=webkit` | 通过同一布局/安装/升级用例；因Playwright WebKit `context.setOffline`已知限制，改为fixture服务拒绝socket，并确认无Worker对照页加载失败。此项证明服务不可达时壳恢复，不冒充物理断网 |
+
+浏览器脚本只使用内存中的合成API与消息，不连接真实中枢或真实短信。截图人工检查了600px双栏布局。iOS 27主屏幕安装图标、安卓Edge系统安装、真实软键盘与安全区，以及存量安装的升级仍需目标设备验收；桌面WebKit不能替代系统安装器。完整MySQL/Android验证由已有CI承担，本轮未触发CI或报告其通过。

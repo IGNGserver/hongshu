@@ -8,8 +8,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.buildVersion=$(cat /src/V
 
 FROM node:22-bookworm-slim AS web
 WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
 COPY web/ ./
-RUN WEB_BUILD_DIR=/out/web node build.mjs
+RUN WEB_BUILD_DIR=/out/web npm run build
 
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app

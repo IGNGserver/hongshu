@@ -97,7 +97,7 @@ func (a *app) routes(web string) http.Handler {
 		if name == "sw.js" {
 			w.Header().Set("Service-Worker-Allowed", "/")
 		}
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate")
 		if immutable {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
