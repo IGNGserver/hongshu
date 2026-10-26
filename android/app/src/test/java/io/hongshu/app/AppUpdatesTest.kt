@@ -104,6 +104,21 @@ class AppUpdatesTest {
         assertEquals("0.2.0", restarted.state.value.candidate?.version)
     }
 
+    @Test fun serviceUnavailableRetryAfterSurvivesRestart() = runBlocking {
+        var requests = 0
+        var now = 1_000_000L
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            requests++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(503).message("unavailable")
+                .header("Retry-After", "1800").body("unavailable".toResponseBody()).build()
+        }.build()
+        AppUpdates(app, client) { now }.check(true)
+        assertEquals(2_800_000L, prefs.getLong("retryAt", 0))
+        now += 61_000
+        AppUpdates(app, client) { now }.check(true)
+        assertEquals(1, requests)
+    }
+
     @Test fun channelChangeReevaluatesCacheWithoutNetworkOrDowngrade() = runBlocking {
         var requests = 0
         val client = OkHttpClient.Builder().addInterceptor { chain ->

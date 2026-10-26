@@ -40,6 +40,7 @@ internal class AppUpdates internal constructor(
     private val app = context.applicationContext
     private val prefs = app.getSharedPreferences("hongshu_updates", Context.MODE_PRIVATE)
     private val lock = Mutex()
+    private val channelLock = Any()
     private val installed get() = app.packageManager.getPackageInfo(app.packageName, signatureFlags())
     private val currentVersion get() = installed.versionName ?: error("无法读取当前版本")
     private val currentCode get() = PackageInfoCompat.getLongVersionCode(installed)
@@ -54,7 +55,7 @@ internal class AppUpdates internal constructor(
         }.onFailure { prefs.edit().remove("feed").remove("etag").putLong("nextCheck", 0).commit() }
     }
 
-    fun setPreview(value: Boolean) {
+    fun setPreview(value: Boolean) = synchronized(channelLock) {
         kotlin.check(prefs.edit().putBoolean("preview", value).commit()) { "无法保存更新通道" }
         val cached = runCatching { candidate(prefs.getString("feed", "")!!) }.getOrNull()
         mutable.value = mutable.value.copy(message = if (cached != null) "发现新版本 ${cached.version}" else "已切换到${if (value) "预发布" else "正式"}通道", candidate = cached, preview = value)
@@ -80,10 +81,15 @@ internal class AppUpdates internal constructor(
                 val request = Request.Builder().url(AppUpdatePolicy.FEED_URL).header("Accept", "application/json")
                 if (cached.isNotEmpty()) prefs.getString("etag", null)?.let { request.header("If-None-Match", it) }
                 checkClient.newCall(request.build()).execute().use { response ->
-                    if (response.code == 429 || response.code == 403) {
+                    if (!response.isSuccessful && response.code != 304) {
                         val failures = prefs.getInt("failures", 0)
                         prefs.edit().putLong("retryAt", AppUpdatePolicy.retryAt(now, failures, response.header("Retry-After"), response.header("X-RateLimit-Reset"))).commit()
-                        throw IOException(if (response.code == 429 || response.header("X-RateLimit-Remaining") == "0" || response.header("Retry-After") != null) "仓库请求受限，请稍后重试" else "仓库访问被拒绝，请稍后重试")
+                        throw IOException(when {
+                            response.code == 429 || response.header("X-RateLimit-Remaining") == "0" -> "仓库请求受限，请稍后重试"
+                            response.code == 404 -> "更新清单暂未就绪"
+                            response.code == 403 -> "仓库访问被拒绝，请稍后重试"
+                            else -> "检查失败（HTTP ${response.code}）"
+                        })
                     }
                     val text = if (response.code == 304 && cached.isNotEmpty()) cached else {
                         if (!response.isSuccessful) throw IOException(if (response.code == 404) "更新清单暂未就绪" else "检查失败（HTTP ${response.code}）")
@@ -93,12 +99,14 @@ internal class AppUpdates internal constructor(
                             bytes.toString(Charsets.UTF_8)
                         }
                     }
-                    val selected = candidate(text)
-                    kotlin.check(prefs.edit().putString("feed", text).putString("etag", if (response.code == 304) prefs.getString("etag", null) else response.header("ETag"))
-                        .putLong("nextCheck", now + AppUpdatePolicy.CHECK_INTERVAL + kotlin.random.Random.nextLong(0, 30 * 60 * 1000L))
-                        .putLong("retryAt", 0).putInt("failures", 0).commit()) { "无法保存检查结果" }
-                    mutable.value = mutable.value.copy(candidate = selected, message = selected?.let { "发现新版本 ${it.version}" }
-                        ?: if (!mutable.value.preview && currentVersion.contains('-')) "没有更高的正式版，等待正式通道更新" else "当前通道没有可安装的新版本")
+                    synchronized(channelLock) {
+                        val selected = candidate(text)
+                        kotlin.check(prefs.edit().putString("feed", text).putString("etag", if (response.code == 304) prefs.getString("etag", null) else response.header("ETag"))
+                            .putLong("nextCheck", now + AppUpdatePolicy.CHECK_INTERVAL + kotlin.random.Random.nextLong(0, 30 * 60 * 1000L))
+                            .putLong("retryAt", 0).putInt("failures", 0).commit()) { "无法保存检查结果" }
+                        mutable.value = mutable.value.copy(candidate = selected, message = selected?.let { "发现新版本 ${it.version}" }
+                            ?: if (!mutable.value.preview && currentVersion.contains('-')) "没有更高的正式版，等待正式通道更新" else "当前通道没有可安装的新版本")
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
