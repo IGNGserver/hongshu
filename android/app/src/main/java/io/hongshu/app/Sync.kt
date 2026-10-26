@@ -99,12 +99,16 @@ private fun syncRequest(urgent: Boolean, delayMillis: Long = 0): OneTimeWorkRequ
 // schedules its own work.
 internal fun requestCapture(context: Context): Deferred<Unit> = syncNow(context, manual = true)
 
-fun syncNow(context: Context, manual: Boolean = false): Deferred<Unit> {
+fun syncNow(context: Context, manual: Boolean = false, capture: Boolean = true): Deferred<Unit> {
     val app = context.applicationContext
+    Config(app).lastSyncRequested = System.currentTimeMillis()
+    // Wake the live executor before touching WorkManager: scheduler quotas, backoff or a
+    // slow enqueue must not be prerequisites for realtime delivery.
+    RealtimeDelivery.request(capture)
     return syncSchedulingScope.async<Unit> {
         synchronized(schedulingLock) {
             val manager = WorkManager.getInstance(app)
-            enqueueCaptureMaintenance(app)
+            if (capture) enqueueCaptureMaintenance(app)
             val pending =
                 manager.getWorkInfosForUniqueWork("hongshu-sync").get().filter {
                     !it.state.isFinished
@@ -195,8 +199,10 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 // Apply the user's queue policy after pairing/scanning, so a row that was just
                 // enriched by this pass is not hidden before it had a chance to resolve.
                 it.autoIgnoreUnassigned()
-                if (config.upload && (it.pendingCount() > 0 || it.callQueueCounts().pending > 0))
+                if (config.upload && (it.pendingCount() > 0 || it.callQueueCounts().pending > 0)) {
+                    RealtimeDelivery.request()
                     enqueueSyncOnly(applicationContext)
+                }
             }
             // Paging through a large inbox is progress, not failure: a retry would back off
             // exponentially and hold the shared capture chain (and new-SMS recovery) for hours.
@@ -212,7 +218,7 @@ class CaptureWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         }
 }
 
-private fun enqueueSyncOnly(context: Context, delayMillis: Long = 0) =
+internal fun enqueueSyncOnly(context: Context, delayMillis: Long = 0) =
     synchronized(schedulingLock) {
         val manager = WorkManager.getInstance(context)
         val pending =
@@ -250,7 +256,8 @@ internal const val CAPTURE_CONTINUATION_DELAY_MS = 10_000L
 // periodic worker, so a long history page cannot delay it. Notifications whose re-reads fall in
 // the same 10-second slot share one pass, and the first one keeps its time: a burst of
 // notifications cannot keep postponing the re-read of an earlier row.
-internal fun scheduleNotificationReread(context: Context, delayMillis: Long) =
+internal fun scheduleNotificationReread(context: Context, delayMillis: Long) {
+    RealtimeDelivery.rereadAfter(delayMillis)
     synchronized(schedulingLock) {
         val slot = (System.currentTimeMillis() + delayMillis) / NOTIFICATION_REREAD_SLOT_MS
         WorkManager.getInstance(context)
@@ -264,6 +271,7 @@ internal fun scheduleNotificationReread(context: Context, delayMillis: Long) =
             .result
             .get()
     }
+}
 
 internal const val NOTIFICATION_REREAD_SLOT_MS = 10_000L
 
@@ -366,11 +374,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 object SyncEngine {
     private val mutex = identityMutex
 
-    suspend fun run(context: Context): Boolean = mutex.withLock { runLocked(context) }
+    suspend fun run(context: Context, realtime: Boolean = false): Boolean =
+        mutex.withLock { runLocked(context, realtime) }
 
     // The caller holds identityMutex. Instrumented tests hold it across a sequence of runs so
     // that a background SyncWorker cannot slip a pass in between and drain the same queue.
-    internal suspend fun runLocked(context: Context): Boolean =
+    internal suspend fun runLocked(context: Context, realtime: Boolean = false): Boolean =
         withContext(Dispatchers.IO) {
             val repo = Repository(context)
             val c = repo.config
@@ -523,17 +532,26 @@ object SyncEngine {
                         uploaded = true
                     }
                     if (!data.getBoolean("more")) {
-                        val contactsHealthy = refreshContactSnapshot(repo, session)
-                        c.contactsHealthy = contactsHealthy
+                        // Yield optional work when a foreground delivery pass is waiting.
+                        // Never interrupt an in-flight HTTP request or ACK transaction.
+                        var maintenanceDeferred = false
+                        fun maintenance(): Boolean {
+                            val allowed = !realtime && !RealtimeDelivery.pending
+                            if (!realtime && !allowed) maintenanceDeferred = true
+                            return allowed
+                        }
+                        val contactsHealthy = if (maintenance()) refreshContactSnapshot(repo, session)
+                            else c.contactsHealthy
+                        if (!realtime) c.contactsHealthy = contactsHealthy
                         // Cosmetic analysis has a separate cursor and never creates notifications.
-                        val analysisMore = syncMessageAnalysis(repo, session)
+                        val analysisMore = maintenance() && syncMessageAnalysis(repo, session)
                         uploadReadReceipts(repo.api, store)
                         val readsComplete = syncReadState(store) { repo.api.request(it) }
-                        val callsMore = uploadCallSlice()
+                        val callsMore = maintenance() && uploadCallSlice()
                         // Same isolation as call uploads: a failure is retried next sync.
                         val callPagesMore =
                             try {
-                                syncCallLog(store, { repo.api.request(it) })
+                                maintenance() && syncCallLog(store, { repo.api.request(it) })
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: ApiException) {
@@ -553,12 +571,12 @@ object SyncEngine {
                             if (c.upload && c.historyEnabled && c.inboxScanPending)
                                 "同步完成 · 历史短信采集中，自动继续"
                             else "同步完成"
-                        if (!contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
+                        if (!realtime && !contactsHealthy) c.status += " · 联系人名称未刷新，下次同步重试"
                         // Download completed; report the upload failure so the worker backs
                         // off and retries without having blocked receiving.
                         uploadFailure?.let { throw it }
                         // Successful bounded work gets a successor, not failure backoff.
-                        return@withContext !uploadProgress && !analysisMore && !callsMore && !callPagesMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
+                        return@withContext !maintenanceDeferred && !uploadProgress && !analysisMore && !callsMore && !callPagesMore && readsComplete && store.pendingReads().isEmpty() && !(c.upload &&
                             (serverUpload &&
                                 store.pending(allowFallback = false).isNotEmpty()))
                     }

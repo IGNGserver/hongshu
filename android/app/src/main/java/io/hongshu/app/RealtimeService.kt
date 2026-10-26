@@ -44,6 +44,8 @@ class RealtimeService : Service() {
     private var destroyed = false
     private var foreground = false
     private var watchingNetwork = false
+    private var delivery: RealtimeDeliveryRunner? = null
+    private var transportHealth = ConnectionHealth()
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
@@ -97,6 +99,15 @@ class RealtimeService : Service() {
 
     private fun reportHealth(value: ConnectionHealth) {
         if (destroyed) return
+        transportHealth = value
+        refreshHealth()
+    }
+
+    private fun refreshHealth() {
+        if (destroyed) return
+        val value = transportHealth.copy(detail = deliveryDetail(transportHealth,
+            delivery?.health?.value ?: DeliveryHealth(), android.os.SystemClock.elapsedRealtime() + 1))
+        if (RuntimeHealth.connection.value == value) return
         RuntimeHealth.connection.value = value
         if (
             foreground &&
@@ -110,9 +121,63 @@ class RealtimeService : Service() {
         }
     }
 
+    private fun startDelivery() {
+        if (delivery != null) return
+        val app = applicationContext
+        val runner = RealtimeDeliveryRunner(scope,
+            synchronize = {
+                withDeliveryWakeLock(app) { SyncEngine.run(app, realtime = true) }
+            },
+            capture = {
+                // CancellationSignal also bounds a cooperative provider query. Its actor is
+                // independent of networking even on ROMs that ignore cancellation.
+                val cancellation = android.os.CancellationSignal()
+                val timeout = scope.launch { delay(5_000); cancellation.cancel() }
+                timeout.invokeOnCompletion { cancellation.cancel() }
+                try {
+                    withContext(Dispatchers.IO) {
+                        withDeliveryWakeLock(app) { captureRecentInbox(app, cancellation) }
+                    }
+                } finally { timeout.cancel() }
+            },
+            nextRelease = { withContext(Dispatchers.IO) { Store(app).use { it.nextNotificationRelease() } } },
+            fallback = { error ->
+                withContext(Dispatchers.IO) {
+                    val config = Config(app)
+                    config.syncHealthy = false
+                    config.status = syncFailureReason(error)
+                    config.lastSyncError = config.status
+                    enqueueSyncOnly(app)
+                }
+                if (error is ApiException && error.status == 401 && Config(app).token.isEmpty())
+                    stopConnection("凭据失效，请重新连接中枢；周期同步等待重新授权")
+            },
+        )
+        delivery = runner
+        RealtimeDelivery.attach(runner)
+        scope.launch { runner.health.collect { refreshHealth() } }
+        scope.launch {
+            while (isActive) {
+                delay(5_000)
+                // Status watchdog only; no polling requests or repeated service starts.
+                refreshHealth()
+            }
+        }
+        runner.request(capture = true)
+    }
+
+    private fun stopDelivery() {
+        delivery?.let {
+            RealtimeDelivery.detach(it)
+            it.close()
+        }
+        delivery = null
+    }
+
     private fun stopConnection(detail: String) {
         reportHealth(ConnectionHealth(detail = detail))
         destroyed = true
+        stopDelivery()
         generation++
         socket?.cancel()
         connection?.cancel()
@@ -165,6 +230,7 @@ class RealtimeService : Service() {
                 foreground = true
                 reportHealth(ConnectionHealth(running = true, detail = "正在连接中枢"))
                 watchNetwork()
+                startDelivery()
             }
             if (connection?.isActive != true) connection = scope.launch { connectLoop() }
         } catch (_: Exception) {
@@ -217,12 +283,15 @@ class RealtimeService : Service() {
                                 callback {
                                     attempts = 0
                                     reportHealth(ConnectionHealth(true, true, "实时连接已建立"))
-                                    syncNow(this@RealtimeService)
+                                    syncNow(this@RealtimeService, capture = false)
                                 }
                             }
 
                             override fun onMessage(webSocket: WebSocket, text: String) {
-                                callback { syncNow(this@RealtimeService, manual = true) }
+                                callback {
+                                    Config(this@RealtimeService).lastHubHint = System.currentTimeMillis()
+                                    syncNow(this@RealtimeService, manual = true, capture = false)
+                                }
                             }
 
                             override fun onFailure(
@@ -313,6 +382,7 @@ class RealtimeService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        stopDelivery()
         generation++
         socket?.cancel()
         scope.cancel()

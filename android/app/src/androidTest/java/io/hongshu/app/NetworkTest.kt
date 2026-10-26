@@ -10,6 +10,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CompletableDeferred
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -111,6 +114,96 @@ class NetworkTest {
             editor.commit()
         }
     }
+
+    @Test
+    fun liveExecutorUploadsDownloadsAndNotifiesWithoutAnActivityOrWorker() =
+        withConfig { context, config ->
+            val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val uploads = java.util.concurrent.atomic.AtomicInteger()
+            val now = System.currentTimeMillis()
+            val remote = JSONObject().put("id", 1).put("device_id", "other-phone")
+                .put("receiver", "+123456789").put("sender", "synthetic-remote")
+                .put("body", "synthetic ordinary message").put("timestamp", now).put("historical", false)
+            Hub { path, body ->
+                requests.add(path)
+                when {
+                    path == "/api/me" -> 200 to JSONObject().put("cursor", 1).put("epoch", 1)
+                        .put("analysis_revision", 5).put("metadata_revision", 5).put("call_cursor", 5)
+                        .put("features", JSONArray().put("metadata_revision").put("call_log"))
+                        .put("device", JSONObject().put("upload", true).put("notify", true).put("created_at", 1))
+                    path.startsWith("/api/sync?") -> 200 to JSONObject()
+                        .put("messages", if (path.contains("after=0&")) JSONArray().put(remote) else JSONArray())
+                        .put("cursor", 1).put("epoch", 1).put("more", false)
+                    path == "/api/sims" -> 200 to JSONObject().put("ok", true)
+                    path == "/api/messages" -> {
+                        val messages = body.getJSONArray("messages")
+                        uploads.addAndGet(messages.length())
+                        200 to JSONObject().put("acks", JSONArray().apply {
+                            repeat(messages.length()) { put(JSONObject().put("id", it + 10).put("duplicate", false)) }
+                        })
+                    }
+                    path.startsWith("/api/read-state?") -> 200 to emptyReadState()
+                    else -> 503 to JSONObject().put("error", "unexpected_optional_request")
+                }
+            }.use { hub ->
+                config.url = hub.url
+                config.token = "s".repeat(64)
+                config.deviceId = "source-phone"
+                config.upload = true
+                config.uploadPatchPending = false
+                channels(context)
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation
+                        .executeShellCommand("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+                        .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
+                }
+                Store(context).use { store ->
+                    store.resetSyncedCache(1)
+                    store.queue(SmsRecord("+123456789", "synthetic-local", "synthetic upload", now, 1))
+                }
+                runBlocking {
+                    val runner = RealtimeDeliveryRunner(this,
+                        synchronize = { SyncEngine.run(context, realtime = true) }, capture = {},
+                        nextRelease = { null }, fallback = { throw AssertionError("direct delivery failed", it) })
+                    try {
+                        runner.request()
+                        withTimeout(15_000) { runner.health.first { it.lastSuccess > 0 && it.pendingSince == 0L } }
+                    } finally { runner.close() }
+                }
+                assertTrue(uploads.get() > 0)
+                Store(context).use { store ->
+                    assertTrue(store.messages(sender = "synthetic-remote").any { it.id == 1L })
+                    assertEquals(0L, store.pendingNotification())
+                }
+                assertTrue(context.getSystemService(android.app.NotificationManager::class.java)
+                    .activeNotifications.any { it.id == 2 })
+                assertFalse(requests.any { it.contains("/metadata") || it.contains("/contacts") ||
+                    it.contains("/analysis") || it.contains("/calls") })
+                // A worker that yielded optional work must request a successor, not silently
+                // lose contact/analysis/call refreshes. A failed live pass must not starve them.
+                runBlocking {
+                    val entered = CompletableDeferred<Unit>()
+                    val release = CompletableDeferred<Unit>()
+                    val priority = RealtimeDeliveryRunner(this,
+                        synchronize = { entered.complete(Unit); release.await(); true },
+                        capture = {}, nextRelease = { null }, fallback = {})
+                    RealtimeDelivery.attach(priority)
+                    try {
+                        priority.request()
+                        entered.await()
+                        assertFalse(SyncEngine.run(context))
+                        assertFalse(requests.any { it.contains("/metadata") })
+                        release.complete(Unit)
+                        withTimeout(5_000) { priority.health.first { it.pendingSince == 0L } }
+                        assertTrue(SyncEngine.run(context))
+                        assertTrue(requests.any { it.contains("/metadata") })
+                    } finally {
+                        RealtimeDelivery.detach(priority)
+                        priority.close()
+                    }
+                }
+            }
+        }
 
     @Test
     fun renameKeepsIdentityAndFailedReauthenticationKeepsCredentials() =

@@ -767,6 +767,10 @@ private fun DiagnosticsPage(host: SettingsHost) {
         listOf(
             "本地队列" to host.facts.pending.label(),
             "中枢同步" to smsSyncStatus(activity, host.repo),
+            "最近同步触发" to if (c.lastSyncRequested > 0) formatTimestamp(c.lastSyncRequested) else "尚无记录",
+            "最近开始同步" to if (c.lastSyncAttempt > 0) formatTimestamp(c.lastSyncAttempt) else "尚无记录",
+            "最近同步成功" to if (c.lastSync > 0) formatTimestamp(c.lastSync) else "尚无记录",
+            "最近中枢更新提示" to if (c.lastHubHint > 0) formatTimestamp(c.lastHubHint) else "尚无记录",
         )
     val background =
         listOf(

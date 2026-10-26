@@ -8,6 +8,66 @@ import androidx.core.content.ContextCompat
 
 private val inboxScanLock = Any()
 
+// A bounded tail read independent of the reliable forward scan and its lock. It neither
+// advances scan watermarks nor queries SIM services: old/backlogged rows remain for the
+// maintenance worker and exact cached subscription mappings are the only realtime identity.
+internal fun captureRecentInbox(
+    context: Context,
+    cancellation: android.os.CancellationSignal,
+    databaseName: String = "hongshu.db",
+    now: Long = System.currentTimeMillis(),
+): Int {
+    val config = Config(context)
+    val generation = config.captureGeneration
+    val recoveryGeneration = config.recoveryGeneration
+    val historyGeneration = config.historyGeneration
+    fun current() = config.upload && config.captureGeneration == generation &&
+        config.recoveryGeneration == recoveryGeneration && config.historyGeneration == historyGeneration &&
+        (config.recoveryEnabled || config.historyEnabled)
+    if (!current() || !hasPermission(context, Manifest.permission.READ_SMS)) return 0
+    return Store(context, databaseName).use { store ->
+        val since = if (config.recoveryEnabled) config.recoverySince else
+            store.historyBoundary().takeIf { it > 0 } ?: store.captureSince().takeIf { it > 0 } ?: now
+        if (since <= 0) return@use 0
+        val receiver = store.receiverResolver(allowFallback = false)
+        fun query(withSub: Boolean) = context.contentResolver.query(
+            Telephony.Sms.Inbox.CONTENT_URI,
+            if (withSub) arrayOf("_id", "address", "body", "date", "sub_id")
+                else arrayOf("_id", "address", "body", "date"),
+            "date>=?", arrayOf(since.toString()), "_id DESC", cancellation,
+        )
+        val cursor = try { query(true) } catch (_: IllegalArgumentException) { query(false) }
+            ?: error("SMS provider unavailable")
+        val rows = cursor.use { c ->
+            val id = c.getColumnIndexOrThrow("_id")
+            val address = c.getColumnIndexOrThrow("address")
+            val body = c.getColumnIndexOrThrow("body")
+            val date = c.getColumnIndexOrThrow("date")
+            val subIndex = c.getColumnIndex("sub_id")
+            buildList {
+                var visited = 0
+                while (visited < 100 && c.moveToNext()) {
+                    visited++
+                    cancellation.throwIfCanceled()
+                    val sender = c.getString(address)
+                    val text = c.getString(body)
+                    if (sender.isNullOrEmpty() || text.isNullOrEmpty()) continue
+                    // Providers may ignore selection; never cross the consent boundary.
+                    if (c.getLong(date) < since) continue
+                    val sub = if (subIndex >= 0) c.getInt(subIndex) else -1
+                    add(c.getLong(id) to SmsRecord(receiver(sub), sender, text, c.getLong(date), sub))
+                }
+            }
+        }
+        synchronized(identityLock) {
+            if (!current()) return@synchronized 0
+            store.captureProviders(rows, advance = false).also {
+                store.recordCaptureEvent(CaptureSource.RECOVERY, "added", it)
+            }
+        }
+    }
+}
+
 fun recoverRecentInbox(context: Context, databaseName: String = "hongshu.db"): String =
     synchronized(inboxScanLock) {
         val config = Config(context)
