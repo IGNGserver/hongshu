@@ -37,6 +37,19 @@
 原任务目录的 Git 登记在暂停期间消失；保留原目录与分支，未删除任何现场。经用户继续
 授权临时第 3 个工作区后，在新工作区逐文件核对恢复，未覆盖其他两个并行任务的修改。
 
+首轮 CI：[40303801620](https://github.com/IGNGserver/hongshu/actions/runs/40303801620)
+（提交 `ca27f66`）：`verify`、`web`、`android (33)`、`android (35)` 通过；API 28 的新增后台
+用例在首次打开数据库时失败，`SQLiteOpenHelper` 重复执行 `CREATE TABLE outbox`。为全部
+Store 实例的连接打开/版本检查增加进程锁，不吞建表错误、不删除数据；补充宿主和设备端
+共享的并发首次建库/升级合同，各自 8 个实例、3 轮，检查原队列和游标保留。
+`server` 的 Go race/真实 MySQL、vet、build 步骤通过，但后续 Playwright 系统依赖下载被
+Ubuntu 镜像网络拖至 15 分钟 job 超时取消；不是测试断言失败，浏览器验收没有完成。
+修复后本地 `:app:testDebugUnitTest --tests io.hongshu.app.StoreOpenHostTest --tests
+io.hongshu.app.StoreRobustnessTest --tests io.hongshu.app.RealtimeDeliveryTest --tests
+io.hongshu.app.RealtimeInboxTest :app:lintDebug :app:compileDebugAndroidTestKotlin` 通过
+（21 项、0 失败/跳过，1m54s）。仓库验证与 `git diff --check` 再次通过；变更文件凭据
+模式扫描 20 个文件、0 匹配（不代替专业安全审计）。随后触发完整 CI，不把首轮总体失败写成通过。
+
 # 2026-10-25 通话记录同步（只读）
 
 基线 `c123e81`（`0.2.0-alpha.19`），四个 PR 串行集成：
