@@ -1,7 +1,9 @@
 # 2026-10-26 后台短信实时执行与通知
 
-恢复基线 `1d1dec6`，分支 `agent/background-realtime-delivery-resume`，版本保持
-`0.2.0-alpha.19`。本轮仅开发、验证和推送任务分支，不创建 PR、不合并、不发布、不部署。
+从 `1d1dec6` 开始，分支 `agent/background-realtime-delivery-resume`。初始验证时版本为
+`0.2.0-alpha.19`；用户随后明确授权创建 PR、合并、发布下一 alpha 预览版并更新 NAS 中枢。
+发布准备将 VERSION 递增为 `0.2.0-alpha.20`，不改为 stable；按授权执行后的 PR、Release、
+NAS 版本和健康检查结果将在本节续记。
 
 - Android：用户已开启的实时前台服务直接执行同步；广播/观察者/通知/界面唤醒执行器，
   WorkManager 保留持久兜底。网络和最近收件箱采集独立合并触发，可靠游标、ACK 和通知
@@ -50,14 +52,16 @@ io.hongshu.app.RealtimeInboxTest :app:lintDebug :app:compileDebugAndroidTestKotl
 （21 项、0 失败/跳过，1m54s）。仓库验证与 `git diff --check` 再次通过；变更文件凭据
 模式扫描 20 个文件、0 匹配（不代替专业安全审计）。随后触发完整 CI，不把首轮总体失败写成通过。
 
-最终 CI：[40306871044](https://github.com/IGNGserver/hongshu/actions/runs/40306871044)
+重基前 CI：[40306871044](https://github.com/IGNGserver/hongshu/actions/runs/40306871044)
 （代码提交 `6cd12ce`，14m17s）六个 job 全部成功：`verify`、`web`、`server`、
 `android (28)`、`android (33)`、`android (35)`。API 28 完成 27 项设备测试，33/35 各完成
 55 项；包含退后台后接收并通知，以及并发建库/升级合同。Android 单测/lint/APK 构建、
 Go race/真实 MySQL/vet/build、Web build、浏览器及本地联系人 smoke 都通过。
 本任务两次完整 CI 与两次被并发组取消的 push 快检共约 83.58 job 分钟；仓库为 public，
 不消耗私仓每月分钟额度。收尾本地盘可用 63G，任务 scratch 39MB、共享 Gradle 缓存 2.0GB
-保留，均未写回 NAS 源码卷；最后仅补文档，不把文档提交冒充另一次完整 CI。
+保留，均未写回 NAS 源码卷。其后主线合入 PR #97 的 Workbox PWA 架构；重基时保留该
+Service Worker 设计，并把短信 Push 刷新合并到 `web/push.js`，对应 Web 测试也改为直接
+覆盖模块。上述重基与 alpha.20 发布准备需由新的 PR CI 验证，不能沿用此旧 CI 结果。
 
 # 2026-10-25 通话记录同步（只读）
 
