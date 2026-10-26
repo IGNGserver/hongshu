@@ -2,8 +2,12 @@
 
 从 `1d1dec6` 开始，分支 `agent/background-realtime-delivery-resume`。初始验证时版本为
 `0.2.0-alpha.19`；用户随后明确授权创建 PR、合并、发布下一 alpha 预览版并更新 NAS 中枢。
-发布准备将 VERSION 递增为 `0.2.0-alpha.20`，不改为 stable；按授权执行后的 PR、Release、
-NAS 版本和健康检查结果将在本节续记。
+初次发布准备将 VERSION 递增为 `0.2.0-alpha.20`。其不可移动的 tag 已推送，但 Release
+工作流 [40313769738](https://github.com/IGNGserver/hongshu/actions/runs/40313769738) 在
+GHCR staging 构建前失败：`.dockerignore` 排除了 Dockerfile `npm ci` 阶段需要的
+`web/package.json`；没有创建 alpha.20 Release、APK/部署包或版本镜像标签，NAS 未更新。
+按不可覆盖策略保留 alpha.20 tag，以 `0.2.0-alpha.21` 准备修复后的下一 alpha，不改为
+stable；后续 PR、Release 与 NAS 健康检查结果将在本节续记。
 
 - Android：用户已开启的实时前台服务直接执行同步；广播/观察者/通知/界面唤醒执行器，
   WorkManager 保留持久兜底。网络和最近收件箱采集独立合并触发，可靠游标、ACK 和通知
