@@ -194,6 +194,15 @@ class Operations(unittest.TestCase):
         self.assertNotEqual(0,result.returncode)
         self.assertIn(b'HONGSHU_VERSION',result.stderr)
 
+    def test_docker_context_contains_web_manifests_used_by_the_image(self):
+        dockerfile=(ROOT/'Dockerfile').read_text()
+        ignored=(ROOT/'.dockerignore').read_text().splitlines()
+        self.assertIn('COPY web/package.json web/package-lock.json ./',dockerfile)
+        for path in ('web/package.json','web/package-lock.json'):
+            with self.subTest(path=path):
+                self.assertTrue((ROOT/path).is_file())
+                self.assertNotIn(path,ignored)
+
 
 if __name__ == '__main__':
     unittest.main()

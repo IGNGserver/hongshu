@@ -96,14 +96,19 @@ jobs:
         env:
           PLAYWRIGHT_MODULE: "${{ runner.temp }}/pwa-browser-tools/node_modules/playwright"
           WEB_BUILD_DIR: "${{ runner.temp }}/hongshu-web"
-  container-image:
-    name: Build release container without pushing
+  container:
+    name: container image build
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Build Docker image using the release context
-        run: docker build --tag hongshu:ci-check .
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: hongshu:pull-request
   android:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
