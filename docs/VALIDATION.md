@@ -7,7 +7,15 @@
 GHCR staging 构建前失败：`.dockerignore` 排除了 Dockerfile `npm ci` 阶段需要的
 `web/package.json`；没有创建 alpha.20 Release、APK/部署包或版本镜像标签，NAS 未更新。
 按不可覆盖策略保留 alpha.20 tag，以 `0.2.0-alpha.21` 准备修复后的下一 alpha，不改为
-stable；后续 PR、Release 与 NAS 健康检查结果将在本节续记。
+stable。发布与 NAS 验证结果如下。
+
+### 2026-10-26 合并、发布与 NAS 升级
+
+- 后台实时投递 PR [#98](https://github.com/IGNGserver/hongshu/pull/98) 已合并至 main，合并提交 `6f4b57a15add9866f50b6774be2900f8e88e1825`。Docker build-context 修复由 PR [#100](https://github.com/IGNGserver/hongshu/pull/100) 合并，提交 `0a6df3a9f286f3d5da323da2946c31e6bc2f89b4`。
+- [alpha.21 Release run 40317592254](https://github.com/IGNGserver/hongshu/actions/runs/40317592254) 全部通过；已发布签名 APK、部署归档和 GHCR 镜像 `ghcr.io/igngserver/hongshu:0.2.0-alpha.21`。不可移动的 alpha.20 tag 保留，未创建 alpha.20 Release。
+- NAS 中枢由 `0.2.0-alpha.19` 升至 `0.2.0-alpha.21`。升级前 `.env` 快照 `backups/hongshu.env-before-alpha21-20261026T115729Z` 记录旧版本；数据库快照 `runtime-data/backups/hongshu-before-alpha21-20261026T115224Z.sql.gz` 的 gzip 与 SHA-256 校验通过。
+- 部署核验：容器运行 `ghcr.io/igngserver/hongshu:0.2.0-alpha.21` 且 healthy；`/healthz` 返回 `status=ok`；13 条 schema migration 全部 `dirty=0`。
+- 随后 alpha.22 Release 增加 Android 客户端直连仓库的更新功能，不改中枢 API 或 schema；NAS 保持 alpha.21，无需为客户端更新重复部署中枢。
 
 - Android：用户已开启的实时前台服务直接执行同步；广播/观察者/通知/界面唤醒执行器，
   WorkManager 保留持久兜底。网络和最近收件箱采集独立合并触发，可靠游标、ACK 和通知
