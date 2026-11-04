@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -16,7 +17,7 @@ func (a *app) commitMetadata(ctx context.Context, tx *sql.Tx) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	a.broadcastChange()
+	a.notifyChange()
 	return nil
 }
 
@@ -39,6 +40,15 @@ func (a *app) metadata(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"revision": revision, "epoch": epoch, "unchanged": revision == since}
 	if revision != since {
+		if cached, ok := a.cachedMetadata(epoch, revision); ok {
+			out["devices"], out["sims"], out["contacts"] = cached.devices, cached.sims, cached.contacts
+			if tx.Commit() != nil {
+				fail(w, 503, "database_unavailable")
+				return
+			}
+			writeJSON(w, 200, out)
+			return
+		}
 		devices := []Device{}
 		rows, e := tx.QueryContext(r.Context(), "SELECT id,name,kind,admin,upload,notify,revoked,created_at FROM devices ORDER BY created_at")
 		if e != nil {
@@ -97,6 +107,7 @@ func (a *app) metadata(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["devices"], out["sims"], out["contacts"] = devices, sims, contacts
+		a.storeMetadata(metadataSnapshot{epoch: epoch, revision: revision, devices: devices, sims: sims, contacts: contacts, valid: true})
 	}
 	if tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
@@ -143,27 +154,37 @@ type unreadSnapshot struct {
 	valid                                   bool
 }
 
-// Callers supply a repeatable-read transaction. Cache keys are durable state,
-// not wall-clock TTLs, so revocation and restored IDs cannot hit stale counts.
-func (a *app) snapshotUnread(ctx context.Context, tx *sql.Tx, epoch, head int64) (int64, int64, error) {
-	var watermark, revision int64
-	if err := tx.QueryRowContext(ctx, "SELECT global_watermark_id,updated_at FROM read_state WHERE id=1").Scan(&watermark, &revision); err != nil {
-		return 0, 0, err
-	}
+// Callers supply a repeatable-read transaction and the already-read watermark/revision.
+// Cache keys are durable state, not wall-clock TTLs, so revocation and restored IDs cannot
+// hit stale counts. The mutex is never held across the COUNT query: at high RTT that would
+// serialize every /me request behind one database round trip.
+func (a *app) snapshotUnread(ctx context.Context, tx *sql.Tx, epoch, head, watermark, revision int64) (int64, error) {
 	a.unreadMu.Lock()
-	defer a.unreadMu.Unlock()
 	c := a.unreadSnapshot
+	a.unreadMu.Unlock()
 	if c.valid && c.epoch == epoch && c.head == head && c.watermark == watermark && c.revision == revision {
-		return watermark, c.count, nil
+		return c.count, nil
+	}
+	if a.redis != nil {
+		key := a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
+		if count, ok := a.redis.getInt(ctx, key); ok {
+			return count, nil
+		}
 	}
 	var count int64
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender=m.sender
 WHERE m.historical=FALSE AND m.direction='in' AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`, watermark).Scan(&count)
 	if err == nil {
+		a.unreadMu.Lock()
 		a.unreadSnapshot = unreadSnapshot{epoch, head, watermark, revision, count, true}
+		a.unreadMu.Unlock()
+		if a.redis != nil {
+			key := a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
+			a.redis.setInt(ctx, key, count, 30*time.Second)
+		}
 	}
-	return watermark, count, err
+	return count, err
 }
 
 // Safe aggregate only: never expose a request path, query, identity or payload.

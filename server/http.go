@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"mime"
 	"net"
@@ -27,11 +28,28 @@ func init() {
 func (a *app) routes(web string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if a.db.PingContext(r.Context()) != nil {
-			fail(w, 503, "database_unavailable")
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		started := time.Now()
+		pingErr := a.db.PingContext(pingCtx)
+		stats := a.db.Stats()
+		database := map[string]any{
+			"ok":         pingErr == nil,
+			"latency_ms": float64(time.Since(started).Microseconds()) / 1000,
+			"open":       stats.OpenConnections,
+			"in_use":     stats.InUse,
+			"idle":       stats.Idle,
+			"max_open":   stats.MaxOpenConnections,
+			"wait_count": stats.WaitCount,
+			"wait_ms":    stats.WaitDuration.Milliseconds(),
+		}
+		push := map[string]any{"enabled": a.vapidPublic != "" && a.vapidPrivate != "", "claim_failures": a.pushClaimFailures.Load(), "state_failures": a.pushStateFailures.Load(), "delivery_failures": a.pushDeliveryFailures.Load(), "suppressed_read": a.pushSuppressed.Load(), "dropped": a.pushDropped.Load(), "last_success": a.pushLastSuccess.Load()}
+		redis := map[string]any{"enabled": a.redis != nil}
+		if pingErr != nil {
+			writeJSON(w, 503, map[string]any{"status": "unavailable", "error": "database_unavailable", "database": database, "push": push, "redis": redis})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"status": "ok", "push": map[string]any{"enabled": a.vapidPublic != "" && a.vapidPrivate != "", "claim_failures": a.pushClaimFailures.Load(), "state_failures": a.pushStateFailures.Load(), "delivery_failures": a.pushDeliveryFailures.Load(), "suppressed_read": a.pushSuppressed.Load(), "dropped": a.pushDropped.Load(), "last_success": a.pushLastSuccess.Load()}})
+		writeJSON(w, 200, map[string]any{"status": "ok", "database": database, "push": push, "redis": redis})
 	})
 	mux.HandleFunc("POST /api/login", a.loginHandler)
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -178,25 +196,27 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var seq, epoch, metadataRevision, callSeq int64
+	// One consistent snapshot read covers every singleton clock and status row. The AI secret
+	// is intentionally not selected here: /me only needs enabled/paused/revision.
+	var seq, epoch, metadataRevision, callSeq, watermark, readRevision, analysisRevision int64
 	var title string
-	e := tx.QueryRowContext(r.Context(), "SELECT sync_clock.seq,epoch,title,revision,call_clock.seq FROM sync_clock JOIN settings ON settings.id=sync_clock.id JOIN metadata_clock ON metadata_clock.id=sync_clock.id JOIN call_clock ON call_clock.id=sync_clock.id WHERE sync_clock.id=1").Scan(&seq, &epoch, &title, &metadataRevision, &callSeq)
+	var aiEnabled, aiPaused, pushSubscribed bool
+	e := tx.QueryRowContext(r.Context(), `SELECT c.seq,c.epoch,s.title,m.revision,k.seq,
+r.global_watermark_id,r.updated_at,ai.enabled,ai.paused,ai.revision,
+EXISTS(SELECT 1 FROM push_subscriptions p WHERE p.device_id=?)
+FROM sync_clock c
+JOIN settings s ON s.id=c.id
+JOIN metadata_clock m ON m.id=c.id
+JOIN call_clock k ON k.id=c.id
+JOIN read_state r ON r.id=c.id
+JOIN ai_settings ai ON ai.id=c.id
+WHERE c.id=1`, device(r).ID).Scan(&seq, &epoch, &title, &metadataRevision, &callSeq, &watermark, &readRevision, &aiEnabled, &aiPaused, &analysisRevision, &pushSubscribed)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	s, err := loadAI(r.Context(), tx, false)
+	unread, err := a.snapshotUnread(r.Context(), tx, epoch, seq, watermark, readRevision)
 	if err != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	watermark, unread, err := a.snapshotUnread(r.Context(), tx, epoch, seq)
-	if err != nil {
-		fail(w, 503, "database_unavailable")
-		return
-	}
-	var pushSubscribed bool
-	if err = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM push_subscriptions WHERE device_id=?)", device(r).ID).Scan(&pushSubscribed); err != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
@@ -205,7 +225,7 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverTiming(w, started)
-	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "push_subscribed": pushSubscribed, "version": buildVersion, "ai_enabled": s.Enabled, "ai_paused": s.Paused, "analysis_revision": s.Revision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "call_cursor": callSeq, "features": hubFeatures})
+	writeJSON(w, 200, map[string]any{"device": device(r), "cursor": seq, "epoch": epoch, "title": title, "vapid_public_key": a.vapidPublic, "push_subscribed": pushSubscribed, "version": buildVersion, "ai_enabled": aiEnabled, "ai_paused": aiPaused, "analysis_revision": analysisRevision, "metadata_revision": metadataRevision, "global_watermark_id": watermark, "unread_count": unread, "call_cursor": callSeq, "features": hubFeatures})
 }
 func timeDurationMS(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 2, 64)
@@ -383,13 +403,47 @@ func (a *app) contact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer tx.Rollback()
+		deletes := make([]string, 0, len(in.Contacts))
+		upserts := make([]struct{ phone, name string }, 0, len(in.Contacts))
 		for _, c := range in.Contacts {
 			if c.Name == "" {
-				_, e = tx.ExecContext(r.Context(), "DELETE FROM contacts WHERE phone=?", c.Phone)
+				deletes = append(deletes, c.Phone)
 			} else {
-				_, e = tx.ExecContext(r.Context(), "INSERT INTO contacts VALUES (?,?) ON DUPLICATE KEY UPDATE name=?", c.Phone, c.Name, c.Name)
+				upserts = append(upserts, struct{ phone, name string }{c.Phone, c.Name})
 			}
-			if e != nil {
+		}
+		for start := 0; start < len(deletes); start += 500 {
+			end := start + 500
+			if end > len(deletes) {
+				end = len(deletes)
+			}
+			args := make([]any, 0, end-start)
+			for _, phone := range deletes[start:end] {
+				args = append(args, phone)
+			}
+			query := "DELETE FROM contacts WHERE phone IN (?" + strings.Repeat(",?", end-start-1) + ")"
+			if _, e = tx.ExecContext(r.Context(), query, args...); e != nil {
+				fail(w, 503, "database_unavailable")
+				return
+			}
+		}
+		for start := 0; start < len(upserts); start += 500 {
+			end := start + 500
+			if end > len(upserts) {
+				end = len(upserts)
+			}
+			var query strings.Builder
+			query.WriteString("INSERT INTO contacts (phone,name) VALUES ")
+			args := make([]any, 0, (end-start)*2)
+			for index, contact := range upserts[start:end] {
+				if index > 0 {
+					query.WriteByte(',')
+				}
+				query.WriteString("(?,?)")
+				args = append(args, contact.phone, contact.name)
+			}
+			query.WriteString(" ON DUPLICATE KEY UPDATE name=VALUES(name)")
+			if _, e = tx.ExecContext(r.Context(), query.String(), args...); e != nil {
 				fail(w, 503, "database_unavailable")
 				return
 			}

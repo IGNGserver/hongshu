@@ -129,13 +129,23 @@ func (a *app) validGroup(w http.ResponseWriter, r *http.Request) bool {
 // Revision allocation and the metadata write share the settings-row transaction lock.
 // Unlike AUTO_INCREMENT, readers cannot pass an uncommitted revision.
 func analysisRevision(ctx context.Context, tx *sql.Tx) (int64, error) {
-	var v int64
-	if e := tx.QueryRowContext(ctx, "SELECT revision FROM ai_settings WHERE id=1 FOR UPDATE").Scan(&v); e != nil {
+	return allocateAnalysisRevisions(ctx, tx, 1)
+}
+
+// A whole upload batch reserves a contiguous revision block once. This keeps the revision
+// feed gap-safe while avoiding one ai_settings lock acquisition per SMS.
+func allocateAnalysisRevisions(ctx context.Context, tx *sql.Tx, count int) (int64, error) {
+	if count <= 0 {
+		return 0, nil
+	}
+	var current int64
+	if e := tx.QueryRowContext(ctx, "SELECT revision FROM ai_settings WHERE id=1 FOR UPDATE").Scan(&current); e != nil {
 		return 0, e
 	}
-	v++
-	_, e := tx.ExecContext(ctx, "UPDATE ai_settings SET revision=? WHERE id=1", v)
-	return v, e
+	if _, e := tx.ExecContext(ctx, "UPDATE ai_settings SET revision=revision+? WHERE id=1", count); e != nil {
+		return 0, e
+	}
+	return current + 1, nil
 }
 
 // A sent message is never a code this user is waiting for, and classifying the user's own
@@ -370,7 +380,8 @@ func (a *app) saveAISettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	a.broadcastChange()
+	a.invalidateAIStatus()
+	a.notifyChange()
 	writeJSON(w, 200, map[string]any{"ok": true, "revision": rev})
 }
 
@@ -536,7 +547,7 @@ func (a *app) changeCategory(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	a.broadcastChange()
+	a.notifyChange()
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -597,11 +608,15 @@ func (a *app) retryAnalysis(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	a.broadcastChange()
+	a.invalidateAIStatus()
+	a.notifyChange()
 	writeJSON(w, 200, map[string]any{"retried": len(ids)})
 }
 
 func (a *app) backfillAnalysis(ctx context.Context) error {
+	if a.backfillDone.Load() {
+		return nil
+	}
 	tx, e := a.db.BeginTx(ctx, nil)
 	if e != nil {
 		return e
@@ -640,17 +655,19 @@ func (a *app) backfillAnalysis(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
+	missing := make([]messageInsert, 0, len(items))
 	for _, m := range items {
 		if !m.exists.Valid {
-			if e = insertAnalysis(ctx, tx, m.id, m.body, m.ts, m.dir == directionOut); e != nil {
-				return e
-			}
+			missing = append(missing, messageInsert{msg: Incoming{Body: m.body, Timestamp: m.ts, Direction: m.dir}, id: m.id})
 		}
 		if before > 0 {
 			bound = m.id
 		} else {
 			cursor = m.id
 		}
+	}
+	if e = insertAnalysisBatch(ctx, tx, missing); e != nil {
+		return e
 	}
 	if before > 0 {
 		before = bound
@@ -662,7 +679,10 @@ func (a *app) backfillAnalysis(ctx context.Context) error {
 		return e
 	}
 	if e = tx.Commit(); e == nil && len(items) > 0 {
-		a.broadcastChange()
+		a.notifyChange()
+	}
+	if e == nil && len(items) == 0 && before == 0 {
+		a.backfillDone.Store(true)
 	}
 	return e
 }
@@ -783,7 +803,7 @@ func (a *app) claimAnalysisCandidate(ctx context.Context, c *analysisCandidate) 
 	if e = tx.Commit(); e != nil {
 		return nil, e
 	}
-	a.broadcastChange()
+	a.notifyChange()
 	if attempts >= 3 {
 		return nil, nil
 	}
@@ -1204,46 +1224,87 @@ func (a *app) finishAnalysis(ctx context.Context, j *analysisJob, category, otp,
 		}
 	}
 	if e = tx.Commit(); e == nil {
-		a.broadcastChange()
+		a.invalidateAIStatus()
+		a.notifyChange()
 	}
 	return e
 }
 
 func (a *app) analysisBackfillLoop(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = a.backfillAnalysis(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		if !a.analysisLeader(ctx) {
+			if !waitFor(ctx, a.backfillWake, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		if a.backfillDone.Load() {
+			if !waitFor(ctx, a.backfillWake, 30*time.Second) {
+				return
+			}
+			continue
+		}
+		if err := a.backfillAnalysis(ctx); err != nil {
+			if !waitFor(ctx, a.backfillWake, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		if a.backfillDone.Load() {
+			if !waitFor(ctx, a.backfillWake, 30*time.Second) {
+				return
+			}
 		}
 	}
 }
 
 func (a *app) analysisLoop(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if j, e := a.claimAnalysis(ctx); e == nil && j != nil {
-			category, otp, code, pause := classifySMS(ctx, j.Settings, j.Body, j.OTP)
-			if ctx.Err() != nil {
+		if !a.analysisLeader(ctx) {
+			if !waitFor(ctx, a.analysisWake, 5*time.Second) {
 				return
-			} // leave durable lease for restart
-			_ = a.finishAnalysis(ctx, j, category, otp, code, pause)
+			}
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		status, err := a.cachedAIStatus(ctx)
+		if err != nil {
+			if !waitFor(ctx, a.analysisWake, 5*time.Second) {
+				return
+			}
+			continue
 		}
+		if !status.enabled || status.paused {
+			if !waitFor(ctx, a.analysisWake, 30*time.Second) {
+				return
+			}
+			continue
+		}
+		j, err := a.claimAnalysis(ctx)
+		if err != nil {
+			if !waitFor(ctx, a.analysisWake, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		if j == nil {
+			// The settings row enforces the per-minute rate; poll on that cadence while AI
+			// is enabled instead of sleeping through several queued jobs.
+			if !waitFor(ctx, a.analysisWake, time.Second) {
+				return
+			}
+			continue
+		}
+		category, otp, code, pause := classifySMS(ctx, j.Settings, j.Body, j.OTP)
+		if ctx.Err() != nil {
+			return // leave the durable lease for restart
+		}
+		_ = a.finishAnalysis(ctx, j, category, otp, code, pause)
 	}
 }
 

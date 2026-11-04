@@ -1015,3 +1015,42 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 | WebKit：同一脚本，`PWA_BROWSER=webkit` | 通过同一布局/安装/升级用例；因Playwright WebKit `context.setOffline`已知限制，改为fixture服务拒绝socket，并确认无Worker对照页加载失败。此项证明服务不可达时壳恢复，不冒充物理断网 |
 
 浏览器脚本只使用内存中的合成API与消息，不连接真实中枢或真实短信。截图人工检查了600px双栏布局。iOS 27主屏幕安装图标、安卓Edge系统安装、真实软键盘与安全区，以及存量安装的升级仍需目标设备验收；桌面WebKit不能替代系统安装器。完整MySQL/Android验证由已有CI承担，本轮未触发CI或报告其通过。
+
+# 2026-11-04 数据库 URL、高延迟访问与可选 Redis
+
+本轮完成外部/共享 MySQL URL、迁移账号/check 模式、批处理上传/通话、单行状态合并、WebSocket
+共享状态轮询、AI/Push 空闲唤醒、元数据缓存、连接池/健康检查统计、迁移 014 索引和可选 Redis
+缓存/跨实例广播。文档入口：[数据库与缓存部署](DATABASE.md)。
+
+## 实际执行
+
+| 验证 | 结果 |
+| --- | --- |
+| `cd server && go test -race -count=1 ./...` | 通过；本地 Go 1.26.4，`TEST_MYSQL_DSN=root@tcp(127.0.0.1:33306)/?timeout=5s`，`MYSQL_BIN`/`MYSQLDUMP_BIN` 指向本地 MySQL 8.4.5，约 53s，无跳过（含真实逻辑备份/恢复） |
+| `cd server && go vet ./... && go build -trimpath` | 通过 |
+| `hongshu migrate`（新 schema，连续执行两次） | 通过；`schema_migrations` 14 条，第二次为空操作；`014_database_latency` 已应用 |
+| 外部 URL + `HONGSHU_MIGRATE=check` 启动 | 通过；`/healthz` 返回 `database.ok=true`、连接池统计与 `redis.enabled=false` |
+| 迁移/URL 集成测试 | 通过：空 schema 的 `check` 被拒绝、`auto` 可迁移、迁移后 `check` 通过、未来迁移被拒绝、错误 collation 被拒绝 |
+| 上传查询预算测试 | 通过：100 条短信 + Push job 的批处理断言不超过 40 条语句（旧逐条实现约为 700–800 条） |
+| Redis 单测（miniredis） | 通过：get/set、选主租约过期、Pub/Sub 唤醒本地状态；无效 URL 不泄露凭据 |
+| `cd web && npm test` | 通过，110 项 |
+| `cd web && npm run check && WEB_BUILD_DIR=... npm run build` | 通过 |
+| `PATH=... bash scripts/verify-repository.sh` | 通过；`scripts/test-operations.py` 13 项通过 |
+| `git diff --check` | 通过 |
+| `compose.yml` / `compose.external.yml` YAML 解析 | 通过（Python/PyYAML，仅语法） |
+
+## 派生未读计数表
+
+本地 MySQL 8.4.5 用 10 万条未读短信做了单次 `EXPLAIN ANALYZE`：优化器选择主键/会话索引范围，
+1000 条未读的聚合约 49ms（本机、无并发）。这不足以证明需要在写路径增加 `conversation_unread`
+派生表；本轮只增加迁移 014 索引、进程内/Redis 版本化缓存和批处理，未引入计数表。真实大历史、
+高 RTT 和并发写入下若仍出现慢查询，再按实测迁移。
+
+## 未执行 / 边界
+
+- 本机没有 Docker daemon，未实际执行 `docker compose -f compose.external.yml up -d`、镜像构建或
+  Compose 变量插值/健康检查；部署前需在目标 Docker Compose v2 环境复验。
+- 未测试真实跨公网/VPN 的 RTT、TLS 私有 CA、MySQL 代理/共享实例压力和 Redis 服务端故障恢复；
+  本轮用本地 MySQL 和 miniredis 覆盖逻辑，不把合成结果当作生产延迟验收。
+- 未执行 Android Gradle 测试/lint/APK 构建（本机无 Android SDK/设备）；中枢 API 响应字段保持兼容。
+- 未做浏览器 smoke、真实 Web Push、真实短信和设备撤销验收。
