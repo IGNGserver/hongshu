@@ -106,7 +106,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON hongshu.* TO 'hongshu'@'10.0.0.%';
 HONGSHU_DATABASE_URL='mysql://hongshu_migrate:...@mysql.example:3306/hongshu?...' \
   docker run --rm --env HONGSHU_DATABASE_URL \
   -v "$PWD/db/migrations:/app/migrations:ro" \
-  ghcr.io/igngserver/hongshu:0.2.0-alpha.19 migrate
+  ghcr.io/igngserver/hongshu:0.2.0-alpha.23 migrate
 
 # 运行时账号 + check 模式
 HONGSHU_MIGRATE=check docker compose -f compose.external.yml up -d
@@ -120,7 +120,7 @@ HONGSHU_MIGRATE=check docker compose -f compose.external.yml up -d
 ### 内置 MySQL（默认）
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.19 bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.23 bash scripts/init-deployment.sh
 docker compose up -d
 ```
 
@@ -129,7 +129,7 @@ docker compose up -d
 ### 外部/共享 MySQL
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.19 \
+HONGSHU_VERSION=0.2.0-alpha.23 \
 HONGSHU_DB_MODE=external \
 HONGSHU_DATABASE_URL='mysql://hongshu:...@mysql.example:3306/hongshu?tls=true' \
 HONGSHU_PASSWORD='...' \

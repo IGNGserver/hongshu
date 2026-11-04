@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-required_files=(AGENTS.md README.md CONTRIBUTING.md SECURITY.md LICENSE VERSION .gitignore .gitattributes .editorconfig)
+required_files=(AGENTS.md README.md CONTRIBUTING.md SECURITY.md LICENSE VERSION .gitignore .gitattributes .editorconfig compose.external.yml docs/DATABASE.md)
 for file in "${required_files[@]}"; do
   test -f "$file" || { echo "missing required file: $file" >&2; exit 1; }
 done

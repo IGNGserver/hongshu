@@ -5,7 +5,7 @@
 版本及 Release 状态以根目录 `VERSION` 和 GitHub Release 页面为准；alpha/beta/rc 均为预发布版本，不是稳定版。
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.19 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.23 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 docker compose ps
@@ -20,7 +20,7 @@ docker compose ps
 默认 Compose 仍启动内置 MySQL。若已有共享 MySQL，可只启动 hub：
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.19 \
+HONGSHU_VERSION=0.2.0-alpha.23 \
 HONGSHU_DB_MODE=external \
 HONGSHU_DATABASE_URL='mysql://hongshu:change-me@mysql.example:3306/hongshu?tls=true' \
 HONGSHU_PASSWORD='...' \
@@ -47,7 +47,7 @@ DDL 账号执行一次 `hongshu migrate`，运行时账号只保留 DML 权限�
 仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
 
 ```bash
-HONGSHU_VERSION=0.2.0-alpha.19 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
+HONGSHU_VERSION=0.2.0-alpha.23 PUBLIC_URL=http://sms.example.com:18473 BIND_ADDRESS=0.0.0.0 PORT=18473 bash scripts/init-deployment.sh
 docker compose up -d
 curl --fail http://127.0.0.1:18473/healthz
 ```
@@ -176,7 +176,7 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 
 升级步骤：
 1. 停机前做好数据备份；
-2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.19`），不自动选择 latest；
+2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.23`），不自动选择 latest；
 3. 若使用外部/共享库且运行时账号无 DDL 权限，先用迁移账号执行 `hongshu migrate`，并保持
    `HONGSHU_MIGRATE=check`；不要用旧 hub 连接已经升级的 schema。
 4. 拉取新镜像并重启 hub 服务：
