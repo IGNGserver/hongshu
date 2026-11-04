@@ -95,6 +95,7 @@ func signalWork(ch chan struct{}) {
 
 func (a *app) wakeWork() {
 	signalWork(a.analysisWake)
+	signalWork(a.backfillWake)
 }
 
 // notifyChange is the post-commit path: local subscribers, one state refresh, local worker

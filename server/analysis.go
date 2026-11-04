@@ -1236,25 +1236,25 @@ func (a *app) analysisBackfillLoop(ctx context.Context) {
 			return
 		}
 		if !a.analysisLeader(ctx) {
-			if !waitFor(ctx, a.analysisWake, 5*time.Second) {
+			if !waitFor(ctx, a.backfillWake, 5*time.Second) {
 				return
 			}
 			continue
 		}
 		if a.backfillDone.Load() {
-			if !waitFor(ctx, a.analysisWake, 30*time.Second) {
+			if !waitFor(ctx, a.backfillWake, 30*time.Second) {
 				return
 			}
 			continue
 		}
 		if err := a.backfillAnalysis(ctx); err != nil {
-			if !waitFor(ctx, a.analysisWake, 2*time.Second) {
+			if !waitFor(ctx, a.backfillWake, 2*time.Second) {
 				return
 			}
 			continue
 		}
 		if a.backfillDone.Load() {
-			if !waitFor(ctx, a.analysisWake, 30*time.Second) {
+			if !waitFor(ctx, a.backfillWake, 30*time.Second) {
 				return
 			}
 		}
@@ -1293,7 +1293,9 @@ func (a *app) analysisLoop(ctx context.Context) {
 			continue
 		}
 		if j == nil {
-			if !waitFor(ctx, a.analysisWake, 10*time.Second) {
+			// The settings row enforces the per-minute rate; poll on that cadence while AI
+			// is enabled instead of sleeping through several queued jobs.
+			if !waitFor(ctx, a.analysisWake, time.Second) {
 				return
 			}
 			continue
