@@ -4,7 +4,7 @@ umask 077
 mkdir -p /backups
 while true; do
   file="/backups/hongshu-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
-  if mysqldump --host="${MYSQL_HOST:-db}" --user=hongshu --single-transaction --quick --no-tablespaces --set-gtid-purged=OFF --hex-blob hongshu | gzip > "$file.partial"; then
+  if mysqldump --host="${MYSQL_HOST:-db}" --port="${MYSQL_PORT:-3306}" --user="${MYSQL_USER:-hongshu}" --single-transaction --quick --no-tablespaces --set-gtid-purged=OFF --hex-blob "${MYSQL_DATABASE:-hongshu}" | gzip > "$file.partial"; then
     gzip -t "$file.partial"
     mv "$file.partial" "$file"
     echo 'consistent database backup completed'

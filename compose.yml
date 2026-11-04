@@ -8,7 +8,20 @@ services:
     cap_drop: [ALL]
     ports: ["${BIND_ADDRESS:-127.0.0.1}:${PORT:-18473}:8080"]
     environment:
-      MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?charset=utf8mb4&timeout=5s&readTimeout=30s&writeTimeout=30s"
+      MYSQL_DSN: "hongshu:${MYSQL_PASSWORD:?run scripts/init-deployment.sh}@tcp(db:3306)/hongshu?timeout=5s&readTimeout=30s&writeTimeout=30s"
+      # Set HONGSHU_DATABASE_URL to use an external/shared MySQL; it takes precedence.
+      HONGSHU_DATABASE_URL: ${HONGSHU_DATABASE_URL:-}
+      HONGSHU_DB_MAX_OPEN: ${HONGSHU_DB_MAX_OPEN:-}
+      HONGSHU_DB_MAX_IDLE: ${HONGSHU_DB_MAX_IDLE:-}
+      HONGSHU_DB_CONN_MAX_LIFETIME: ${HONGSHU_DB_CONN_MAX_LIFETIME:-}
+      HONGSHU_DB_CONN_MAX_IDLE_TIME: ${HONGSHU_DB_CONN_MAX_IDLE_TIME:-}
+      HONGSHU_DB_STARTUP_TIMEOUT: ${HONGSHU_DB_STARTUP_TIMEOUT:-}
+      HONGSHU_DB_TLS_CA: ${HONGSHU_DB_TLS_CA:-}
+      HONGSHU_DB_TLS_SERVER_NAME: ${HONGSHU_DB_TLS_SERVER_NAME:-}
+      HONGSHU_MIGRATE: ${HONGSHU_MIGRATE:-auto}
+      HONGSHU_MIGRATION_LOCK_TIMEOUT: ${HONGSHU_MIGRATION_LOCK_TIMEOUT:-}
+      HONGSHU_REDIS_URL: ${HONGSHU_REDIS_URL:-}
+      HONGSHU_REDIS_PREFIX: ${HONGSHU_REDIS_PREFIX:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:18473}
       HONGSHU_PASSWORD: ${HONGSHU_PASSWORD:?set HONGSHU_PASSWORD}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
@@ -48,14 +61,17 @@ services:
     restart: unless-stopped
     entrypoint: ["/bin/bash", "/backup.sh"]
     environment:
-      MYSQL_HOST: db
+      MYSQL_HOST: ${MYSQL_HOST:-db}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-hongshu}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-hongshu}
       MYSQL_PWD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
       BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
     volumes: ["./scripts/backup.sh:/backup.sh:ro", "./runtime-data/backups:/backups"]
     depends_on:
       db: {condition: service_healthy}
       hub: {condition: service_healthy}
-    networks: [internal]
+    networks: [internal, egress]
     logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
 volumes:
   mysql-data:

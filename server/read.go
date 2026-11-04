@@ -79,7 +79,7 @@ func (a *app) markRead(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		a.broadcastChange()
+		a.notifyChange()
 		writeJSON(w, 200, map[string]any{"ok": true, "global_watermark_id": max(watermark, seq), "unread_count": 0})
 		return
 	}
@@ -125,7 +125,7 @@ VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE last_read_message_id=GREATEST(last_read
 	}
 
 	if targetMessageID > 0 {
-		a.broadcastChange()
+		a.notifyChange()
 	}
 	watermark, unread, err := a.getUnreadState(r)
 	if err != nil {
@@ -140,23 +140,19 @@ func (a *app) attachUnreadCounts(r *http.Request, ms []Message) ([]ConversationI
 		return []ConversationItem{}, nil
 	}
 
-	var watermark int64
-	err := a.db.QueryRowContext(r.Context(), "SELECT COALESCE(global_watermark_id,0) FROM read_state WHERE id=1").Scan(&watermark)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, err
-	}
-
-	args := []any{watermark}
+	args := make([]any, 0, len(ms))
 	for _, m := range ms {
 		args = append(args, m.Sender)
 	}
+	// Fold the singleton watermark into the aggregate so a conversation page needs one
+	// query after the page query, not two.
 	rows, err := a.db.QueryContext(r.Context(), `
 SELECT m.sender, COUNT(*)
 FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender = m.sender
 WHERE m.historical = FALSE
   AND m.direction = 'in'
-  AND m.id > ?
+  AND m.id > COALESCE((SELECT global_watermark_id FROM read_state WHERE id=1), 0)
   AND m.id > COALESCE(cr.last_read_message_id, 0)
   AND m.sender IN (?`+strings.Repeat(",?", len(ms)-1)+`)
 GROUP BY m.sender

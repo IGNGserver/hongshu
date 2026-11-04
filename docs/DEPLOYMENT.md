@@ -15,6 +15,33 @@ docker compose ps
 
 已有部署升级时，在现有 `.env` 中添加 `HONGSHU_PASSWORD`，再重建 hub：`docker compose up -d --force-recreate hub`。原有短信、Android token 和设备记录不变；已登录浏览器的会话不会因更改配置密码而自动撤销，需要在设备页单独撤销旧 Web 会话。
 
+## 外部/共享 MySQL
+
+默认 Compose 仍启动内置 MySQL。若已有共享 MySQL，可只启动 hub：
+
+```bash
+HONGSHU_VERSION=0.2.0-alpha.19 \
+HONGSHU_DB_MODE=external \
+HONGSHU_DATABASE_URL='mysql://hongshu:change-me@mysql.example:3306/hongshu?tls=true' \
+HONGSHU_PASSWORD='...' \
+bash scripts/init-deployment.sh
+docker compose -f compose.external.yml up -d
+```
+
+数据库必须先以 `utf8mb4` / `utf8mb4_bin` 创建，并给 hub 一个独立 schema。共享 MySQL 建议用
+DDL 账号执行一次 `hongshu migrate`，运行时账号只保留 DML 权限并设置 `HONGSHU_MIGRATE=check`。
+完整 URL 参数、授权、TLS、连接池、备份和故障排查见 [数据库与缓存部署](DATABASE.md)。
+
+外部模式的 `backup` 不随 `compose.external.yml` 启动；请使用托管快照或独立 `mysqldump` 任务。
+内置 `scripts/backup.sh` 已支持 `MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_DATABASE` 覆盖。
+
+## 可选 Redis
+
+单 hub 不需要 Redis。多中枢副本共享同一 schema、或希望共享未读缓存/跨实例变更提示时，设置
+`HONGSHU_REDIS_URL`（以及共用一个 Redis 时的 `HONGSHU_REDIS_PREFIX`）。Redis 故障只会回退到
+进程内缓存和数据库轮询，不会阻塞短信写入；短信正文、号码、联系人和 token 不会写入 Redis。
+细节见 [数据库与缓存部署](DATABASE.md#可选-redis)。
+
 ## 外部 HTTP（明文）
 
 仅在你接受明文传输风险时启用。示例将端口发布到所有宿主网卡；仍需自行配置路由器端口转发与防火墙：
@@ -150,12 +177,14 @@ Android 和已打开的 Web 下次同步会丢掉已同步缓存并从 0 重拉�
 升级步骤：
 1. 停机前做好数据备份；
 2. 在 `.env` 中指定目标已发布版本号（例如 `HONGSHU_VERSION=0.2.0-alpha.19`），不自动选择 latest；
-3. 拉取新镜像并重启 hub 服务：
+3. 若使用外部/共享库且运行时账号无 DDL 权限，先用迁移账号执行 `hongshu migrate`，并保持
+   `HONGSHU_MIGRATE=check`；不要用旧 hub 连接已经升级的 schema。
+4. 拉取新镜像并重启 hub 服务：
    ```bash
    docker compose pull hub
    docker compose up -d hub
    ```
-4. 检查 healthz、schema_migrations 和客户端同步状态。
+5. 检查 healthz、schema_migrations 和客户端同步状态。
 
 迁移以 checksum + dirty 标记审计，部分 DDL 失败会阻止启动，不能直接清除 dirty 继续。
 已有部署会依次应用新增迁移。`002` 给推送任务加租约，`003` 给同步时钟加 epoch，默认都是兼容值。
@@ -195,7 +224,7 @@ docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u hongshu ho
 
 ## 本地开发
 
-Go 1.24+；`MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。直接运行 Go 服务时默认监听 8080；Docker Compose 的宿主默认端口为 18473。
+Go 1.24+；`HONGSHU_DATABASE_URL`（推荐）或 `MYSQL_DSN`、非空 `HONGSHU_PASSWORD`、可选 VAPID，`PUBLIC_URL=http://localhost:8080`。直接运行 Go 服务时默认监听 8080；Docker Compose 的宿主默认端口为 18473。外部库和 Redis 的可选配置见 [数据库与缓存部署](DATABASE.md)。
 从 server 执行 `go run .`；支持 HTTP 的本地 Web 与 Android 联调。
 `WEB_DIR` 默认 ../web，`MIGRATIONS_DIR` 默认 ../db/migrations。
 生产镜像使用非 root / 只读根文件系统。数据库和备份未做端到端加密，请启用宿主磁盘与备份加密。

@@ -37,6 +37,8 @@ curl --fail http://127.0.0.1:18473/healthz
 ```
 
 完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 与 Web 均直接使用统一中枢密码连接。
+已有共享 MySQL 时可用 `compose.external.yml` 只启动 hub，并设置 `HONGSHU_DATABASE_URL`；连接池、
+迁移账号、TLS、备份和可选 Redis 见[数据库与缓存部署](docs/DATABASE.md)。
 Android 构建/使用：[android/README.md](android/README.md)。GitHub Release 发布经过正式签名（非 debug）的 Android 安装包（`Hongshu-Android-<version>.apk`）和无源码部署文件包；中枢服务使用 GHCR 镜像，不提供独立 Linux 二进制资产。
 
 ## 结构与协议

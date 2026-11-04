@@ -44,6 +44,24 @@ type app struct {
 	wsCheckInterval time.Duration
 	unreadMu        sync.Mutex
 	unreadSnapshot  unreadSnapshot
+	metadataMu      sync.Mutex
+	metadataCache   metadataSnapshot
+	aiMu            sync.Mutex
+	aiStatusCache   aiStatusSnapshot
+
+	instanceID        string
+	pushWake          chan struct{}
+	analysisWake      chan struct{}
+	stateRefresh      chan struct{}
+	stateMu           sync.RWMutex
+	state             hubState
+	stateValid        bool
+	stateOnce         sync.Once
+	statePollInterval time.Duration
+	redis             *redisCache
+	redisEvents       chan struct{}
+	backfillDone      atomic.Bool
+	pushMore          atomic.Bool
 }
 type attempt struct {
 	count int
@@ -87,7 +105,7 @@ func newApp(db *sql.DB, origin, password, pub, priv string) (*app, error) {
 	if _, e = rand.Read(salt); e != nil {
 		return nil, errors.New("password verifier initialization failed")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2)}, nil
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2), instanceID: random(8), pushWake: make(chan struct{}, 1), analysisWake: make(chan struct{}, 1), stateRefresh: make(chan struct{}, 1), statePollInterval: time.Second, redisEvents: make(chan struct{}, 16)}, nil
 }
 func (a *app) passwordMatches(password string) bool {
 	if len(password) == 0 || len(password) > 1024 {

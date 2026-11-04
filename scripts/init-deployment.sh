@@ -6,6 +6,16 @@ test ! -e .env || { echo '.env already exists; refusing to replace credentials' 
 [[ "$HONGSHU_VERSION" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]] || { echo 'HONGSHU_VERSION must be a fixed published SemVer, not latest' >&2; exit 1; }
 : "${PUBLIC_URL:=http://127.0.0.1:${PORT:-18473}}"
 [[ "$PUBLIC_URL" =~ ^https?://[^/]+$ && "$PUBLIC_URL" != *'?'* && "$PUBLIC_URL" != *'#'* && "$PUBLIC_URL" != *@* ]] || { echo 'PUBLIC_URL must be an HTTP(S) origin without credentials, path, query or fragment' >&2; exit 1; }
+DB_MODE=${HONGSHU_DB_MODE:-bundled}
+case "$DB_MODE" in
+  bundled) ;;
+  external)
+    : "${HONGSHU_DATABASE_URL:?set HONGSHU_DATABASE_URL for HONGSHU_DB_MODE=external}"
+    [[ "$HONGSHU_DATABASE_URL" == mysql://* ]] || { echo 'HONGSHU_DATABASE_URL must use mysql://' >&2; exit 1; }
+    [[ "$HONGSHU_DATABASE_URL" != *$'\n'* ]] || { echo 'HONGSHU_DATABASE_URL must be one line' >&2; exit 1; }
+    ;;
+  *) echo 'HONGSHU_DB_MODE must be bundled or external' >&2; exit 1 ;;
+esac
 if [[ -z "${HONGSHU_PASSWORD+x}" ]]; then
   [[ -r /dev/tty ]] || { echo 'Set HONGSHU_PASSWORD or run this script interactively to enter it' >&2; exit 1; }
   read -r -s -p 'Choose the single-user hub password (weak passwords are allowed): ' HONGSHU_PASSWORD </dev/tty
@@ -27,17 +37,34 @@ quote_compose_single() {
 {
   printf 'PUBLIC_URL=%s\nPORT=%s\nBIND_ADDRESS=%s\n' "$PUBLIC_URL" "${PORT:-18473}" "${BIND_ADDRESS:-127.0.0.1}"
   printf 'HONGSHU_VERSION=%s\n' "$HONGSHU_VERSION"
+  printf 'HONGSHU_DB_MODE=%s\n' "$DB_MODE"
   printf 'TRUSTED_PROXY_CIDRS=%s\n' "${TRUSTED_PROXY_CIDRS:-}"
   printf "HONGSHU_PASSWORD='%s'\n" "$(quote_compose_single "$HONGSHU_PASSWORD")"
-  printf 'MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 32)"
-  printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(openssl rand -hex 32)"
+  if [[ "$DB_MODE" == bundled ]]; then
+    printf 'MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 32)"
+    printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(openssl rand -hex 32)"
+  else
+    printf "HONGSHU_DATABASE_URL='%s'\n" "$(quote_compose_single "$HONGSHU_DATABASE_URL")"
+  fi
   printf 'VAPID_SUBJECT=%s\n' "${VAPID_SUBJECT:-mailto:admin@example.invalid}"
 } > .env
-docker compose pull hub
-docker compose run --rm --no-deps --entrypoint /vapid hub >> .env
-mkdir -p runtime-data/backups
+compose_args=()
+if [[ "$DB_MODE" == external ]]; then
+  compose_args=(-f compose.external.yml)
+fi
+docker compose "${compose_args[@]}" pull hub
+docker compose "${compose_args[@]}" run --rm --no-deps --entrypoint /vapid hub >> .env
+if [[ "$DB_MODE" == bundled ]]; then
+  mkdir -p runtime-data/backups
+fi
 if [[ "$PUBLIC_URL" == http://* ]]; then
   echo 'Configuration generated for plaintext HTTP. Protect .env; expose the port only if you accept the network risk.'
 else
-  echo 'Configuration generated. Protect .env; run docker compose up -d, then configure your HTTPS reverse proxy.'
+  echo 'Configuration generated. Protect .env; configure your HTTPS reverse proxy.'
+fi
+if [[ "$DB_MODE" == external ]]; then
+  echo 'External MySQL selected. Create the schema with utf8mb4_bin, run migrations with a DDL account, then: docker compose -f compose.external.yml up -d'
+  echo 'External databases are not covered by the bundled backup service; configure your own backup.'
+else
+  echo 'Run: docker compose up -d'
 fi

@@ -59,34 +59,32 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var observed int64 = -1
-	var observedAnalysis int64
-	var observedRead int64
-	var observedMetadata, observedEpoch, observedCalls int64
+	// Tests and small deployments may not have started the shared poller yet. Once-only
+	// startup keeps one state query per process instead of one per socket.
+	a.startStatePoller(context.Background())
+	var observed hubState
+	observedValid := false
 	var lastPing time.Time
 
 	checkChanges := func() bool {
 		if _, err := a.lookup(r); err != nil {
 			return false
 		}
-		var clock, analysisRevision, readRevision, metadataRevision, epoch, calls int64
-		// All state rows are singletons. Never scan messages/count unread
-		// per socket; clients fetch their own counts after a change hint.
-		if a.db.QueryRowContext(r.Context(), "SELECT c.seq,a.revision,r.updated_at,m.revision,c.epoch,k.seq FROM sync_clock c JOIN ai_settings a ON a.id=c.id JOIN read_state r ON r.id=c.id JOIN metadata_clock m ON m.id=c.id JOIN call_clock k ON k.id=c.id WHERE c.id=1").Scan(&clock, &analysisRevision, &readRevision, &metadataRevision, &epoch, &calls) != nil {
-			return false
+		state, ok := a.currentHubState()
+		if !ok {
+			// The shared poller is still warming up; a ticker/change event will retry.
+			return true
 		}
 		// Include this device's own uploads. Other clients must see them; the source
 		// device decides locally whether to notify itself.
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if clock != observed || analysisRevision != observedAnalysis || readRevision != observedRead || metadataRevision != observedMetadata || epoch != observedEpoch || calls != observedCalls {
-			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": clock, "analysis_revision": analysisRevision, "call_cursor": calls}) != nil {
+		if !observedValid || state != observed {
+			if conn.WriteJSON(map[string]any{"type": "changed", "cursor": state.cursor, "analysis_revision": state.analysis, "call_cursor": state.calls}) != nil {
 				return false
 			}
+			observed = state
+			observedValid = true
 		}
-		observed = clock
-		observedAnalysis = analysisRevision
-		observedRead = readRevision
-		observedMetadata, observedEpoch, observedCalls = metadataRevision, epoch, calls
 		return true
 	}
 
@@ -470,6 +468,7 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 
 func (a *app) processPushBatch(ctx context.Context, client *http.Client, now time.Time) error {
 	started := time.Now()
+	a.pushMore.Store(false)
 	for i := 0; i < 20; i++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -482,6 +481,7 @@ func (a *app) processPushBatch(ctx context.Context, client *http.Client, now tim
 		if len(jobs) == 0 {
 			break
 		}
+		a.pushMore.Store(true)
 		if err = a.deliverPushJob(ctx, client, jobs[0]); err != nil {
 			a.pushStateFailures.Add(1)
 			return fmt.Errorf("push state update failed")
@@ -495,19 +495,26 @@ func (a *app) pushLoop(ctx context.Context) {
 		return
 	}
 	client := a.effectivePushClient()
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case <-ticker.C:
-			if err := a.processPushBatch(ctx, client, time.Now()); err != nil && ctx.Err() == nil {
-				failures := a.pushClaimFailures.Load() + a.pushStateFailures.Load()
-				if failures == 1 || failures%20 == 0 {
-					log.Print("push worker state failure; inspect healthz counters")
-				}
+		}
+		if err := a.processPushBatch(ctx, client, time.Now()); err != nil && ctx.Err() == nil {
+			failures := a.pushClaimFailures.Load() + a.pushStateFailures.Load()
+			if failures == 1 || failures%20 == 0 {
+				log.Print("push worker state failure; inspect healthz counters")
 			}
+			a.pushMore.Store(false)
+			if !waitFor(ctx, a.pushWake, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		if a.pushMore.Load() {
+			continue
+		}
+		if !waitFor(ctx, a.pushWake, 15*time.Second) {
+			return
 		}
 	}
 }

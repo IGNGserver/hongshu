@@ -86,6 +86,21 @@ PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md
 - 备份使用一致性逻辑备份，包含授权、消息、游标、队列和 epoch；恢复必须同时保留部署密钥。
   恢复后必须生成不复用的 sync_clock.epoch，否则客户端会把重用的短信 ID 当成已经同步过。
 
+## 数据库边界与延迟
+
+- 中枢只支持 MySQL 8.0+，连接可由 `HONGSHU_DATABASE_URL`（推荐的 `mysql://` 形式）或兼容的
+  `MYSQL_DSN` 提供；一个中枢使用一个独立 schema。外部/共享库的部署、迁移账号、备份和故障排查见
+  [DATABASE.md](DATABASE.md)。
+- 启动时先校验 MySQL 版本、`utf8mb4/utf8mb4_bin`、连接字符集和 schema 版本；共享库可用
+  `hongshu migrate` 与 `HONGSHU_MIGRATE=check` 把 DDL 权限与运行时账号分开。迁移锁按 schema 派生，
+  避免同一 MySQL 上不同项目互相阻塞。
+- 高延迟链路的优化不改变业务语义：上传/通话按批提交，带参查询默认客户端插值，`/me` 合并单行状态，
+  WebSocket 每个进程共享一个状态轮询器，AI 回填/分析/Push 在空闲时等待唤醒。提交顺序、幂等指纹、
+  epoch、已读水位和 Push 至少一次投递语义保持不变。
+- Redis 是可选加速层，不是数据源：只保存未读数、变更事件和 worker 选主等非敏感派生状态；
+  短信正文、号码、联系人、token、AI 密钥和 Push endpoint 不进入 Redis。Redis 不可用时回退到
+  进程内缓存和数据库轮询，短信写入不依赖缓存。
+
 ## 身份与安全
 
 系统不建立用户名或用户表。部署配置一个中枢密码，Web 登录不校验用户名；密码允许弱密码但不能为空，服务端用带随机盐的 Argon2id 校验器驻留内存。
