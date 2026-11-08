@@ -34,6 +34,17 @@ test("every code the Web client maps exists in the shared hub contract", async (
   assert.deepEqual(phantom, [], "Web maps codes the hub can never return");
 });
 
+test("every resync or reauthorize code has a user-facing message", async () => {
+  const contract = await loadContract();
+  assert.ok(contract.retry_policy, "contract must classify retry dispositions");
+  const mustExplain = [...contract.retry_policy.resync, ...contract.retry_policy.reauthorize];
+  assert.ok(mustExplain.length >= 10, `retry policy looks incomplete: ${mustExplain}`);
+  const source = await readFile(appPath, "utf8");
+  const mapped = new Set(clientErrorKeys(source));
+  const unexplained = mustExplain.filter((code) => !mapped.has(code));
+  assert.deepEqual(unexplained, [], "these codes would surface as a bare code to the user");
+});
+
 test("Web keeps a user-facing message for every code it handles specially", async () => {
   const source = await readFile(appPath, "utf8");
   const mapped = new Set(clientErrorKeys(source));

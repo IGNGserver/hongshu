@@ -36,6 +36,11 @@ internal fun describeApiError(status: Int, code: String): String =
         "invalid_batch" -> "上传批次无效，将拆分后重试"
         "invalid_sim" -> "中枢不接受该 SIM 号码格式"
         "epoch_changed" -> "中枢数据已恢复或重置，正在重新同步"
+        "cursor_reset" -> "列表已更新，正在重新加载"
+        "read_state_changed",
+        "analysis_cursor_changed" -> "中枢已读状态有更新，正在重新同步"
+        "invalid_cursor",
+        "invalid_revision" -> "同步位置已失效，正在重新同步"
         "forbidden",
         "admin_required" -> "没有权限执行此操作"
         "origin_denied",

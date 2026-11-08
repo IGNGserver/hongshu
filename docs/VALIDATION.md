@@ -1247,3 +1247,22 @@ BenchmarkConversationPage-8  467291 ns/op (未见回退)
 
 真实 MySQL + `-race` 全量（含全部历史页/同步页/搜索/分页断言）通过（65.6s）。基准夹具不进入常规
 `go test`（只在 `-bench` 时运行），无 `TEST_MYSQL_DSN` 时跳过。
+
+## 跨端重试语义（R5）
+
+`protocol/error-codes.v1.json` 新增 `retry_policy`，把 49 个码划入四类：
+`retry`（可重试）、`reauthorize`（凭据不可用，停止并让用户重新授权）、
+`resync`（服务端状态前进，丢弃本地游标重读）、`permanent`（请求本身错误）。
+
+| 端 | 断言 |
+| --- | --- |
+| Go | `compareRetryPolicy` 要求每个码恰好归一类；未归类、重复归类、归类不存在的码都直接失败 |
+| Web | `resync` ∪ `reauthorize` 的每个码都必须在 `errors` 文案表里，否则用户会看到裸码 |
+| Android | 同两类每个码 `describeApiError` 不得返回通用兜底 `中枢返回错误` |
+
+分类立刻暴露了一处真实体验缺陷：`cursor_reset`（Android 不调用该接口）、`read_state_changed`、
+`analysis_cursor_changed`、`invalid_cursor`、`invalid_revision` 在两端都没有文案，用户会看到
+`中枢返回错误 409（read_state_changed）` 这类字符串。已按 resync 语义补齐。
+
+验证：真实 MySQL + `-race` 全量通过（75.2s）；Web 123 项通过（新增 1 项），`check`/`build` 通过；
+Android 356 项单测 0 失败（20 项截图按条件跳过）+ lint 通过。

@@ -69,5 +69,65 @@
       "invalid_call",
       "sim_not_confirmed"
     ]
+  },
+  "retry_policy": {
+    "note": "Every hub error code must be assigned exactly one disposition so no client guesses. retry: transient, back off and try again. reauthorize: credentials are no longer usable, stop and ask the user. resync: server state moved (restore, cursor, revision); drop local cursors and reload from scratch. permanent: the request itself is wrong; retrying cannot help.",
+    "retry": [
+      "database_unavailable",
+      "authentication_busy",
+      "rate_limited",
+      "ai_budget_or_rate_limit",
+      "push_delivery_failed"
+    ],
+    "reauthorize": [
+      "unauthorized",
+      "forbidden",
+      "admin_required",
+      "invalid_password",
+      "origin_denied",
+      "origin_required"
+    ],
+    "resync": [
+      "epoch_changed",
+      "cursor_reset",
+      "read_state_changed",
+      "analysis_cursor_changed",
+      "invalid_cursor",
+      "invalid_revision"
+    ],
+    "permanent": [
+      "ai_consent_or_config_required",
+      "ai_disabled",
+      "ai_message_rejected",
+      "ai_secret_required",
+      "invalid_ai_endpoint",
+      "invalid_ai_protocol",
+      "invalid_ai_settings",
+      "invalid_batch",
+      "invalid_call",
+      "invalid_category",
+      "invalid_contact",
+      "invalid_device",
+      "invalid_group",
+      "invalid_json",
+      "invalid_message_id",
+      "invalid_name",
+      "invalid_page",
+      "invalid_push_endpoint",
+      "invalid_push_key",
+      "invalid_sender",
+      "invalid_sim",
+      "invalid_title",
+      "message_not_found",
+      "not_found",
+      "not_retryable",
+      "push_disabled",
+      "push_not_configured",
+      "push_not_subscribed",
+      "push_subscription_expired",
+      "response_deadline_unavailable",
+      "subscription_in_use",
+      "upload_disabled"
+    ]
   }
 }

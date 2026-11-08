@@ -71,6 +71,25 @@ class ProtocolContractTest {
         assertEquals(setOf("", "invalid_call", "sim_not_confirmed"), accepted("calls"))
     }
 
+    @Test fun everyResyncAndReauthorizeCodeHasActionableText() {
+        // The hub classifies these as "reload" or "ask the user again". Falling back to
+        // "中枢返回错误 409（code）" would hide what the user has to do.
+        val policy = contract().getJSONObject("retry_policy")
+        val mustBeActionable = buildList {
+            addAll(policy.getJSONArray("resync").toStringList())
+            addAll(policy.getJSONArray("reauthorize").toStringList())
+        }
+        check(mustBeActionable.size >= 10) { "retry policy looks incomplete: $mustBeActionable" }
+        for (code in mustBeActionable) {
+            val text = describeApiError(0, code)
+            assertFalse("$code has no actionable text", text.startsWith("中枢返回错误"))
+            assertTrue("$code has blank text", text.isNotBlank())
+        }
+    }
+
+    private fun org.json.JSONArray.toStringList(): List<String> =
+        (0 until length()).map { getString(it) }
+
     @Test fun handledCodesKeepTheirSpecificText() {
         // These have dedicated branches; losing one would leak a raw code into the UI.
         val handled = listOf(

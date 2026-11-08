@@ -28,6 +28,12 @@ type errorCodeContract struct {
 		Messages []string `json:"messages"`
 		Calls    []string `json:"calls"`
 	} `json:"ack_errors"`
+	RetryPolicy struct {
+		Retry       []string `json:"retry"`
+		Reauthorize []string `json:"reauthorize"`
+		Resync      []string `json:"resync"`
+		Permanent   []string `json:"permanent"`
+	} `json:"retry_policy"`
 }
 
 var ackErrorPattern = regexp.MustCompile(`acks\[[^]]+\]\.Error = "([a-z_]+)"`)
@@ -137,6 +143,51 @@ func compareAckErrors(contract errorCodeContract) error {
 	return nil
 }
 
+// compareRetryPolicy requires every code to carry exactly one disposition. A new hub
+// error code without an explicit decision would leave each client to guess whether to
+// retry, re-authorize, reload or give up, which is how silent retry loops start.
+func compareRetryPolicy(contract errorCodeContract) error {
+	classes := map[string][]string{
+		"retry":       contract.RetryPolicy.Retry,
+		"reauthorize": contract.RetryPolicy.Reauthorize,
+		"resync":      contract.RetryPolicy.Resync,
+		"permanent":   contract.RetryPolicy.Permanent,
+	}
+	assigned := make(map[string]string, len(contract.Codes))
+	for class, codes := range classes {
+		if len(codes) == 0 {
+			return fmt.Errorf("retry class %q is empty", class)
+		}
+		for _, code := range codes {
+			if previous, ok := assigned[code]; ok {
+				return fmt.Errorf("code %q is assigned to both %s and %s", code, previous, class)
+			}
+			assigned[code] = class
+		}
+	}
+	var missing, unknown []string
+	for _, code := range contract.Codes {
+		if _, ok := assigned[code]; !ok {
+			missing = append(missing, code)
+		}
+	}
+	declared := make(map[string]bool, len(contract.Codes))
+	for _, code := range contract.Codes {
+		declared[code] = true
+	}
+	for code := range assigned {
+		if !declared[code] {
+			unknown = append(unknown, code)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unknown)
+	if len(missing) > 0 || len(unknown) > 0 {
+		return fmt.Errorf("retry policy must classify every code; unclassified: %v; not in contract: %v", missing, unknown)
+	}
+	return nil
+}
+
 func TestSharedErrorCodeContractMatchesHub(t *testing.T) {
 	contract := loadErrorCodeContract(t)
 	declared := make(map[string]bool, len(contract.Codes))
@@ -167,6 +218,9 @@ func TestSharedErrorCodeContractMatchesHub(t *testing.T) {
 		t.Fatalf("contract covers only %d codes; extraction probably broke", len(contract.Codes))
 	}
 	if err := compareAckErrors(contract); err != nil {
+		t.Fatal(err)
+	}
+	if err := compareRetryPolicy(contract); err != nil {
 		t.Fatal(err)
 	}
 	// Runtime-assembled AI codes are documented as patterns; keep both sides in sync.

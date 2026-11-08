@@ -364,6 +364,15 @@ const errors = {
   ai_disabled: "AI 已关闭，请刷新页面",
   not_found: "该记录已不存在",
   cursor_reset: "列表已更新，正在重新加载",
+  // Server state moved: the client reloads rather than showing a bare code.
+  epoch_changed: "中枢数据已恢复或重置，正在重新同步",
+  read_state_changed: "已读状态已更新，正在重新同步",
+  analysis_cursor_changed: "分类结果已更新，正在重新同步",
+  invalid_cursor: "同步位置已失效，正在重新加载",
+  invalid_revision: "同步位置已失效，正在重新加载",
+  forbidden: "没有权限执行此操作",
+  admin_required: "需要管理员权限",
+  origin_required: "请从中枢配置的地址访问本页",
 };
 
 // SVG Icon Assets (Google Material Symbols / Icons)
