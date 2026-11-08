@@ -116,7 +116,7 @@
 | R2 | Web 会话状态机拆模块 | 未实施 | 同上；需统一 request context 后进行 |
 | R3 | AI 按边界拆分 provider/policy/queue/lease | 未实施 | S2/S8 的错误分类与调度返回类型已先行完成，为拆分铺路 |
 | R4 | Compose 页面与同步流程降耦合 | 未实施 | 需 ViewModel/state holder 抽取与设备回归 |
-| R5 | 统一跨端请求/错误语义 | 未实施 | 与 O12 同属共享 fixture 工作，未建立 |
+| R5 | 统一跨端请求/错误语义 | 部分 | 已完成：共享错误码合同 + 两个上传 surface 的 ACK 词表由三端强制校验（见 O12）；各端重试策略已按错误类别区分（Go 用 Retry-After 与永久 4xx 分类，Android 用持久化退避，Web 用 cursor_reset 恢复与 401 退出）。未做：把 409/epoch reset、分析 revision 的重试策略也纳入同一份机器可校验的 fixture |
 | R6 | 性能先测量再派生化 | 部分 | 已消除重复传输/空轮询/深 OFFSET；派生计数与虚拟列表未做，因缺真实规模基准 |
 | R7 | 运行可观测性统一 | 完成 | 新增认证端点 `GET /api/ops`（`server/ops.go`）：扁平输出 version/uptime、DB 连接池与延迟、`schema.version/dirty`、Push 计数与 `last_loop/last_success/backlog`、AI `finish_failures/last_success/last_loop/queued`、`workers.running/exited`、`realtime.subscribers`、`redis.enabled`；无法测量的 backlog/queued 返回 `null` 而非 0。`TestOpsNeverLeaksContentCredentialsOrEndpoints` 断言载荷不含短信正文、发件人、token、Push endpoint、VAPID 密钥与 origin，并禁止 body/sender/token/endpoint/secret/password 字段名出现；`TestOpsRequiresAuthentication` 断言未认证与伪造 token 均为 401。备份 last-success 仍由 `backup-healthcheck.sh` 在备份单元内判定（中枢容器不挂载备份卷）。未提供 Prometheus exposition，属于可选扩展 |
 
