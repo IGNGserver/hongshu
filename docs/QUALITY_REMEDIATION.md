@@ -42,7 +42,7 @@
 | S9 | 按 AI generation 复用 SSRF 安全 transport | 完成 | `effectiveAIClient` 以 generation/timeout/endpoint/protocol 为键，最多 4 个并关闭淘汰者空闲连接 |
 | S10 | Push fencing 后有界并发与必要的设备顺序 | 完成 | `claimPushJobs` 每设备只取一条、单批 4 条，`processPushBatch` 内 `sync.WaitGroup` 并发投递；`push_integration_test.go` |
 | S11 | Retry-After HTTP-date、永久 4xx 分类、有界 drain | 完成 | `pushRetryAfter` 支持秒与 HTTP-date；`retryablePushStatus`；错误体 `io.LimitReader(32KB)`；`push_test.go`、`push_integration_test.go` |
-| S12 | 筛选 keyset、执行计划基准与冗余索引审计 | 部分 | keyset 与 `conversation_index_test.go`/`analysis_claim_test.go` 已就位；本机无 MySQL，`EXPLAIN`/基准与索引冗余审计未在真实 8.4 实例上执行，未取得计划证据 |
+| S12 | 筛选 keyset、执行计划基准与冗余索引审计 | 完成 | 真实 MySQL 8.4.5 上 `TestIntegrationConversationIndexQueryPlan` 通过：2000 条短信/10 会话夹具下摘要查询走 `index lookup on m using PRIMARY`，无全表扫描、无窗口聚合；索引审计发现 `messages_unread` 与 `push_jobs.pending` 分别被 014 的两条新索引严格覆盖，已由迁移 015 删除（含重建回滚脚本），见 `docs/DATABASE.md` |
 | S13 | SMS sync 使用 RR 快照或维护模式防护 | 完成 | `read_sync.go:31` 只读 `LevelRepeatableRead` 事务；`read_sync_test.go` |
 
 ### Web / PWA
@@ -92,7 +92,7 @@
 | O1 | 外部 MySQL 使用镜像内迁移或随包交付迁移 | 完成 | `docs/DATABASE.md` 改为容器内 `/app/migrations` 执行，不再绑定源码树 |
 | O2 | 备份启动仅依赖 DB，hub 停止仍可备份 | 完成 | `compose.yml` backup 仅 `depends_on db: service_healthy`；`scripts/test-operations.py` |
 | O3 | 备份超时、last-success、超龄健康和保留策略 | 完成 | `backup.sh` 单轮 deadline、`gzip -t`、原子重命名、随机名保留；`backup-healthcheck.sh` 以 interval+timeout+grace 判超龄 |
-| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 未实施 | 本机无 Docker daemon，未执行真实镜像/归档的启动、迁移、备份、恢复与升级演练；脚本级契约已由 18 项运维测试覆盖，但不替代该演练 |
+| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 部分 | 已用真实 MySQL 8.4.5 完成迁移至 015、`scripts/backup.sh` 一致性备份（gzip 校验、原子 last-success、健康检查通过）与恢复到全新库（18 表、15 条迁移全 `dirty=0`）。仍缺容器镜像/最终归档的 Compose 启动与升级演练（本机无 Docker daemon） |
 | O5 | main/PR/Release 检查对称且不可绕过 | 完成 | CI 去掉 push 跳过、扩大 paths；`release.yml` 要求 tag 提交在 `main` 上且 7 个 required check 为 success |
 | O6 | 基础镜像/Actions/部署 digest 与依赖/secret 扫描 | 完成 | Dockerfile 三段按 digest；MySQL 多架构 digest；全部 Action 固定 40 位 SHA（本次修正 `gradle/actions` 与 `update-feed.yml`）；Gitleaks/依赖审查/Trivy fail-closed |
 | O7 | 初始化 0600 临时文件、原子发布与可恢复失败 | 完成 | `init-deployment.sh` 同盘 `mktemp`+`umask 077`，pull/VAPID/配置校验通过后 `mv -n` 发布 |
@@ -132,6 +132,15 @@
 | 运维 | `bash scripts/verify-repository.sh` | 通过；含 pin/lock 合同与 18 项运维测试 |
 | 官网 | `python3 website/scripts/check-site.py` | 通过，7 文件 12 KB |
 | CI 定义 | PyYAML 解析 4 个 workflow、38 个 `run` 块 `bash -n`、内嵌 Python 片段编译、Action 40 位 SHA 对上游 commit 校验 | 全部通过；修复 2 处真实缺陷（见下） |
+
+### 真实 MySQL 暴露并修复的问题
+
+本机缺少 MySQL 时集成用例整体跳过，掩盖了下列问题；本轮下载官方 MySQL 8.4.5 二进制在工作区外起临时实例后暴露并修复：
+
+1. `TestReadRevisionIsStrictlyMonotonicAndTransactional` 沿用“每次标读都推进 revision”的旧期望，与 S7“仅有效水位推进才失效其他客户端”矛盾；改为断言重复同一边界不推进、更新的消息才推进，保留“无效请求回滚不改变 revision”。
+2. `TestConcurrentReadAndUploadLockOrdering` 断言 12 次并发固定产生 8 次 revision 推进；实际只有有效推进才增加，且数量随并发上传抬高 head 而变化。改为断言 4 次上传全部提交（`seq=8`）、标读均提交且推进次数落在有效范围内，锁序不变量不变。
+3. `TestIntegrationPushConcurrentWorkersDoNotPreleaseTail` 让同一设备两个任务并发投递，与 S10 的按设备顺序互斥。拆成两个更准确的用例：同一设备只领取一条且队尾保持排队，另一设备可同时领取；慢设备投递不阻塞其他设备。
+4. 索引审计发现两条完全冗余的索引，新增迁移 015 删除并提供回滚。
 
 ### 本轮新发现并修复的缺陷
 

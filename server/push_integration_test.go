@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,12 +64,50 @@ func pushFixture(t *testing.T) (*app, Device) {
 func addPushJobs(t *testing.T, a *app, d Device, total int) {
 	t.Helper()
 	for id := 2; id <= total; id++ {
-		if _, err := a.db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,FALSE)", id, d.ID, hash(fmt.Sprint(id)), "+123456789", "synthetic", "synthetic SMS", id, 1); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.db.Exec("INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) VALUES (?,?,0,0)", id, d.ID); err != nil {
-			t.Fatal(err)
-		}
+		addPushJob(t, a, d, int64(id))
+	}
+}
+
+// addPushDevice registers another web device with its own subscription so
+// cross-device behaviour can be exercised without changing the fixture's device.
+func addPushDevice(t *testing.T, a *app, name string) Device {
+	t.Helper()
+	tx, err := a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, err := insertDevice(context.Background(), tx, name, "web", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := make([]byte, 16)
+	if _, err = rand.Read(auth); err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.db.Exec("INSERT INTO push_subscriptions VALUES (?,?,?,?)", d.ID,
+		"https://push.example.invalid/"+d.ID,
+		base64.RawURLEncoding.EncodeToString(recipient.PublicKey().Bytes()),
+		base64.RawURLEncoding.EncodeToString(auth))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func addPushJob(t *testing.T, a *app, d Device, messageID int64) {
+	t.Helper()
+	if _, err := a.db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical) VALUES (?,?,?,?,?,?,?,?,FALSE)", messageID, d.ID, hash(fmt.Sprint(messageID)), "+123456789", "synthetic", "synthetic SMS", messageID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec("INSERT INTO push_jobs (message_id,device_id,next_at,leased_until) VALUES (?,?,0,0)", messageID, d.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -97,45 +135,85 @@ func TestIntegrationPushClaimsJustInTimeAndBoundsBatch(t *testing.T) {
 	}
 }
 
-func TestIntegrationPushConcurrentWorkersDoNotPreleaseTail(t *testing.T) {
-	a, d := pushFixture(t)
-	addPushJobs(t, a, d, 2)
+func TestIntegrationPushKeepsDeviceOrderAndLeavesOtherDevicesClaimable(t *testing.T) {
+	a, first := pushFixture(t)
+	addPushJob(t, a, first, 2)
+	second := addPushDevice(t, a, "synthetic second browser")
+	addPushJob(t, a, second, 3)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// One claim takes at most one job per device, so the second message of the first
+	// device cannot overtake the leased one, while the other device stays claimable.
+	jobs, err := a.claimPushJobs(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("claimed %d jobs, want one per device", len(jobs))
+	}
+	devices := map[string]int{}
+	for _, j := range jobs {
+		devices[j.device]++
+	}
+	if devices[first.ID] != 1 || devices[second.ID] != 1 {
+		t.Fatalf("unexpected per-device claim: %v", devices)
+	}
+	blocked, err := a.claimPushJobs(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("leased device heads pre-released the tail: %d jobs", len(blocked))
+	}
+	var unleased int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs WHERE device_id=? AND leased_until=0", first.ID).Scan(&unleased); err != nil || unleased != 1 {
+		t.Fatalf("tail of a busy device must stay queued: unleased=%d err=%v", unleased, err)
+	}
+}
+
+func TestIntegrationPushSlowSendDoesNotBlockAnotherDevice(t *testing.T) {
+	a, _ := pushFixture(t)
+	fast := addPushDevice(t, a, "synthetic fast browser")
+	addPushJob(t, a, fast, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	var sent atomic.Int32
+	fastDone := make(chan struct{})
+	var fastOnce, slowOnce sync.Once
 	client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
-		if sent.Add(1) == 1 {
-			close(entered)
+		// The fixture's subscription path identifies the deliberately slow device.
+		if r.URL.Path == "/synthetic" {
+			slowOnce.Do(func() { close(entered) })
 			select {
 			case <-release:
 			case <-r.Context().Done():
 				return nil, r.Context().Err()
 			}
+		} else {
+			fastOnce.Do(func() { close(fastDone) })
 		}
 		return &http.Response{StatusCode: 202, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
-	first := make(chan error, 1)
-	go func() { first <- a.processPushBatch(ctx, client, time.Now()) }()
+	done := make(chan error, 1)
+	go func() { done <- a.processPushBatch(ctx, client, time.Now()) }()
 	select {
 	case <-entered:
 	case <-ctx.Done():
-		t.Fatal("first worker did not start")
+		t.Fatal("slow device was never contacted")
 	}
-	if err := a.processPushBatch(ctx, client, time.Now()); err != nil {
-		t.Error(err)
-	}
-	if sent.Load() != 2 {
-		t.Error("slow first delivery prevented another worker from claiming the unstarted tail")
+	select {
+	case <-fastDone:
+	case <-ctx.Done():
+		t.Fatal("slow device delivery blocked another device's send")
 	}
 	close(release)
-	if err := <-first; err != nil {
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	var pending int
-	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&pending); err != nil || pending != 0 || sent.Load() != 2 {
-		t.Fatalf("pending=%d sends=%d err=%v", pending, sent.Load(), err)
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs").Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending=%d err=%v", pending, err)
 	}
 }
 

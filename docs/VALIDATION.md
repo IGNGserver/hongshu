@@ -1046,6 +1046,25 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 派生表；本轮只增加迁移 014 索引、进程内/Redis 版本化缓存和批处理，未引入计数表。真实大历史、
 高 RTT 和并发写入下若仍出现慢查询，再按实测迁移。
 
+## 真实 MySQL 演练
+
+本机没有 MySQL 与 Docker，因此下载 MySQL 官方 8.4.5 二进制（`mysql-8.4.5-linux-glibc2.28-x86_64`）到
+`~/.build/hongshu-quality-9ceea66/`，在工作区外初始化临时实例（端口 33306，数据目录与日志都在该 scratch 内），
+未安装系统包、未写入源码卷。`libaio.so.1` 由临时解包的 RPM 提供，只通过 `LD_LIBRARY_PATH` 生效。
+
+| 演练 | 命令要点 | 结果 |
+| --- | --- | --- |
+| 迁移 | `HONGSHU_DATABASE_URL=mysql://root@127.0.0.1:33306/… hongshu migrate` | 15 条迁移全部 `dirty=0`，head 为 `015_drop_redundant_indexes.up.sql` |
+| 索引审计 | `information_schema.STATISTICS` 按列序分组比对前缀 | 发现 `messages_unread(historical,id,sender)` 与 `push_jobs.pending(next_at)` 被 014 索引严格覆盖，迁移 015 删除并验证只剩宽索引 |
+| 执行计划 | `TestIntegrationConversationIndexQueryPlan`（2000 条短信/10 会话） | 通过；摘要查询 `index lookup on m using PRIMARY`，无表扫描与窗口聚合 |
+| 并发 Push/读 | `TestIntegrationPush*`、`TestConcurrentReadAndUploadLockOrdering` | 通过；同设备只领取一条、队尾保持排队、慢设备不阻塞其他设备 |
+| 一致性备份 | `MYSQL_HOST=127.0.0.1 MYSQL_PORT=33306 BACKUP_ONCE=1 bash scripts/backup.sh` | 生成 `hongshu-20261108T051251Z-*.sql.gz`（0600），`gzip -t` 通过，`last-success` 原子写入 |
+| 备份健康 | `bash scripts/backup-healthcheck.sh` | `backup freshness healthy` |
+| 恢复 | `gzip -dc … | mysql hongshu_restore_drill` | 成功；18 张表、15 条迁移全部 `dirty=0`，head 一致 |
+
+真实库同时暴露了三个此前被跳过掩盖的问题（详见台账“真实 MySQL 暴露并修复的问题”）：两个既有读 revision
+用例与 S7 合同矛盾、一个并发 Push 用例假设同设备可并发违反 S10 顺序约束。三者已按合同修正测试并通过。
+
 ## 未执行 / 边界
 
 - 本机没有 Docker daemon，未实际执行 `docker compose -f compose.external.yml up -d`、镜像构建或
@@ -1070,7 +1089,8 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
 | Go 格式 | `test -z "$(gofmt -l *.go cmd/vapid/*.go)"` | 通过 |
-| Go 测试 | `go test -race -count=1 ./...`（Go 1.24.10 linux/amd64） | 通过，8.18s |
+| Go 测试（无外部库） | `go test -race -count=1 ./...`（Go 1.24.10 linux/amd64） | 通过，8.18s；真实 MySQL 用例按设计跳过 |
+| Go 测试（真实 MySQL 8.4.5） | 同上，另设 `TEST_MYSQL_DSN`/`MYSQL_BIN`/`MYSQLDUMP_BIN` | 通过，68.1s；含迁移、并发 Push/read、游标、索引执行计划与逻辑备份/恢复 |
 | Go 静态检查/构建 | `go vet ./...`、`go build -trimpath -o …/hongshu .` | 通过 |
 | Web 单测 | `npm test` | 120 项通过，0 失败，0 跳过，约 4.0s |
 | Web 语法/构建 | `npm run check && npm run build` | 通过；生产资源校验并复制 |
