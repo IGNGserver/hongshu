@@ -58,6 +58,7 @@ func (a *app) routes(web string) http.Handler {
 		})
 	}))
 	mux.HandleFunc("GET /api/me", a.auth(a.me))
+	mux.HandleFunc("GET /api/ops", a.auth(a.opsStatus))
 	mux.HandleFunc("GET /api/metadata", a.auth(a.metadata))
 	mux.HandleFunc("GET /api/recent", a.auth(a.recent))
 	mux.HandleFunc("GET /api/devices", a.auth(a.devices))

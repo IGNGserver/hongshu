@@ -1435,6 +1435,7 @@ func (a *app) analysisLoop(ctx context.Context) {
 			}
 			continue
 		}
+		a.analysisLastLoop.Store(time.Now().UnixMilli())
 		j, schedule, err := a.claimAnalysisScheduled(ctx)
 		if err != nil {
 			if !waitFor(ctx, a.analysisWake, schedule.retryAfter) {
@@ -1455,7 +1456,11 @@ func (a *app) analysisLoop(ctx context.Context) {
 		if a.noteAIResult(j.Settings.Generation, code) {
 			pause = true
 		}
-		if err := a.finishAnalysisWithRetry(ctx, j, category, otp, code, pause); err != nil && ctx.Err() == nil {
+		finishErr := a.finishAnalysisWithRetry(ctx, j, category, otp, code, pause)
+		if finishErr == nil {
+			a.analysisLastSuccess.Store(time.Now().UnixMilli())
+		}
+		if finishErr != nil && ctx.Err() == nil {
 			failures := a.analysisFinishFailures.Load()
 			if failures <= 3 || failures%20 == 0 {
 				log.Printf("analysis result persistence failed %d times; durable lease retained", failures)

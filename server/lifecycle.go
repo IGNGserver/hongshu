@@ -29,8 +29,11 @@ func (h *trackedHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) startWorker(ctx context.Context, worker func(context.Context)) {
 	a.workers.Add(1)
+	a.workersRunning.Add(1)
 	go func() {
 		defer a.workers.Done()
+		defer a.workersRunning.Add(-1)
+		defer a.workersExited.Add(1)
 		worker(ctx)
 	}()
 }

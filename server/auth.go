@@ -58,6 +58,14 @@ type app struct {
 	aiErrorGeneration      int64
 	aiUnknown400           int
 	analysisFinishFailures atomic.Int64
+	// Liveness and outcome timestamps for operators; /api/ops reports them so a
+	// silently stopped worker is visible without reading logs.
+	startedAt           time.Time
+	pushLastLoop        atomic.Int64
+	analysisLastLoop    atomic.Int64
+	analysisLastSuccess atomic.Int64
+	workersRunning      atomic.Int64
+	workersExited       atomic.Int64
 
 	instanceID        string
 	pushWake          chan struct{}
@@ -116,7 +124,7 @@ func newApp(db *sql.DB, origin, password, pub, priv string) (*app, error) {
 	if _, e = rand.Read(salt); e != nil {
 		return nil, errors.New("password verifier initialization failed")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2), instanceID: random(8), pushWake: make(chan struct{}, 1), analysisWake: make(chan struct{}, 1), backfillWake: make(chan struct{}, 1), stateRefresh: make(chan struct{}, 1), statePollInterval: time.Second, redisEvents: make(chan struct{}, 16)}, nil
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2), instanceID: random(8), pushWake: make(chan struct{}, 1), analysisWake: make(chan struct{}, 1), backfillWake: make(chan struct{}, 1), stateRefresh: make(chan struct{}, 1), statePollInterval: time.Second, redisEvents: make(chan struct{}, 16), startedAt: time.Now()}, nil
 }
 func (a *app) passwordMatches(password string) bool {
 	if len(password) == 0 || len(password) > 1024 {

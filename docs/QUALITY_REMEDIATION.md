@@ -118,7 +118,7 @@
 | R4 | Compose 页面与同步流程降耦合 | 未实施 | 需 ViewModel/state holder 抽取与设备回归 |
 | R5 | 统一跨端请求/错误语义 | 未实施 | 与 O12 同属共享 fixture 工作，未建立 |
 | R6 | 性能先测量再派生化 | 部分 | 已消除重复传输/空轮询/深 OFFSET；派生计数与虚拟列表未做，因缺真实规模基准 |
-| R7 | 运行可观测性统一 | 部分 | Push dead-job、AI finish、备份 last-success、迁移/恢复均有结构化计数字段与脱敏日志；统一事件/指标导出未做 |
+| R7 | 运行可观测性统一 | 完成 | 新增认证端点 `GET /api/ops`（`server/ops.go`）：扁平输出 version/uptime、DB 连接池与延迟、`schema.version/dirty`、Push 计数与 `last_loop/last_success/backlog`、AI `finish_failures/last_success/last_loop/queued`、`workers.running/exited`、`realtime.subscribers`、`redis.enabled`；无法测量的 backlog/queued 返回 `null` 而非 0。`TestOpsNeverLeaksContentCredentialsOrEndpoints` 断言载荷不含短信正文、发件人、token、Push endpoint、VAPID 密钥与 origin，并禁止 body/sender/token/endpoint/secret/password 字段名出现；`TestOpsRequiresAuthentication` 断言未认证与伪造 token 均为 401。备份 last-success 仍由 `backup-healthcheck.sh` 在备份单元内判定（中枢容器不挂载备份卷）。未提供 Prometheus exposition，属于可选扩展 |
 
 审查报告自身把 R1–R7 列为“不应与正确性修复混在一个巨型 PR 中”的独立结构化重构，并要求先有对应测试再搬迁代码。本轮保留该边界，未以机械拆文件冒充完成。
 

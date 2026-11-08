@@ -570,7 +570,9 @@ func (a *app) pushLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := a.processPushBatch(ctx, client, time.Now()); err != nil && ctx.Err() == nil {
+		err := a.processPushBatch(ctx, client, time.Now())
+		a.pushLastLoop.Store(time.Now().UnixMilli())
+		if err != nil && ctx.Err() == nil {
 			failures := a.pushClaimFailures.Load() + a.pushStateFailures.Load()
 			if failures == 1 || failures%20 == 0 {
 				log.Print("push worker state failure; inspect healthz counters")

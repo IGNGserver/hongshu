@@ -10,6 +10,7 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | --- | --- |
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
+| GET /api/ops | 运维快照（需认证）：`status,version,uptime_ms`，`database` 连接池与延迟，`schema` 已应用版本与 `dirty` 计数，`push` 计数与 `last_loop/last_success/backlog`，`analysis` 的 `finish_failures/last_success/last_loop/queued`，`workers.running/exited`，`realtime.subscribers`，`redis.enabled`。只包含计数、时长与布尔值；不含短信正文、发件人、设备 token、Push endpoint 或 AI 密钥。`backlog`/`queued` 查询失败时为 `null`，不把无法测量当成 0；DB 不可用返回 503 |
 | GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`、`conversation_cursor`；`call_cursor` 为通话记录提交头 |
 | GET /api/metadata?since=N | 一致性元数据快照；`revision,epoch,unchanged`，有变化时另含 devices/sims/contacts；需 `metadata_revision` 能力 |
 | GET /api/recent?limit=50 | 最近会话头消息展示快照：messages/head/epoch；head 不可用于推进可靠同步游标，需 `recent_snapshot` 能力 |

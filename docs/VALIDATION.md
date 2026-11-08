@@ -1146,3 +1146,16 @@ Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADL
   的 ACK 词表。
 
 该合同只能防止词汇漂移，**不能**替代真实版本偏斜联调：仍未构建旧 APK×新 hub、新 APK×旧 hub 矩阵。
+
+## 运维可观测性（R7）
+
+新增 `GET /api/ops`（需认证，`server/ops.go`）。所有字段都是计数、时长或布尔值；`backlog`/`queued`
+在查询失败时返回 `null`，避免把“测不到”误读成“队列为空”。
+
+| 用例 | 断言 |
+| --- | --- |
+| `TestOpsRequiresAuthentication` | 无 token 与伪造 token 均 401；真实 token 返回 `status=ok` |
+| `TestOpsReportsLivenessSchemaAndQueueCounts` | `push.last_loop`、`analysis.last_success`、`push.dropped`、`analysis.finish_failures` 反映真实计数；`schema.version` 为已应用迁移且 `dirty=0`；`push.backlog`/`analysis.queued` 可测量；`workers.running` 存在 |
+| `TestOpsNeverLeaksContentCredentialsOrEndpoints` | 载荷不含短信正文、发件人、接收号码、设备 token、VAPID 公私钥或 origin；不含 body/sender/token/endpoint/secret/password 字段名 |
+
+真实 MySQL 8.4.5 + `-race` 全量通过（74.1s）。`/healthz` 保持原有脱敏字段不变，未认证探针语义未改。
