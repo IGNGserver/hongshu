@@ -39,15 +39,33 @@ type app struct {
 	pushLastSuccess                   atomic.Int64
 	pushSuppressed                    atomic.Int64
 	pushDropped                       atomic.Int64
-	// pushClient is only set by tests; production always uses the SSRF-guarded client.
-	pushClient      *http.Client
-	wsCheckInterval time.Duration
-	unreadMu        sync.Mutex
-	unreadSnapshot  unreadSnapshot
-	metadataMu      sync.Mutex
-	metadataCache   metadataSnapshot
-	aiMu            sync.Mutex
-	aiStatusCache   aiStatusSnapshot
+	pushClientMu                      sync.Mutex
+	// pushClient is shared by deliveries and tests may inject an SSRF-safe equivalent.
+	pushClient             *http.Client
+	workers                sync.WaitGroup
+	wsCheckInterval        time.Duration
+	unreadMu               sync.Mutex
+	unreadSnapshot         unreadSnapshot
+	unreadFlights          map[string]*unreadCall
+	unreadQueries          atomic.Int64
+	metadataMu             sync.Mutex
+	metadataCache          metadataSnapshot
+	aiMu                   sync.Mutex
+	aiStatusCache          aiStatusSnapshot
+	aiClientsMu            sync.Mutex
+	aiClients              map[string]*http.Client
+	aiErrorMu              sync.Mutex
+	aiErrorGeneration      int64
+	aiUnknown400           int
+	analysisFinishFailures atomic.Int64
+	// Liveness and outcome timestamps for operators; /api/ops reports them so a
+	// silently stopped worker is visible without reading logs.
+	startedAt           time.Time
+	pushLastLoop        atomic.Int64
+	analysisLastLoop    atomic.Int64
+	analysisLastSuccess atomic.Int64
+	workersRunning      atomic.Int64
+	workersExited       atomic.Int64
 
 	instanceID        string
 	pushWake          chan struct{}
@@ -106,7 +124,7 @@ func newApp(db *sql.DB, origin, password, pub, priv string) (*app, error) {
 	if _, e = rand.Read(salt); e != nil {
 		return nil, errors.New("password verifier initialization failed")
 	}
-	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2), instanceID: random(8), pushWake: make(chan struct{}, 1), analysisWake: make(chan struct{}, 1), backfillWake: make(chan struct{}, 1), stateRefresh: make(chan struct{}, 1), statePollInterval: time.Second, redisEvents: make(chan struct{}, 16)}, nil
+	return &app{db: db, origin: strings.TrimRight(origin, "/"), vapidPublic: pub, vapidPrivate: priv, passwordSalt: salt, passwordHash: derivePassword(password, salt), secure: u.Scheme == "https", limits: map[string]*attempt{}, subscribers: make(map[chan struct{}]struct{}), passwordSlots: make(chan struct{}, 2), instanceID: random(8), pushWake: make(chan struct{}, 1), analysisWake: make(chan struct{}, 1), backfillWake: make(chan struct{}, 1), stateRefresh: make(chan struct{}, 1), statePollInterval: time.Second, redisEvents: make(chan struct{}, 16), startedAt: time.Now()}, nil
 }
 func (a *app) passwordMatches(password string) bool {
 	if len(password) == 0 || len(password) > 1024 {

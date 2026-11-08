@@ -37,6 +37,13 @@ internal const val CAPTURE_EVENT_FOLD_MS = 60_000L
 
 data class CaptureEvent(val at: Long, val source: String, val outcome: String, val count: Int)
 
+internal data class QueuedBroadcast(
+    val id: Long,
+    val message: IncomingSms,
+    val generation: Long,
+    val receivedAt: Long,
+)
+
 // Event sources; outcomes are short codes rendered by captureEventLabel.
 internal object CaptureSource {
     const val BROADCAST = "broadcast"
@@ -83,7 +90,7 @@ internal data class ConversationSnapshot(
 )
 
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
-    SQLiteOpenHelper(context, databaseName, null, 17), Closeable {
+    SQLiteOpenHelper(context, databaseName, null, 18), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
 
@@ -137,7 +144,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
-            "CREATE TABLE outbox (key TEXT PRIMARY KEY, receiver TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, timestamp INTEGER NOT NULL, sub INTEGER NOT NULL, slot INTEGER NOT NULL, historical INTEGER NOT NULL DEFAULT 0, blocked TEXT NOT NULL DEFAULT '')"
+            "CREATE TABLE outbox (key TEXT PRIMARY KEY, receiver TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, timestamp INTEGER NOT NULL, sub INTEGER NOT NULL, slot INTEGER NOT NULL, historical INTEGER NOT NULL DEFAULT 0, blocked TEXT NOT NULL DEFAULT '', sent_fingerprint TEXT NOT NULL DEFAULT '')"
         )
         db.execSQL(
             "CREATE TABLE inbox (id INTEGER PRIMARY KEY, device TEXT NOT NULL, receiver TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, timestamp INTEGER NOT NULL, contact TEXT NOT NULL, historical INTEGER NOT NULL DEFAULT 0)"
@@ -167,6 +174,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         createLoadingState(db)
         createCallLog(db)
         createCallCache(db)
+        createBroadcastQueue(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -203,6 +211,17 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (oldVersion < 15) createLoadingState(db)
         if (oldVersion < 16) createCallLog(db)
         if (oldVersion < 17) createCallCache(db)
+        if (oldVersion < 18) {
+            val hasSentFingerprint = db.rawQuery("PRAGMA table_info(outbox)", null).use { columns ->
+                var found = false
+                while (columns.moveToNext()) if (columns.getString(1) == "sent_fingerprint") found = true
+                found
+            }
+            if (!hasSentFingerprint) db.execSQL("ALTER TABLE outbox ADD COLUMN sent_fingerprint TEXT NOT NULL DEFAULT ''")
+            db.execSQL("CREATE INDEX IF NOT EXISTS outbox_receiver_timeline ON outbox(receiver,timestamp,key)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS outbox_subscription_timeline ON outbox(sub,timestamp,key)")
+            createBroadcastQueue(db)
+        }
     }
 
     // Derived heads only: migration never drops captured SMS or resets cursors.
@@ -489,6 +508,13 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         )
     }
 
+    fun consumeOtpIntent(messageId: Long, otp: String, epoch: Long, now: Long): Boolean =
+        writableDatabase.delete(
+            "otp_intents",
+            "message_id=? AND otp=? AND epoch=? AND expires_at>?",
+            arrayOf(messageId.toString(), otp, epoch.toString(), now.toString()),
+        ) > 0
+
     fun dropExpiredOtpIntents(now: Long = System.currentTimeMillis()) {
         writableDatabase.execSQL(
             "DELETE FROM otp_intents WHERE shown=0 AND expires_at<=?",
@@ -592,6 +618,49 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db.execSQL("CREATE TABLE IF NOT EXISTS read_outbox (sender TEXT PRIMARY KEY, message_id INTEGER NOT NULL)")
     }
 
+    private fun createBroadcastQueue(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS broadcast_inbox (id INTEGER PRIMARY KEY,sender TEXT NOT NULL,body TEXT NOT NULL,timestamp INTEGER NOT NULL,subscription INTEGER NOT NULL,slot INTEGER NOT NULL,network_time INTEGER,generation INTEGER NOT NULL,received_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS outbox_receiver_timeline ON outbox(receiver,timestamp,key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS outbox_subscription_timeline ON outbox(sub,timestamp,key)")
+    }
+
+    internal fun enqueueBroadcast(message: IncomingSms, generation: Long, receivedAt: Long): Long {
+        val db = writableDatabase
+        val count = db.rawQuery("SELECT COUNT(*) FROM broadcast_inbox", null).use {
+            it.moveToFirst(); it.getLong(0)
+        }
+        check(count < 4096) { "短信广播恢复队列已满，请先恢复同步" }
+        val values = ContentValues().apply {
+            put("sender", message.sender)
+            put("body", message.body)
+            put("timestamp", message.timestamp)
+            put("subscription", message.subscription)
+            put("slot", message.slot)
+            if (message.networkTime == null) putNull("network_time") else put("network_time", message.networkTime)
+            put("generation", generation)
+            put("received_at", receivedAt)
+        }
+        return db.insertOrThrow("broadcast_inbox", null, values)
+    }
+
+    internal fun queuedBroadcasts(limit: Int = 50): List<QueuedBroadcast> = readableDatabase
+        .rawQuery("SELECT id,sender,body,timestamp,subscription,slot,network_time,generation,received_at FROM broadcast_inbox ORDER BY id LIMIT ?", arrayOf(limit.coerceIn(1, 100).toString()))
+        .use { c -> buildList {
+            while (c.moveToNext()) add(QueuedBroadcast(c.getLong(0), IncomingSms(c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), c.getInt(5), if (c.isNull(6)) null else c.getLong(6)), c.getLong(7), c.getLong(8)))
+        } }
+
+    fun deleteBroadcast(id: Long) {
+        writableDatabase.delete("broadcast_inbox", "id=?", arrayOf(id.toString()))
+    }
+
+    fun retryBroadcast(id: Long) {
+        writableDatabase.execSQL("UPDATE broadcast_inbox SET attempts=attempts+1 WHERE id=?", arrayOf(id.toString()))
+    }
+
+    fun broadcastQueueCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM broadcast_inbox", null).use {
+        it.moveToFirst(); it.getInt(0)
+    }
+
     private fun createReadState(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS conversation_reads (sender TEXT PRIMARY KEY, last_read_message_id INTEGER NOT NULL)")
         db.execSQL("INSERT OR IGNORE INTO meta VALUES ('global_watermark_id', 0)")
@@ -657,6 +726,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 }
                 if (head > meta("global_watermark_id")) {
                     db.execSQL("UPDATE meta SET value=? WHERE key='global_watermark_id'", arrayOf(head))
+                    if (head > 0) {
+                        db.execSQL("INSERT OR REPLACE INTO read_outbox VALUES (?,MAX(?,COALESCE((SELECT message_id FROM read_outbox WHERE sender=?),0)))", arrayOf<Any>("", head, ""))
+                    }
                     changed = true
                 }
                 if (head > 0) revoked += revokeOtpIntents(db, null, head)
@@ -898,7 +970,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     }
 
     fun pendingCount(): Int =
-        readableDatabase.rawQuery("SELECT COUNT(*) FROM outbox WHERE blocked<>'$AUTO_IGNORED'", null).use {
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM outbox", null).use {
             it.moveToFirst()
             it.getInt(0)
         }
@@ -1434,6 +1506,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 if (providerId == null) put("broadcast_key", broadcastKey)
                 else put("provider_id", providerId)
                 put("sender", m.sender)
+                // The broadcast/provider observation is authoritative for the wire fingerprint;
+                // notification timestamps are only matching evidence and may differ by seconds.
+                put("timestamp", m.timestamp)
                 if (candidate.sub < 0 && m.subscriptionId >= 0) put("sub", m.subscriptionId)
                 if (candidate.receiver.isEmpty() && m.receiver.isNotEmpty()) put("receiver", m.receiver)
             },
@@ -1444,6 +1519,9 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             "outbox",
             ContentValues().apply {
                 put("sender", m.sender)
+                // The broadcast/provider observation is authoritative for the wire fingerprint;
+                // notification timestamps are only matching evidence and may differ by seconds.
+                put("timestamp", m.timestamp)
                 if (candidate.sub < 0 && m.subscriptionId >= 0) put("sub", m.subscriptionId)
                 if (slot >= 0) put("slot", slot)
                 if (candidate.receiver.isEmpty() && m.receiver.isNotEmpty()) put("receiver", m.receiver)
@@ -1794,12 +1872,17 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     false
                 }
             }
+            result.forEach { (key, message) ->
+                db.execSQL("UPDATE outbox SET sent_fingerprint=? WHERE key=?", arrayOf(message.fingerprint(), key))
+            }
             db.setTransactionSuccessful()
             return result
-        } finally { db.endTransaction() }
+        } finally {
+            db.endTransaction()
+        }
     }
 
-    // Delay until the next held notification row is released, or null when none is held.
+    // Milliseconds until a held notification can be reconsidered, or null when none is held.
     fun nextNotificationRelease(now: Long = System.currentTimeMillis()): Long? =
         readableDatabase
             .rawQuery(
@@ -1999,11 +2082,18 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
-    fun block(key: String, reason: String) {
-        writableDatabase.execSQL(
-            "UPDATE outbox SET blocked=? WHERE key=? AND blocked=''",
-            arrayOf(reason, key),
-        )
+    fun block(key: String, reason: String, fingerprint: String? = null) {
+        if (fingerprint == null) {
+            writableDatabase.execSQL(
+                "UPDATE outbox SET blocked=? WHERE key=? AND blocked=''",
+                arrayOf(reason, key),
+            )
+        } else {
+            writableDatabase.execSQL(
+                "UPDATE outbox SET blocked=? WHERE key=? AND blocked='' AND sent_fingerprint=?",
+                arrayOf(reason, key, fingerprint),
+            )
+        }
         changes.value++
     }
 
@@ -2031,6 +2121,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         db: SQLiteDatabase,
         key: String,
         receiver: String,
+        sender: String,
         body: String,
         timestamp: Long,
         outgoing: Boolean,
@@ -2046,17 +2137,17 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         if (hasNotificationReceipt(db, key)) return 0
         val candidates =
             db.rawQuery(
-                    "SELECT o.key,c.key FROM outbox o JOIN captures c ON c.key=o.key JOIN notification_receipts n ON n.capture_key=c.key WHERE c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL AND o.receiver='' AND o.sub<0 AND o.blocked<>'notification_collision' AND o.body=? AND ABS(o.timestamp-CAST(? AS INTEGER))<=? LIMIT 2",
+                    "SELECT o.key,c.key,o.sender FROM outbox o JOIN captures c ON c.key=o.key JOIN notification_receipts n ON n.capture_key=c.key WHERE c.source='notification' AND c.broadcast_key IS NULL AND c.provider_id IS NULL AND o.receiver='' AND o.sub<0 AND o.blocked<>'notification_collision' AND o.body=? AND ABS(o.timestamp-CAST(? AS INTEGER))<=? LIMIT 2",
                     arrayOf(body, timestamp.toString(), NOTIFICATION_ABSORB_WINDOW.toString()),
                 )
                 .use { c ->
                     buildList {
-                        while (c.moveToNext()) add(c.getString(0) to c.getString(1))
+                        while (c.moveToNext()) add(Triple(c.getString(0), c.getString(1), c.getString(2)))
                     }
                 }
         if (candidates.size != 1) return 0
-        val (orphanOutbox, orphanCapture) = candidates.single()
-        if (orphanOutbox == key) return 0
+        val (orphanOutbox, orphanCapture, orphanSender) = candidates.single()
+        if (orphanOutbox == key || !notificationSenderMatches(orphanSender, sender, body)) return 0
         db.execSQL(
             "UPDATE notification_receipts SET capture_key=? WHERE capture_key=?",
             arrayOf(key, orphanCapture),
@@ -2119,6 +2210,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     db,
                     captures.single(),
                     match.receiver,
+                    match.sender,
                     match.body,
                     match.timestamp,
                     outgoing = false,
@@ -2127,33 +2219,45 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return absorbed
     }
 
-    fun ack(keys: List<String>) {
+    // Direct local/test reconciliation acknowledges the current generation. Network responses
+    // must use acknowledgeUploads, whose immutable fingerprint came from the actual request.
+    fun ack(keys: List<String>) = acknowledgeUploads(keys.map { UploadAck(it, "") })
+
+    internal fun acknowledgeUploads(acks: List<UploadAck>) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             val resolver = receiverResolver(allowFallback = false)
             var notificationOnly = 0
             var absorbed = 0
-            for (key in keys) {
+            for (ack in acks) {
+                val key = ack.key
+                var storedFingerprint = ""
                 // Enrichment may race an HTTP request. Recheck the current wire identity
                 // before ACK can remove a newly colliding observation.
-                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub,direction FROM outbox WHERE key=?", arrayOf(key)).use { c ->
-                    if (!c.moveToFirst()) null else SmsRecord(c.getString(0).ifEmpty { resolver(c.getInt(4)) },
-                        c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), outgoing = c.getString(5) == "out")
-                }
+                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub,direction,sent_fingerprint FROM outbox WHERE key=?", arrayOf(key)).use { c ->
+                    if (!c.moveToFirst()) null else {
+                        storedFingerprint = c.getString(6)
+                        SmsRecord(c.getString(0).ifEmpty { resolver(c.getInt(4)) },
+                            c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), outgoing = c.getString(5) == "out")
+                    }
+                } ?: continue
+                val expected = ack.fingerprint.ifEmpty { storedFingerprint.ifEmpty { current.fingerprint() } }
+                if (expected != current.fingerprint()) continue
                 val source =
                     db.rawQuery("SELECT source FROM captures WHERE key=?", arrayOf(key)).use {
                         if (it.moveToFirst()) it.getString(0) else ""
                     }
                 if (current != null && confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
                 val unpaired = db.rawQuery("SELECT 1 FROM outbox WHERE key=? AND $UNPAIRED_NOTIFICATION", arrayOf(key)).use { it.moveToFirst() }
-                if (db.delete("outbox", "key=? AND blocked<>'notification_collision'", arrayOf(key)) > 0) {
+                if (db.delete("outbox", "key=? AND blocked<>'notification_collision' AND sent_fingerprint IN (?, '')", arrayOf(key, expected)) > 0) {
                     if (unpaired) notificationOnly++
                     if (current != null && (source == "broadcast" || source == "provider"))
                         absorbed += absorbAuthoritativeDuplicate(
                             db,
                             key,
                             current.receiver,
+                            current.sender,
                             current.body,
                             current.timestamp,
                             current.outgoing,
@@ -2556,44 +2660,59 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
     // views show them immediately. After the ACK the synced copy replaces them.
     fun localMessages(sender: String = "", q: String = "", sim: String = "", localContactSenders: Set<String> = emptySet()): List<CachedMessage> {
         val resolver = receiverResolver(allowFallback = false)
-        var where = "o.blocked<>'$AUTO_IGNORED'"
-        val args = mutableListOf<String>()
+        val base = StringBuilder("o.blocked<>'$AUTO_IGNORED'")
+        val baseArgs = mutableListOf<String>()
         if (sender.isNotEmpty()) {
-            where += " AND o.sender=?"
-            args.add(sender)
+            base.append(" AND o.sender=?")
+            baseArgs.add(sender)
         }
         if (q.isNotEmpty()) {
-            where +=
-                " AND (instr(lower(o.body),lower(?))>0 OR instr(lower(o.sender),lower(?))>0 OR instr(lower(COALESCE(n.name,'')),lower(?))>0${contactSearchClause("o.sender", localContactSenders)})"
-            args.addAll(listOf(q, q, q))
+            base.append(" AND (instr(lower(o.body),lower(?))>0 OR instr(lower(o.sender),lower(?))>0 OR instr(lower(COALESCE(n.name,'')),lower(?))>0${contactSearchClause("o.sender", localContactSenders)})")
+            baseArgs.addAll(listOf(q, q, q))
         }
-        return readableDatabase
-            .rawQuery(
-                "SELECT o.rowid,o.receiver,o.sender,o.body,o.timestamp,o.sub,o.historical,COALESCE(n.name,''),o.direction FROM outbox o LEFT JOIN contact_snapshot n ON n.phone=o.sender WHERE $where ORDER BY o.timestamp DESC LIMIT 500",
+        if (sim.isNotEmpty()) {
+            val subscriptions = (if (config.automaticSim && !config.simRecognitionHealthy) emptyList() else sims())
+                .filter { it.phone == sim && it.sub >= 0 }.map { it.sub }
+            base.append(" AND (o.receiver=?")
+            baseArgs.add(sim)
+            if (subscriptions.isNotEmpty()) {
+                base.append(" OR (o.receiver='' AND o.sub IN (${subscriptions.joinToString(",") { "?" }}))")
+                baseArgs.addAll(subscriptions.map { it.toString() })
+            }
+            base.append(")")
+        }
+        val result = mutableListOf<CachedMessage>()
+        var beforeTimestamp: Long? = null
+        var beforeKey = ""
+        while (result.size < 500) {
+            val where = StringBuilder(base)
+            val args = baseArgs.toMutableList()
+            beforeTimestamp?.let {
+                where.append(" AND (o.timestamp<? OR (o.timestamp=? AND o.key<?))")
+                args.addAll(listOf(it.toString(), it.toString(), beforeKey))
+            }
+            var scanned = 0
+            readableDatabase.rawQuery(
+                "SELECT o.rowid,o.receiver,o.sender,o.body,o.timestamp,o.sub,o.historical,COALESCE(n.name,''),o.direction,o.key FROM outbox o LEFT JOIN contact_snapshot n ON n.phone=o.sender WHERE $where ORDER BY o.timestamp DESC,o.key DESC LIMIT 200",
                 args.toTypedArray(),
-            )
-            .use { c ->
-                buildList {
-                    while (c.moveToNext()) {
-                        val receiver = c.getString(1).ifEmpty { resolver(c.getInt(5)) }
-                        if (sim.isNotEmpty() && receiver != sim) continue
-                        add(
-                            CachedMessage(
-                                -c.getLong(0),
-                                config.deviceId,
-                                receiver,
-                                c.getString(2),
-                                c.getString(3),
-                                c.getLong(4),
-                                c.getString(7),
-                                c.getInt(6) != 0,
-                                local = true,
-                                outgoing = c.getString(8) == "out",
-                            )
-                        )
-                    }
+            ).use { c ->
+                while (c.moveToNext()) {
+                    scanned++
+                    beforeTimestamp = c.getLong(4)
+                    beforeKey = c.getString(9)
+                    val receiver = c.getString(1).ifEmpty { resolver(c.getInt(5)) }
+                    if (sim.isNotEmpty() && receiver != sim) continue
+                    result += CachedMessage(
+                        -c.getLong(0), config.deviceId, receiver, c.getString(2), c.getString(3),
+                        c.getLong(4), c.getString(7), c.getInt(6) != 0, local = true,
+                        outgoing = c.getString(8) == "out",
+                    )
+                    if (result.size == 500) break
                 }
             }
+            if (scanned < 200) break
+        }
+        return result
     }
 
     fun messagesWithLocal(
@@ -2663,6 +2782,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.execSQL("UPDATE meta SET value=-1 WHERE key='initial_head'")
             db.execSQL("UPDATE meta SET value=? WHERE key='capture_since'", arrayOf(connectedAt))
             if (clearCaptures) {
+                db.delete("outbox", null, null)
+                db.delete("broadcast_inbox", null, null)
+                db.delete("capture_events", null, null)
+                db.delete("incomplete_provider", null, null)
+                db.delete("incomplete_sent", null, null)
                 db.delete("upload_fingerprints", null, null)
                 db.delete("notification_receipts", null, null)
                 db.delete("captures", null, null)

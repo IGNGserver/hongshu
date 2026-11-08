@@ -311,14 +311,14 @@ internal fun callAcks(batch: List<CallRecord>, acks: JSONArray): List<CallAck> {
 }
 
 // Uploads queued calls in batches of 100. Returns true when a bounded pass left more queued.
-internal fun uploadCalls(
+internal suspend fun uploadCalls(
     api: Api,
     store: Store,
-    ensure: (CallRecord) -> Unit,
+    ensure: suspend (CallRecord) -> Unit,
     enabled: () -> Boolean = { true },
     maxBatches: Int = 5,
-    request: (List<CallRecord>) -> JSONObject = { batch ->
-        api.request(
+    request: suspend (List<CallRecord>) -> JSONObject = { batch ->
+        api.requestCancellable(
             "/calls",
             "POST",
             JSONObject().put("calls", JSONArray().apply { batch.forEach { put(it.json()) } }),
@@ -329,7 +329,7 @@ internal fun uploadCalls(
         if (!enabled()) return false
         val batch = store.callUploadCandidates(CALL_PAGE)
         if (batch.isEmpty()) return false
-        batch.filter { it.receiver.isNotEmpty() }.distinctBy { it.receiver to it.subscriptionId }.forEach(ensure)
+        batch.filter { it.receiver.isNotEmpty() }.distinctBy { it.receiver to it.subscriptionId }.forEach { ensure(it) }
         store.applyCallAcks(callAcks(batch, request(batch).getJSONArray("acks")))
     }
     return store.callUploadCandidates(1).isNotEmpty()

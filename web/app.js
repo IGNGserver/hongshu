@@ -9,13 +9,19 @@ let contactSearchRequest = 0;
 
 export const query = (values) =>
   new URLSearchParams(
-    Object.entries(values).filter(([, v]) => v !== "" && v !== undefined),
+    Object.entries(values).filter(([, v]) => v !== "" && v != null),
   ).toString();
 
 export function mergeMessages(previous, incoming) {
   const m = new Map(previous.map((v) => [v.id, v]));
   for (const v of incoming) m.set(v.id, v);
   return [...m.values()].sort((a, b) => (a.timestamp - b.timestamp) || a.id - b.id);
+}
+
+export const MESSAGE_WINDOW_LIMIT = 500;
+export function boundMessageWindow(messages, older, limit = MESSAGE_WINDOW_LIMIT) {
+  if (messages.length <= limit) return messages;
+  return older ? messages.slice(0, limit) : messages.slice(-limit);
 }
 
 export function epochReset(seen, stored, observed) {
@@ -252,6 +258,11 @@ let metadataTask = null;
 let metadataRevision = null;
 let metadataUpdatedAt = 0;
 let countsController = null;
+let countsTimer = null;
+let countsRequest = 0;
+let countsRetry = 0;
+let countsDirty = false;
+let countsKey = "";
 let metadataChanges = 0;
 const detailCache = new Map();
 const conversationNodes = new Map();
@@ -276,6 +287,8 @@ const state = {
   messagesQuery: "",
   conversationsLoaded: false,
   conversationsHasMore: false,
+  conversationCursor: null,
+  conversationHead: 0,
   loadingMore: false,
   renderedDetailKey: "",
   returning: false,
@@ -350,6 +363,16 @@ const errors = {
   ai_budget_or_rate_limit: "已达到调用限速或今日额度，请稍后再试",
   ai_disabled: "AI 已关闭，请刷新页面",
   not_found: "该记录已不存在",
+  cursor_reset: "列表已更新，正在重新加载",
+  // Server state moved: the client reloads rather than showing a bare code.
+  epoch_changed: "中枢数据已恢复或重置，正在重新同步",
+  read_state_changed: "已读状态已更新，正在重新同步",
+  analysis_cursor_changed: "分类结果已更新，正在重新同步",
+  invalid_cursor: "同步位置已失效，正在重新加载",
+  invalid_revision: "同步位置已失效，正在重新加载",
+  forbidden: "没有权限执行此操作",
+  admin_required: "需要管理员权限",
+  origin_required: "请从中枢配置的地址访问本页",
 };
 
 // SVG Icon Assets (Google Material Symbols / Icons)
@@ -480,11 +503,22 @@ async function openLocalContact(phone) {
   // Scan conversation heads only on explicit selection. No name, photo, contact ID or
   // address-book number is sent to the hub; retain each original sender as its own thread.
   const matches = [];
-  for (let offset = 0; ; offset += CONVERSATION_PAGE) {
-    const d = await api("/conversations?" + query({ limit: CONVERSATION_PAGE, offset }));
+  const cursorMode = state.me?.features?.includes("conversation_cursor");
+  let cursor = null;
+  let firstHead = null;
+  const seenCursors = new Set();
+  for (let offset = 0, pages = 0; pages < 10000; offset += CONVERSATION_PAGE, pages++) {
+    const d = await api("/conversations?" + query({ limit: CONVERSATION_PAGE, offset: cursorMode ? undefined : offset, cursor: cursorMode ? cursor : undefined }));
     if (request !== contactSearchRequest || state.page !== "inbox" || generation !== state.generation || version !== browserContacts.version || !browserContacts.find(phone)) return;
+    if (d.epoch != null && d.epoch !== state.epoch) throw new DOMException("Conversation epoch changed", "AbortError");
+    if (cursorMode && firstHead !== null && d.head !== firstHead) throw new ApiError(409, "cursor_reset");
+    firstHead ??= d.head;
     matches.push(...d.conversations.filter(c => contactNumber(c.sender) === phone));
-    if (d.conversations.length < CONVERSATION_PAGE) break;
+    if (cursorMode) {
+      if (!d.more || !d.next_cursor || seenCursors.has(d.next_cursor)) break;
+      seenCursors.add(d.next_cursor);
+      cursor = d.next_cursor;
+    } else if (d.conversations.length < CONVERSATION_PAGE) break;
   }
   const unique = [...new Map(matches.map(c => [c.sender, c])).values()];
   if (!unique.length) { toast("此联系人暂无短信会话"); return; }
@@ -507,8 +541,7 @@ async function openContactConversation(sender) {
   state.historyLoading = true;
   setDetailOpen(true);
   enterDetailHistory();
-  shell();
-  await refreshInbox();
+  shell(); // inboxView owns the single refresh for the newly selected query.
 }
 
 function simLabel(phone) {
@@ -592,7 +625,7 @@ function saveTheme(choice) {
 const DETAIL_HISTORY = "hongshuDetail";
 function setDetailOpen(open) {
   $(".layout")?.classList.toggle("has-detail", open);
-  document.body.dataset.detail = String(open);
+  if (document.body) document.body.dataset.detail = String(open);
 }
 function enterDetailHistory() {
   if (history.state?.[DETAIL_HISTORY]) history.replaceState({ [DETAIL_HISTORY]: true }, "");
@@ -627,12 +660,14 @@ function playReturn(layout, cls = "returning") {
 
 // Only waits longer than 300ms show the progress bar, so quick requests do not flash it.
 let busyTimer = null;
+let busyCount = 0;
 function setBusy(b) {
-  state.busy = b;
+  busyCount = Math.max(0, busyCount + (b ? 1 : -1));
+  state.busy = busyCount > 0;
   clearTimeout(busyTimer);
   const p = $("#global-progress");
   if (!p) return;
-  if (!b) { p.style.display = "none"; return; }
+  if (!state.busy) { p.style.display = "none"; return; }
   busyTimer = setTimeout(() => {
     const bar = $("#global-progress");
     if (state.busy && bar) bar.style.display = "block";
@@ -672,6 +707,9 @@ async function api(path, method = "GET", body, { signal } = {}) {
   if (generation !== state.generation || controller.signal.aborted) throw new DOMException("Session ended", "AbortError");
   if (!res.ok) {
     if (res.status === 401 && state.me) {
+      const owner = state.me.device?.id || browserContacts.owner;
+      contactsChannel?.postMessage({ type: "logout" });
+      void browserContacts.clear(owner).catch(() => {});
       disconnect();
       authView();
     }
@@ -696,16 +734,28 @@ function el(tag, cls, text) {
   return n;
 }
 
+const pendingButtons = new WeakSet();
+function invokeButton(button, fn) {
+  if (pendingButtons.has(button)) return;
+  pendingButtons.add(button);
+  button.disabled = true;
+  setBusy(true);
+  let result;
+  try { result = fn(); } catch (error) { result = Promise.reject(error); }
+  Promise.resolve(result)
+    .catch((error) => toast(error.message))
+    .finally(() => {
+      pendingButtons.delete(button);
+      button.disabled = false;
+      setBusy(false);
+    });
+}
+
 function button(text, fn, cls = "") {
   const b = el("button", cls, text);
   b.type = "button";
   attachRipple(b);
-  b.onclick = () => {
-    setBusy(true);
-    Promise.resolve(fn())
-      .catch((e) => toast(e.message))
-      .finally(() => setBusy(false));
-  };
+  b.onclick = () => invokeButton(b, fn);
   return b;
 }
 
@@ -718,10 +768,7 @@ function iconButton(svgHtml, label, fn, cls = "") {
   attachRipple(b);
   b.onclick = (e) => {
     e.stopPropagation();
-    setBusy(true);
-    Promise.resolve(fn())
-      .catch((err) => toast(err.message))
-      .finally(() => setBusy(false));
+    invokeButton(b, fn);
   };
   return b;
 }
@@ -835,6 +882,7 @@ function authView() {
       password.value = "";
       setReveal(false);
       await start();
+      if (state.me) contactsChannel?.postMessage({ type: "login" });
     } catch (err) {
       toast(err.message);
     } finally {
@@ -1310,7 +1358,7 @@ function renderFilterMenu() {
 
 let inboxAbortController = null;
 let refreshGeneration = 0;
-async function refreshInbox({ metadata = false, preserveHistory = false, revalidateHistory = false, revalidateConversations = false, arrivals = false } = {}) {
+async function refreshInbox({ metadata = false, preserveHistory = false, revalidateHistory = false, revalidateConversations = false, arrivals = false, cursorRetried = false } = {}) {
   if (!state.me) return false;
   invalidateQueryData();
   if (inboxAbortController) {
@@ -1336,31 +1384,45 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
       q: state.q,
       sim: state.sim,
       device: state.device,
-      offset: 0,
+      offset: state.me?.features?.includes("conversation_cursor") ? undefined : 0,
       limit: CONVERSATION_PAGE,
     };
     const d = await api("/conversations?" + query(args), "GET", undefined, { signal });
     if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return false;
     const head = d.conversations;
-    const headIsFull = head.length === CONVERSATION_PAGE;
+    if (d.epoch != null && d.epoch !== epoch) throw new DOMException("Conversation epoch changed", "AbortError");
+    const cursorMode = state.me?.features?.includes("conversation_cursor");
+    const headIsFull = cursorMode ? Boolean(d.more) : head.length === CONVERSATION_PAGE;
+    const firstCursor = cursorMode ? d.next_cursor || null : null;
     if (preserveHistory && revalidateConversations) {
       let rows = head;
       let full = headIsFull;
+      let nextCursor = firstCursor;
       // Scrolling can append pages while a revalidation request is in flight.
       // Re-read the live range after each await, rather than replacing it with
       // the shorter range captured at the start of this refresh.
       for (let page = 1; page < Math.ceil(state.conversations.length / CONVERSATION_PAGE) && full; page++) {
-        const next = await api("/conversations?" + query({ ...args, offset: page * CONVERSATION_PAGE }), "GET", undefined, { signal });
+        if (cursorMode && !nextCursor) { full = false; break; }
+        const pageArgs = cursorMode ? { ...args, offset: undefined, cursor: nextCursor } : { ...args, offset: page * CONVERSATION_PAGE };
+        const next = await api("/conversations?" + query(pageArgs), "GET", undefined, { signal });
+        if ((next.epoch != null && next.epoch !== epoch) || (cursorMode && next.head !== d.head)) throw new ApiError(409, "cursor_reset");
         rows = rows.concat(next.conversations);
-        full = next.conversations.length === CONVERSATION_PAGE;
+        full = cursorMode ? Boolean(next.more) : next.conversations.length === CONVERSATION_PAGE;
+        nextCursor = cursorMode ? next.next_cursor || null : null;
       }
       if (signal.aborted || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return false;
       state.conversations = rows;
-      state.conversationsHasMore = full;
+      state.conversationsHasMore = full && (!cursorMode || Boolean(nextCursor));
+      state.conversationCursor = nextCursor;
     } else {
+      const previousCursor = state.conversationCursor;
       state.conversations = preserveHistory ? mergeConversationPages(head, state.conversations, headIsFull) : head;
-      if (!preserveHistory || !headIsFull) state.conversationsHasMore = headIsFull;
+      const retainedOlder = preserveHistory && state.conversations.length > head.length;
+      state.conversationCursor = retainedOlder ? previousCursor : firstCursor;
+      if (!preserveHistory || !headIsFull) state.conversationsHasMore = headIsFull && (!cursorMode || Boolean(firstCursor));
+      if (cursorMode && retainedOlder) state.conversationsHasMore ||= Boolean(previousCursor);
     }
+    state.conversationHead = d.head || 0;
     state.conversationsQuery = key;
     state.conversationsLoaded = true;
     renderGroupBar();
@@ -1373,6 +1435,12 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
     return !signal.aborted && gen === refreshGeneration;
   } catch (err) {
     if (err.name === "AbortError" || signal.aborted) return false;
+    if (err.code === "cursor_reset" && !cursorRetried && gen === refreshGeneration) {
+      state.conversations = [];
+      state.conversationCursor = null;
+      state.conversationsLoaded = state.conversationsHasMore = false;
+      return refreshInbox({ metadata, preserveHistory: false, revalidateHistory, revalidateConversations, arrivals, cursorRetried: true });
+    }
     const list = $(".list");
     if (list && state.me && !state.conversationsLoaded) {
       list.replaceChildren(emptyState(ICONS.warning, "短信暂未加载", "网络较慢或中枢暂不可用，请重试。"),
@@ -1384,18 +1452,42 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
   }
 }
 
+export function countsBackoff(attempt) {
+  return Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
+}
+
+function scheduleCountsRetry(gen, key, epoch) {
+  if (typeof setTimeout !== "function") return;
+  if (typeof clearTimeout === "function") clearTimeout(countsTimer);
+  const delay = countsBackoff(countsRetry) + Math.floor(Math.random() * 250);
+  countsTimer = setTimeout(() => {
+    if (!state.me || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return;
+    if (document.visibilityState !== "visible" || navigator.onLine === false) return; // visibility/online listeners retry
+    void refreshCounts(gen, key);
+  }, delay);
+}
+
 async function refreshCounts(gen, key) {
   const epoch = state.epoch;
+  if (typeof clearTimeout === "function") clearTimeout(countsTimer);
+  if (countsKey !== key) { countsKey = key; countsRetry = 0; countsDirty = false; }
   countsController?.abort();
   countsController = new AbortController();
   const signal = countsController.signal;
+  const request = ++countsRequest;
   try {
     const counts = await api("/analysis/counts?" + query({ q: state.q, sim: state.sim, device: state.device }), "GET", undefined, { signal });
-    if (!signal.aborted && gen === refreshGeneration && key === inboxQueryKey() && state.me && epoch === state.epoch) {
+    if (!signal.aborted && request === countsRequest && gen === refreshGeneration && key === inboxQueryKey() && state.me && epoch === state.epoch) {
       state.counts = counts.counts;
+      countsDirty = false; countsRetry = 0;
       renderGroupBar();
     }
-  } catch { /* Next refresh retries; never discard a successful content page. */ }
+  } catch (error) {
+    if (signal.aborted || request !== countsRequest || gen !== refreshGeneration || key !== inboxQueryKey() || epoch !== state.epoch) return;
+    countsDirty = true;
+    countsRetry = Math.min(countsRetry + 1, 6);
+    scheduleCountsRetry(gen, key, epoch);
+  }
 }
 
 async function loadMoreConversations() {
@@ -1407,14 +1499,29 @@ async function loadMoreConversations() {
   state.loadingMore = true;
   $(".list-more")?.removeAttribute("hidden");
   try {
+    const cursorMode = state.me?.features?.includes("conversation_cursor");
+    if (cursorMode && !state.conversationCursor) return;
     const d = await api("/conversations?" + query({
       group: state.group, q: state.q, sim: state.sim, device: state.device,
-      offset: state.conversations.length, limit: CONVERSATION_PAGE,
+      offset: cursorMode ? undefined : state.conversations.length,
+      cursor: cursorMode ? state.conversationCursor : undefined,
+      limit: CONVERSATION_PAGE,
     }));
     if (gen !== refreshGeneration || epoch !== state.epoch || !state.me || key !== inboxQueryKey()) return;
+    if (d.epoch != null && d.epoch !== epoch) return;
+    if (cursorMode && (d.head !== state.conversationHead || (d.more && (!d.next_cursor || d.next_cursor === state.conversationCursor))))
+      throw new ApiError(409, "cursor_reset");
     const keys = new Set(state.conversations.map(conversationKey));
     state.conversations = state.conversations.concat(d.conversations.filter((c) => !keys.has(conversationKey(c))));
-    state.conversationsHasMore = d.conversations.length === CONVERSATION_PAGE;
+    state.conversationCursor = cursorMode ? d.next_cursor || null : null;
+    state.conversationsHasMore = cursorMode ? Boolean(d.more && d.next_cursor) : d.conversations.length === CONVERSATION_PAGE;
+  } catch (error) {
+    if (error.code === "cursor_reset" && gen === refreshGeneration) {
+      state.conversations = [];
+      state.conversationCursor = null;
+      state.conversationsLoaded = state.conversationsHasMore = false;
+      await refreshInbox({ preserveHistory: true, revalidateHistory: true });
+    } else throw error;
   } finally {
     state.loadingMore = false;
   }
@@ -1477,10 +1584,24 @@ function renderConversations({ arrivals = false } = {}) {
   const before = arrivals && !reducedMotion()
     ? new Map([...list.querySelectorAll(".conversation")].map((r) => [r.dataset.key, r.getBoundingClientRect().top]))
     : null;
-  list.replaceChildren();
+  const activeKey = document.activeElement?.closest?.(".conversation")?.dataset.key || "";
+  const hadFocus = Boolean(activeKey && list.contains(document.activeElement));
+  let reference;
+  const placed = new Set();
+  const place = node => {
+    if (node === reference) reference = reference.nextSibling;
+    else list.insertBefore(node, reference);
+    placed.add(node);
+  };
+  for (const child of [...list.children]) {
+    if (!child.classList.contains("conversation")) child.remove();
+  }
+  reference = list.firstChild;
+  list.tabIndex = -1;
   list.setAttribute("aria-busy", String(!state.conversationsLoaded));
 
   if (!state.conversations.length) {
+    list.replaceChildren();
     state.renderedRows = new Map();
     if (!state.conversationsLoaded) { list.append(skeletonRows()); return; }
     list.append(emptyState(ICONS.sms, "暂无短信", "暂无短信。请配置 Android 采集设备及 SIM 号码。"));
@@ -1496,16 +1617,15 @@ function renderConversations({ arrivals = false } = {}) {
     const key = conversationKey(m);
     const signature = JSON.stringify([m, isSelected, state.contacts[m.sender], browserContacts.version, simLabel(m.receiver), fresh.has(key)]);
     const cached = conversationNodes.get(key);
-    if (cached?.signature === signature) { list.append(cached.node); return; }
-    const b = el(
-      "button",
-      "conversation" + (isSelected ? " selected" : "") +
-        (fresh.has(conversationKey(m)) ? " conversation-new" : ""),
-    );
+    if (cached?.signature === signature) { place(cached.node); return; }
+    const b = cached?.node || el("button");
+    b.className = "conversation" + (isSelected ? " selected" : "") +
+      (fresh.has(conversationKey(m)) ? " conversation-new" : "");
     b.type = "button";
     b.dataset.key = conversationKey(m);
     if (isSelected) b.setAttribute("aria-current", "true");
-    attachRipple(b);
+    else b.removeAttribute("aria-current");
+    if (!cached) attachRipple(b);
 
     b.onclick = async () => {
       contactSearchRequest++;
@@ -1542,14 +1662,20 @@ function renderConversations({ arrivals = false } = {}) {
     }
     preview.append(top, bottom);
 
-    b.append(avatar(contact, m.sender), preview);
+    b.replaceChildren(avatar(contact, m.sender), preview);
     conversationNodes.set(key, { signature, node: b });
-    list.append(b);
+    place(b);
   });
 
   const more = el("div", "list-more", "正在加载更早的会话…");
   more.hidden = !state.loadingMore;
-  list.append(more);
+  place(more);
+  for (const child of [...list.children]) {
+    if (child.classList.contains("conversation") && !placed.has(child)) child.remove();
+  }
+  if (hadFocus && !list.contains(document.activeElement)) {
+    (conversationNodes.get(activeKey)?.node || list).focus({ preventScroll: true });
+  }
 
   if (before?.size) {
     for (const row of list.querySelectorAll(".conversation")) {
@@ -1637,9 +1763,9 @@ async function loadHistory(older, { preserve = false, revalidate = false } = {})
       return;
     }
 
-    state.messages = older || (preserve && !revalidate)
+    state.messages = boundMessageWindow(older || (preserve && !revalidate)
       ? mergeMessages(state.messages, incoming)
-      : mergeMessages([], incoming);
+      : mergeMessages([], incoming), older);
     state.messagesQuery = key;
     state.messages = state.messages.map((message) => ({
       ...message,
@@ -1832,6 +1958,7 @@ function renderDetail() {
 // Call log: list and single-record detail (read-only)
 // -------------------------------------------------------------
 let callsRequest = 0;
+let callDetailRequest = 0;
 
 function callsView(main) {
   main.append(el("h1", "sr-only", "通话记录"));
@@ -1861,6 +1988,11 @@ async function refreshCalls() {
   try {
     const d = await api("/calls?" + query({ limit: CALL_PAGE }));
     if (request !== callsRequest || generation !== state.generation || epoch !== state.epoch) return false;
+    if (d.epoch != null && d.epoch !== epoch) {
+      state.calls = []; state.callsLoaded = state.callsHasMore = false;
+      state.callDetail = null; state.callsDirty = true;
+      return false;
+    }
     const headIsFull = d.calls.length >= CALL_PAGE;
     const merged = mergeCallPages(d.calls, state.calls, headIsFull);
     // Older pages kept from scrolling still decide whether more remain below them.
@@ -1887,11 +2019,13 @@ async function loadMoreCalls() {
   if (!state.me || !state.callsHasMore || state.callsLoadingMore || !state.calls.length) return;
   const generation = state.generation;
   const epoch = state.epoch;
+  const request = callsRequest;
   state.callsLoadingMore = true;
   $(".call-list .list-more")?.removeAttribute("hidden");
   try {
     const d = await api("/calls?" + query({ limit: CALL_PAGE, before: state.calls.at(-1).id }));
-    if (generation !== state.generation || epoch !== state.epoch) return;
+    if (generation !== state.generation || epoch !== state.epoch || request !== callsRequest) return;
+    if (d.epoch != null && d.epoch !== epoch) { state.callsDirty = true; return; }
     state.calls = appendCallPage(state.calls, d.calls);
     state.callsHasMore = Boolean(d.more);
   } finally {
@@ -1971,9 +2105,17 @@ async function openCall(c) {
   renderCalls();
   renderCallDetail();
   const generation = state.generation;
+  const epoch = state.epoch;
+  const request = ++callDetailRequest;
   try {
     const d = await api("/calls/" + c.id);
-    if (generation !== state.generation || state.callId !== c.id) return;
+    if (request !== callDetailRequest || generation !== state.generation || epoch !== state.epoch || state.callId !== c.id) return;
+    if (d.epoch != null && d.epoch !== epoch) {
+      state.calls = []; state.callsLoaded = state.callsHasMore = false;
+      state.callId = 0; state.callDetail = null; state.callsDirty = true;
+      setDetailOpen(false); renderCalls(); renderCallDetail();
+      return;
+    }
     state.callDetail = d.call;
     renderCallDetail();
   } catch (error) {
@@ -1983,6 +2125,7 @@ async function openCall(c) {
 
 function closeCallDetail() {
   const wasOpen = Boolean(state.callId);
+  callDetailRequest++;
   state.callId = 0;
   state.callDetail = null;
   setDetailOpen(false);
@@ -2111,6 +2254,34 @@ function bubble(msg, fresh) {
   return b;
 }
 
+const otpExpirations = new Map();
+let otpExpirationTimer = null;
+function trackOtpExpiration(card, validity, bar, expires, share, stepped) {
+  otpExpirations.set(card, { validity, bar, expires, share, stepped, lastPaint: 0 });
+  if (otpExpirationTimer === null) otpExpirationTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [target, record] of otpExpirations) {
+      if (!target.isConnected || now >= record.expires) {
+        if (target.isConnected) {
+          target.classList.add("expired");
+          record.validity.textContent = "按短信标注的有效期，可能已过期";
+          record.bar.style.width = "0%";
+        }
+        otpExpirations.delete(target);
+      } else if (record.stepped && now - record.lastPaint >= 5000) {
+        record.bar.style.width = record.share();
+        record.lastPaint = now;
+      }
+    }
+    if (!otpExpirations.size) { clearInterval(otpExpirationTimer); otpExpirationTimer = null; }
+  }, 1000);
+}
+function clearOtpExpirations() {
+  otpExpirations.clear();
+  if (otpExpirationTimer !== null && typeof clearInterval === "function") clearInterval(otpExpirationTimer);
+  otpExpirationTimer = null;
+}
+
 function otpCard(msg) {
   const code = msg.analysis.otp;
   const card = el("div", "otp-card");
@@ -2158,23 +2329,14 @@ function otpCard(msg) {
       validity.textContent = `有效至 ${formatClock(expires)}`;
       const share = () => `${Math.max(0, Math.min(100, ((expires - Date.now()) / total) * 100))}%`;
       bar.style.width = share();
-      if (reducedMotion()) {
-        // No continuous motion: step the bar every few seconds so it still shows the time left.
-        const timer = setInterval(() => {
-          if (!card.isConnected || Date.now() >= expires) clearInterval(timer);
-          else bar.style.width = share();
-        }, 5000);
-      } else {
+      const stepped = reducedMotion();
+      if (!stepped) {
         requestAnimationFrame(() => {
           bar.style.transition = `width ${remaining}ms linear`;
           bar.style.width = "0%";
         });
       }
-      setTimeout(() => {
-        if (!card.isConnected) return;
-        card.classList.add("expired");
-        validity.textContent = "按短信标注的有效期，可能已过期";
-      }, remaining);
+      trackOtpExpiration(card, validity, bar, expires, share, stepped);
     }
   }
   return card;
@@ -2356,11 +2518,23 @@ async function disablePush() {
 }
 
 async function logout() {
-  try { await browserContacts.clear(); }
-  finally { contactsChanged(); }
-  await api("/logout", "POST", {});
-  disconnect();
-  authView();
+  const owner = state.me?.device?.id || browserContacts.owner;
+  try {
+    await api("/logout", "POST", {});
+  } catch (error) {
+    // A transport failure proves nothing about revocation. Keep the session and
+    // contacts intact so the user can retry; a confirmed 401 is already logged out.
+    if (error.status === 401) return; // api() already performed the confirmed cleanup
+    throw error;
+  }
+  let cleanupError = null;
+  try { await browserContacts.clear(owner); } catch (error) { cleanupError = error; }
+  finally {
+    contactsChannel?.postMessage({ type: "logout" });
+    disconnect();
+    authView();
+  }
+  if (cleanupError) toast("已退出；本机联系人持久存储清理失败，请清除站点数据");
 }
 
 // -------------------------------------------------------------
@@ -2789,6 +2963,10 @@ function disconnect() {
   metadataTask = null; metadataRevision = null; metadataUpdatedAt = 0;
   detailCache.clear(); conversationNodes.clear();
   countsController?.abort();
+  if (typeof clearTimeout === "function") clearTimeout(countsTimer); countsRequest++; countsRetry = 0; countsDirty = false; countsKey = "";
+  clearOtpExpirations();
+  if (typeof clearTimeout === "function") clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = null; wsRetry = 0;
   state.ws?.close();
   state.ws = null;
   refreshGeneration++;
@@ -2809,6 +2987,7 @@ function disconnect() {
   state.sender = state.q = state.sim = state.device = "";
   state.cursor = state.epoch = 0;
   state.conversationsLoaded = state.conversationsHasMore = state.loadingMore = false;
+  state.conversationCursor = null; state.conversationHead = 0;
   state.renderedDetailKey = "";
   state.epochSeen = false;
   state.inboxDirty = false;
@@ -2826,29 +3005,63 @@ function disconnect() {
   state.callCursor = state.callId = 0;
   state.callDetail = null;
   callsRequest++;
+  callDetailRequest++;
+  contactSearchRequest++;
   updateAppBadge(0);
 }
 
 export async function handlePushUpdate(event) {
-  if (event.data?.type !== "MESSAGES_CHANGED" || !state.me || state.loggedOut) return;
+  if (!state.me || state.loggedOut) return;
+  if (event.data?.type === "PUSH_SUBSCRIPTION_CHANGED") {
+    state.me = { ...state.me, push_subscribed: true };
+    return;
+  }
+  if (event.data?.type === "PUSH_SUBSCRIPTION_FAILED") {
+    state.me = { ...state.me, push_subscribed: false };
+    if (state.me.device?.notify) {
+      try { await browserPushEnabled(); }
+      catch (error) { if (error.name !== "AbortError") toast("通知订阅恢复失败，请稍后重试"); }
+    }
+    return;
+  }
+  if (event.data?.type !== "MESSAGES_CHANGED") return;
   await catchUp();
 }
 
+let wsReconnectTimer = null;
+let wsRetry = 0;
+export function wsBackoff(attempt, random = Math.random()) {
+  const ceiling = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
+  return Math.floor(ceiling / 2 + random * ceiling / 2);
+}
+function scheduleRealtime(gen) {
+  if (wsReconnectTimer !== null || navigator.onLine === false || state.loggedOut || gen !== state.generation || !state.me) return;
+  if (state.ws && (state.ws.readyState === 0 || state.ws.readyState === 1)) return;
+  const delay = wsBackoff(wsRetry);
+  wsRetry = Math.min(wsRetry + 1, 6);
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    if (!state.loggedOut && gen === state.generation && state.me && navigator.onLine !== false) realtime();
+  }, delay);
+}
 function realtime() {
+  if (!state.me || state.loggedOut || navigator.onLine === false) { setStatus("离线，等待网络恢复", false); return; }
+  if (state.ws && (state.ws.readyState === 0 || state.ws.readyState === 1)) return;
+  if (wsReconnectTimer !== null) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   const gen = state.generation;
   const ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/ws");
   state.ws = ws;
   ws.onopen = () => {
     if (gen !== state.generation || !state.me) { ws.close(); return; }
+    wsRetry = 0;
     setStatus("实时连接", true);
     void catchUp().catch((e) => toast(e.message));
   };
   ws.onmessage = () => { if (gen === state.generation && state.me) void catchUp().catch((e) => toast(e.message)); };
   ws.onclose = () => {
-    if (gen === state.generation && state.me) setStatus("断线，等待补齐", false);
-    if (!state.loggedOut && gen === state.generation) {
-      setTimeout(() => { if (!state.loggedOut && gen === state.generation) realtime(); }, 5000 + Math.random() * 2000);
-    }
+    if (state.ws === ws) state.ws = null;
+    if (gen === state.generation && state.me) setStatus(navigator.onLine === false ? "离线，等待网络恢复" : "断线，等待补齐", false);
+    scheduleRealtime(gen);
   };
   ws.onerror = () => ws.close();
 }
@@ -2880,10 +3093,13 @@ async function catchUp() {
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
       state.calls = [];
       state.callsLoaded = state.callsHasMore = false;
+      state.callId = 0; state.callDetail = null; callDetailRequest++;
+      setDetailOpen(false);
       detailCache.clear(); metadataRevision = null; metadataUpdatedAt = 0;
       state.pendingDisplayedRead = null;
       state.messages = [];
       state.conversations = [];
+      state.conversationCursor = null; state.conversationHead = 0;
       state.cursor = 0;
     }
     state.epoch = me.epoch;
@@ -2990,7 +3206,16 @@ if (typeof document !== "undefined") {
   });
   if (typeof BroadcastChannel === "function") {
     contactsChannel = new BroadcastChannel("hongshu-local-contacts");
-    contactsChannel.onmessage = () => {
+    contactsChannel.onmessage = event => {
+      if (event.data?.type === "logout") {
+        const owner = state.me?.device?.id || browserContacts.owner;
+        void browserContacts.clear(owner).catch(() => {}).finally(() => { disconnect(); authView(); });
+        return;
+      }
+      if (event.data?.type === "login") {
+        void start().catch(error => { if (error.status === 401) authView(); });
+        return;
+      }
       if (state.me) void reloadLocalContacts().catch(error => toast(error.message));
     };
   }
@@ -3003,6 +3228,7 @@ if (typeof document !== "undefined") {
     void handlePushUpdate(event).catch(() => {});
   });
   setInterval(() => {
+    renewShellLease();
     if (state.me && document.visibilityState === "visible") {
       void catchUp().catch(() => setStatus("离线，历史暂不可用", false));
     }
@@ -3018,9 +3244,24 @@ if (typeof document !== "undefined") {
     if (!event.state?.[DETAIL_HISTORY] && state.sender) closeDetail();
     if (!event.state?.[DETAIL_HISTORY] && state.callId) closeCallDetail();
   });
+  window.addEventListener("online", () => {
+    wsRetry = 0;
+    if (wsReconnectTimer !== null) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    if (!state.me) return;
+    realtime();
+    if (countsDirty) void refreshCounts(refreshGeneration, inboxQueryKey());
+    void catchUp().catch(() => {});
+  });
+  window.addEventListener("offline", () => {
+    if (wsReconnectTimer !== null) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    state.ws?.close();
+    setStatus("离线，等待网络恢复", false);
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.me) {
       if (!contactsBusy) void reloadLocalContacts().catch(error => toast(error.message));
+      if (countsDirty) void refreshCounts(refreshGeneration, inboxQueryKey());
+      realtime();
       void catchUp().catch(() => {});
     }
   });
@@ -3151,17 +3392,28 @@ function offerShellUpdate() {
   document.body.append(notice);
 }
 
+let shellLeaseAt = 0;
+function renewShellLease(force = false) {
+  const revision = document.querySelector('meta[name="hongshu-shell-revision"]')?.content;
+  if (!navigator.serviceWorker?.controller || !/^[a-f0-9]{24}$/.test(revision || "")) return;
+  if (!force && Date.now() - shellLeaseAt < 6 * 60 * 60 * 1000) return;
+  shellLeaseAt = Date.now();
+  navigator.serviceWorker.controller.postMessage({ type: "SHELL_ACTIVE", revision });
+}
+
 async function registerShell() {
   if (!window.isSecureContext || !("serviceWorker" in navigator)
     || document.querySelector('meta[name="hongshu-shell-revision"]')?.content === "development") return;
   try {
     const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" });
     pwaRegistration = registration;
+    renewShellLease(true);
+    void navigator.serviceWorker.ready.then(() => renewShellLease(true)).catch(() => {});
     const offer = () => offerShellUpdate();
     offer();
     registration.addEventListener("updatefound", () => registration.installing?.addEventListener("statechange", offer));
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && navigator.onLine) { void registration.update().catch(() => {}); offer(); }
+      if (!document.hidden && navigator.onLine) { void registration.update().catch(() => {}); offer(); renewShellLease(true); }
     });
     void registration.update().catch(() => {});
   } catch { /* Online shell stays usable. A later visit retries registration. */ }

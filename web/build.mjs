@@ -1,6 +1,6 @@
-import { readFile, mkdir, copyFile, writeFile, unlink } from "node:fs/promises";
+import { readFile, mkdir, copyFile, writeFile, unlink, readdir, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { build } from "esbuild";
@@ -11,7 +11,12 @@ if (!process.env.WEB_BUILD_DIR)
     "Set WEB_BUILD_DIR to a shared build cache (not the source worktree)",
   );
 const out = resolve(process.env.WEB_BUILD_DIR);
-if (out === root) throw new Error("Output must differ from source");
+if (out === root || out === resolve("/") || out.startsWith(root + sep)) throw new Error("Output must be outside the source tree");
+let previousManifest = null;
+try {
+  const candidate = JSON.parse(await readFile(resolve(out, "shell-manifest.json"), "utf8"));
+  if (/^[a-f0-9]{24}$/.test(candidate.revision) && Array.isArray(candidate.assets) && candidate.assets.every(path => /^\/assets\/[a-f0-9]{16}-[^/]+$/.test(path))) previousManifest = candidate;
+} catch { /* a missing or invalid old manifest never authorizes deletion */ }
 const manifest = JSON.parse(
   await readFile(resolve(root, "manifest.webmanifest"), "utf8"),
 );
@@ -85,5 +90,40 @@ if (injected.warnings.length) throw new Error(injected.warnings.join("\n"));
 await unlink(resolve(out, "worker-source.js"));
 for (const file of ["index.html", "app.js", "style.css", "manifest.webmanifest", "icon.svg"]) {
   await writeFile(resolve(out, file) + ".gz", gzipSync(await readFile(resolve(out, file)), { level: 9 }));
+}
+const generatedAt = new Date().toISOString();
+const manifestRecord = { revision, generatedAt, assets: Object.values(paths).filter(path => path.startsWith("/assets/")) };
+await writeFile(resolve(out, "shell-manifest.json"), JSON.stringify(manifestRecord, null, 2) + "\n");
+const historyDir = resolve(out, ".hongshu-releases");
+await mkdir(historyDir, { recursive: true });
+if (previousManifest && previousManifest.revision !== revision)
+  await writeFile(resolve(historyDir, previousManifest.revision + ".json"), JSON.stringify({ ...previousManifest, retiredAt: generatedAt }, null, 2));
+const retained = new Set(manifestRecord.assets.flatMap(path => [path, path + ".gz"]));
+let retainAllHashed = false;
+const now = Date.now();
+for (const entry of await readdir(historyDir, { withFileTypes: true })) {
+  if (!entry.isFile() || !/^[a-f0-9]{24}\.json$/.test(entry.name)) continue;
+  const path = resolve(historyDir, entry.name);
+  try {
+    const old = JSON.parse(await readFile(path, "utf8"));
+    const retiredAt = Date.parse(old.retiredAt);
+    if (!Number.isFinite(retiredAt) || !Array.isArray(old.assets) || !old.assets.every(asset => /^\/assets\/[a-f0-9]{16}-[^/]+$/.test(asset))) {
+      retainAllHashed = true;
+      continue;
+    }
+    if (now - retiredAt > 30 * 24 * 60 * 60 * 1000) { await unlink(path); continue; }
+    for (const asset of old.assets) { retained.add(asset); retained.add(asset + ".gz"); }
+  } catch { retainAllHashed = true; }
+}
+// A manifest is the only deletion authority. Unknown files and invalid history
+// fail closed; symlinks/directories are never followed or recursively removed.
+if (!retainAllHashed) {
+  for (const entry of await readdir(resolve(out, "assets"), { withFileTypes: true })) {
+    if (!entry.isFile() || !/^[a-f0-9]{16}-[^/]+(?:\.gz)?$/.test(entry.name)) continue;
+    const publicPath = "/assets/" + entry.name;
+    if (retained.has(publicPath)) continue;
+    const path = resolve(out, "assets", entry.name);
+    if (now - (await stat(path)).mtimeMs >= 7 * 24 * 60 * 60 * 1000) await unlink(path);
+  }
 }
 console.log("Web production assets validated and copied");

@@ -58,6 +58,7 @@ func (a *app) routes(web string) http.Handler {
 		})
 	}))
 	mux.HandleFunc("GET /api/me", a.auth(a.me))
+	mux.HandleFunc("GET /api/ops", a.auth(a.opsStatus))
 	mux.HandleFunc("GET /api/metadata", a.auth(a.metadata))
 	mux.HandleFunc("GET /api/recent", a.auth(a.recent))
 	mux.HandleFunc("GET /api/devices", a.auth(a.devices))
@@ -198,11 +199,12 @@ func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 	// One consistent snapshot read covers every singleton clock and status row. The AI secret
 	// is intentionally not selected here: /me only needs enabled/paused/revision.
-	var seq, epoch, metadataRevision, callSeq, watermark, readRevision, analysisRevision int64
+	var seq, epoch, metadataRevision, callSeq, watermark, readRevision, analysisRevision, unreadHead int64
 	var title string
 	var aiEnabled, aiPaused, pushSubscribed bool
 	e := tx.QueryRowContext(r.Context(), `SELECT c.seq,c.epoch,s.title,m.revision,k.seq,
 r.global_watermark_id,r.updated_at,ai.enabled,ai.paused,ai.revision,
+(SELECT COALESCE(MAX(id),0) FROM messages WHERE historical=FALSE AND direction='in'),
 EXISTS(SELECT 1 FROM push_subscriptions p WHERE p.device_id=?)
 FROM sync_clock c
 JOIN settings s ON s.id=c.id
@@ -210,12 +212,12 @@ JOIN metadata_clock m ON m.id=c.id
 JOIN call_clock k ON k.id=c.id
 JOIN read_state r ON r.id=c.id
 JOIN ai_settings ai ON ai.id=c.id
-WHERE c.id=1`, device(r).ID).Scan(&seq, &epoch, &title, &metadataRevision, &callSeq, &watermark, &readRevision, &aiEnabled, &aiPaused, &analysisRevision, &pushSubscribed)
+WHERE c.id=1`, device(r).ID).Scan(&seq, &epoch, &title, &metadataRevision, &callSeq, &watermark, &readRevision, &aiEnabled, &aiPaused, &analysisRevision, &unreadHead, &pushSubscribed)
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	unread, err := a.snapshotUnread(r.Context(), tx, epoch, seq, watermark, readRevision)
+	unread, err := a.snapshotUnread(r.Context(), tx, epoch, unreadHead, watermark, readRevision)
 	if err != nil {
 		fail(w, 503, "database_unavailable")
 		return

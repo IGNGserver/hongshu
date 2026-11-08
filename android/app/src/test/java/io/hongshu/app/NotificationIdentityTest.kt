@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -81,10 +82,10 @@ class NotificationIdentityTest {
             store.assignReceiver(store.localPending().map { it.key }, SimMapping(7, 0, sms.receiver, "SIM1"))
             val pending = store.pending(false)
             assertEquals(1, pending.size)
-            uploadPending(Api(Config(context)), store, pending, request = { batch ->
+            runBlocking { uploadPending(Api(Config(context)), store, pending, request = { batch ->
                 JSONObject().put("acks", JSONArray().put(JSONObject().put("id", 1)
                     .put("duplicate", true).put("fingerprint", batch.single().second.fingerprint())))
-            })
+            }) }
             assertEquals(1, store.pendingCount())
             assertEquals("notification_collision", store.localPending().single().blocked)
         }
@@ -223,7 +224,7 @@ class NotificationIdentityTest {
             store.writableDatabase.version = 9
         }
         Store(context, name).use { store ->
-            assertEquals(17, store.readableDatabase.version)
+            assertEquals(18, store.readableDatabase.version)
             assertEquals(41L, store.providerWatermark())
             assertEquals(1, store.sims().size)
             assertEquals(queued.body, store.localPending().single().body)

@@ -430,3 +430,71 @@ test("device settings expose Web identities and only active devices have adminis
   run(ctx, "state.me.device.admin=false;rows=deviceRows()");
   assert.equal(run(ctx, "rows.every(row=>row.trailing.children.length===1)"), true);
 });
+
+test("logout is server-first and transport failure preserves session and local contacts", async () => {
+  const ctx = runtime();
+  run(ctx, `
+    cleared=[];shown=0;broadcasts=[];
+    browserContacts.clear=async owner=>{cleared.push(owner)};
+    authView=()=>{shown++};contactsChannel={postMessage:message=>broadcasts.push(message.type)};
+    api=async()=>{throw Error('synthetic transport outage')};
+  `);
+  await assert.rejects(run(ctx, "logout()"), /synthetic transport outage/);
+  assert.equal(run(ctx, "state.me.device.id"), "browser-A");
+  assert.equal(run(ctx, "cleared.length"), 0);
+  assert.equal(run(ctx, "shown"), 0);
+  run(ctx, "api=async()=>({ok:true})");
+  await run(ctx, "logout()");
+  assert.equal(run(ctx, "state.me"), null);
+  assert.equal(run(ctx, "cleared[0]"), "browser-A");
+  assert.equal(run(ctx, "shown"), 1);
+  assert.equal(run(ctx, "broadcasts[0]"), "logout");
+});
+
+test("conversation keyset pages omit offsets, fence head changes and recover once from cursor reset", async () => {
+  const ctx = runtime();
+  run(ctx, `
+    state.me.features=['conversation_cursor'];state.sender='';refreshCounts=async()=>{};loadingMark=()=>{};
+    api=async path=>{calls.push(path);return {conversations:[{sender:'one',timestamp:1}],more:true,next_cursor:'next-token',head:10,epoch:1}};
+  `);
+  await run(ctx, "refreshInbox()");
+  assert.equal(run(ctx, "calls[0].includes('offset=')"), false);
+  assert.equal(run(ctx, "state.conversationCursor"), "next-token");
+  run(ctx, `api=async path=>{calls.push(path);return {conversations:[{sender:'two',timestamp:2}],more:false,next_cursor:null,head:10,epoch:1}}`);
+  await run(ctx, "loadMoreConversations()");
+  assert.equal(run(ctx, "calls[1].includes('cursor=next-token')"), true);
+  assert.equal(run(ctx, "calls[1].includes('offset=')"), false);
+  assert.equal(run(ctx, "state.conversations.length"), 2);
+  run(ctx, `
+    state.conversationCursor='stale';state.conversationsHasMore=true;
+    api=async path=>{calls.push(path);if(calls.length===3)throw new ApiError(409,'cursor_reset');
+      return {conversations:[{sender:'fresh',timestamp:3}],more:false,next_cursor:null,head:11,epoch:1}};
+  `);
+  await run(ctx, "loadMoreConversations()");
+  assert.equal(run(ctx, "calls.length"), 4);
+  assert.equal(run(ctx, "state.conversations.length"), 1);
+  assert.equal(run(ctx, "state.conversations[0].sender"), "fresh");
+  assert.equal(run(ctx, "state.conversationHead"), 11);
+});
+
+test("analysis counts retain an independent dirty state and recover after failure", async () => {
+  const ctx = runtime();
+  run(ctx, `api=async()=>{throw Error('counts outage')};key=inboxQueryKey();`);
+  await run(ctx, "refreshCounts(refreshGeneration,key)");
+  assert.equal(run(ctx, "countsDirty"), true);
+  assert.equal(run(ctx, "countsRetry"), 1);
+  run(ctx, `api=async()=>({counts:{all:7}})`);
+  await run(ctx, "refreshCounts(refreshGeneration,key)");
+  assert.equal(run(ctx, "countsDirty"), false);
+  assert.equal(run(ctx, "countsRetry"), 0);
+  assert.equal(run(ctx, "state.counts.all"), 7);
+});
+
+test("WebSocket reconnect backoff is bounded and jitter stays inside each window", () => {
+  const ctx = runtime();
+  assert.equal(run(ctx, "wsBackoff(0,0)"), 500);
+  assert.equal(run(ctx, "wsBackoff(0,1)"), 1000);
+  assert.equal(run(ctx, "wsBackoff(20,0)"), 15000);
+  assert.equal(run(ctx, "wsBackoff(20,1)"), 30000);
+  assert.equal(run(ctx, "countsBackoff(20)"), 30000);
+});

@@ -678,3 +678,55 @@ func TestAnalysisOTPReview(t *testing.T) {
 		t.Fatalf("manual promotion did not hide the code: %v", analysis(m))
 	}
 }
+
+func TestAIHTTPFailureSeparatesMessageConfigurationAndUnknownErrors(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		code   string
+		pause  bool
+	}{
+		{400, `{"error":{"type":"invalid_request_error","message":"maximum context length exceeded"}}`, "ai_message_rejected", false},
+		{400, `{"error":{"code":"content_filter","message":"content policy rejected input"}}`, "ai_message_rejected", false},
+		{400, `{"error":{"type":"invalid_request_error","message":"model does not exist"}}`, "ai_http_400", true},
+		{400, `{"error":{"type":"invalid_request_error","message":"unclassified argument"}}`, "ai_http_400_unknown", false},
+		{413, `{"error":{"message":"request entity too large"}}`, "ai_message_rejected", false},
+		{401, `{}`, "ai_http_401", true},
+		{429, `{}`, "ai_http_429", true},
+		{500, `{}`, "ai_http_500", false},
+	} {
+		code, pause := aiHTTPFailure(tc.status, []byte(tc.body))
+		if code != tc.code || pause != tc.pause {
+			t.Fatalf("status %d: code=%q pause=%v, want %q/%v", tc.status, code, pause, tc.code, tc.pause)
+		}
+	}
+	if !permanentMessageAIError("ai_message_rejected") || permanentMessageAIError("ai_http_400_unknown") {
+		t.Fatal("message-only failure was not scoped correctly")
+	}
+}
+
+func TestAIClientCacheAndUnknown400Circuit(t *testing.T) {
+	a := &app{}
+	defer a.closeResources()
+	s := AISettings{Endpoint: "https://example.com/v1", Protocol: aiProtocolChat, Timeout: 10, Generation: 7}
+	if a.effectiveAIClient(s) != a.effectiveAIClient(s) {
+		t.Fatal("same AI generation did not reuse its transport")
+	}
+	changed := s
+	changed.Timeout = 11
+	if a.effectiveAIClient(s) == a.effectiveAIClient(changed) {
+		t.Fatal("timeout change reused an incompatible client")
+	}
+	if a.noteAIResult(7, "ai_http_400_unknown") || a.noteAIResult(7, "ai_http_400_unknown") {
+		t.Fatal("circuit opened before the unknown-error threshold")
+	}
+	if !a.noteAIResult(7, "ai_http_400_unknown") {
+		t.Fatal("consecutive unknown 400 responses did not open the circuit")
+	}
+	if a.noteAIResult(7, "") || a.noteAIResult(7, "ai_http_400_unknown") || a.noteAIResult(7, "ai_http_400_unknown") {
+		t.Fatal("successful request did not reset the circuit")
+	}
+	if a.noteAIResult(8, "ai_http_400_unknown") {
+		t.Fatal("generation change retained the old failure count")
+	}
+}

@@ -6,6 +6,7 @@ import android.provider.CallLog
 import androidx.test.core.app.ApplicationProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -160,7 +161,7 @@ class CallLogTest {
         JSONObject().put("id", id).put("duplicate", duplicate).put("fingerprint", call.fingerprint()).apply { if (error.isNotEmpty()) put("error", error) }
 
     @Test
-    fun uploadClearsConfirmedRetriesUnknownLinesAndParksInvalid() {
+    fun uploadClearsConfirmedRetriesUnknownLinesAndParksInvalid() = runBlocking {
         val records = (1L..4L).map { callRecord(row(it), 1, receiver, 0)!! }
         store.captureCalls(records, 4)
         val sent = mutableListOf<List<CallRecord>>()
@@ -190,7 +191,7 @@ class CallLogTest {
     }
 
     @Test
-    fun aMismatchedResponseLeavesTheQueueUntouched() {
+    fun aMismatchedResponseLeavesTheQueueUntouched() = runBlocking {
         store.captureCalls(listOf(callRecord(row(1), 1, receiver, 0)!!), 1)
         val other = callRecord(row(2), 1, receiver, 0)!!
         try {
@@ -226,7 +227,7 @@ class CallLogTest {
         }
         store.close()
         store = Store(context, name)
-        assertEquals(17, store.readableDatabase.version)
+        assertEquals(18, store.readableDatabase.version)
         assertEquals(CallQueueCounts(0, 0), store.callQueueCounts())
         assertFalse(store.hubSupportsCallLog())
         store.rememberHubCallLog(true)

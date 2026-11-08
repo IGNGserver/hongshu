@@ -29,7 +29,7 @@ abstract class StoreOpenContract {
                 Store(context, name).use { store ->
                     store.queue(SmsRecord("+123456789", "fixture", "existing synthetic SMS", 1, 7))
                     store.writableDatabase.execSQL("UPDATE meta SET value=42 WHERE key='cursor'")
-                    // v17 adds only derived call-cache state; v16 SMS data must survive.
+                    // v17/v18 add derived call-cache and upload evidence; v16 SMS data must survive.
                     store.writableDatabase.version = 16
                 }
             }
@@ -40,7 +40,7 @@ abstract class StoreOpenContract {
                             ready.countDown()
                             check(start.await(10, TimeUnit.SECONDS)) { "open barrier timed out" }
                             val db = if (index % 2 == 0) store.readableDatabase else store.writableDatabase
-                            assertEquals(17, db.version)
+                            assertEquals(18, db.version)
                             assertEquals(if (upgrade) 42L else 0L, store.cursor())
                             assertEquals(if (upgrade) 1 else 0, store.pendingCount())
                             // Check a late-created table as well as the first table.

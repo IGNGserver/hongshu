@@ -2,8 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { epochReset, mergeMessages, query, pushKey, restoreScrollPosition } from "../app.js";
+import { epochReset, mergeMessages, query, pushKey, restoreScrollPosition, boundMessageWindow } from "../app.js";
 test("history import cannot replace chronological latest",()=>assert.deepEqual(mergeMessages([{id:1,timestamp:200}],[{id:2,timestamp:100}]),[{id:2,timestamp:100},{id:1,timestamp:200}]));
+test("history windows stay bounded without discarding the direction being read", () => {
+  const messages = Array.from({ length: 600 }, (_, id) => ({ id }));
+  assert.equal(boundMessageWindow(messages, true).length, 500);
+  assert.equal(boundMessageWindow(messages, true).at(-1).id, 499);
+  assert.equal(boundMessageWindow(messages, false)[0].id, 100);
+  assert.equal(boundMessageWindow(messages, false).at(-1).id, 599);
+});
 test("incremental merge is idempotent and ordered", () =>
   assert.deepEqual(
     mergeMessages(

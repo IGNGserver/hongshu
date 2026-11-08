@@ -6,20 +6,20 @@
   <title>鸿枢 Hongshu · 自部署的跨设备短信同步平台</title>
   <meta name="description" content="鸿枢把你自己的短信可靠上传到自己的 MySQL 中枢，在所有授权 Android 与 Web/PWA 设备上查看。">
   <meta name="theme-color" content="#0b0f14">
-  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="canonical" href="https://hongshu.igng.net/">
   <meta property="og:title" content="鸿枢 Hongshu">
   <meta property="og:description" content="自部署的跨设备短信同步平台：短信可靠上传到自己的 MySQL 中枢。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://hongshu.igng.net/">
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
   <a class="skip" href="#main">跳到正文</a>
 
   <header class="header">
     <a class="brand" href="/" aria-label="鸿枢首页">
-      <img src="assets/favicon.svg" alt="" width="28" height="28">
+      <img src="/assets/favicon.svg" alt="" width="28" height="28">
       <span>鸿枢 <small>Hongshu</small></span>
     </a>
     <nav aria-label="页面导航">
@@ -54,8 +54,8 @@
       <h2>能做什么，不能做什么。</h2>
       <div class="grid">
         <article class="card">
-          <h3>收件与查看</h3>
-          <p>短信上传到你自己的中枢，并在所有授权 Android 与 Web/PWA 设备上查看。首版只收件、查看，不发送短信。</p>
+          <h3>收发记录与通话查看</h3>
+          <p>同步本机已收到和已发送的短信记录，以及通话记录，供授权 Android 与 Web/PWA 设备查看。鸿枢不处理 MMS/RCS，不通过运营商代发短信，也不代替你拨打电话。</p>
         </article>
         <article class="card">
           <h3>自己的基础设施</h3>
@@ -63,7 +63,11 @@
         </article>
         <article class="card">
           <h3>隐私边界</h3>
-          <p>不处理 MMS/RCS，不提供端到端加密；站点与示例不展示真实短信内容、手机号或其他个人数据。</p>
+          <p>不提供端到端加密；站点与示例不展示真实短信内容、手机号或其他个人数据。</p>
+        </article>
+        <article class="card">
+          <h3>可选 AI 的数据边界</h3>
+          <p>默认不启用 AI。若你在中枢配置可选 AI 分析，短信正文会发送给你选择的服务商；请先审查其隐私政策、服务地域与数据留存设置。</p>
         </article>
       </div>
     </section>
@@ -71,10 +75,11 @@
     <section class="section section--start" id="start">
       <p class="eyebrow">02 · 开始</p>
       <h2>先读文档，再部署。</h2>
-      <p class="lead">产品仍在预发布阶段。请只从 GitHub Releases 下载已发布的 Android 安装包，并按产品仓库的部署文档选择固定版本。</p>
+      <p class="lead">产品仍在预发布阶段。请只从 GitHub Releases 下载已发布的 Android 安装包，并打开同一 Release tag 下的部署文档，不要混用 main 分支说明。</p>
       <div class="links">
         <a href="https://github.com/IGNGserver/hongshu/releases">版本发布 <span>↗</span></a>
-        <a href="https://github.com/IGNGserver/hongshu/blob/main/docs/DEPLOYMENT.md">部署、备份与恢复 <span>↗</span></a>
+        <!-- Keep this tag synchronized with the repository VERSION file. -->
+        <a href="https://github.com/IGNGserver/hongshu/blob/v0.2.0-alpha.24/docs/DEPLOYMENT.md">当前版本部署、备份与恢复 <span>↗</span></a>
         <a href="https://github.com/IGNGserver/hongshu">产品仓库 <span>↗</span></a>
       </div>
     </section>

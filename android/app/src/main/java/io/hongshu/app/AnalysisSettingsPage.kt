@@ -18,8 +18,8 @@ fun AnalysisSettingsPage(host: SettingsHost) {
     val status by produceState("正在读取中枢分析状态…", host.refresh) {
         value = withContext(Dispatchers.IO) {
             try {
-                val settings = host.repo.api.request("/analysis/settings")
-                val counts = host.repo.api.request("/analysis/counts").getJSONObject("counts")
+                val settings = host.repo.api.requestCancellable("/analysis/settings")
+                val counts = host.repo.api.requestCancellable("/analysis/counts").getJSONObject("counts")
                 buildString {
                     append(if (settings.optBoolean("enabled")) "AI 已开启" else "AI 已关闭")
                     if (settings.optBoolean("paused")) append(" · 队列已暂停")

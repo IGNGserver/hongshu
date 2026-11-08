@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
 type pausedSubscriptionBody struct {
@@ -78,4 +80,38 @@ func TestIntegrationSubscribeCannotResurrectRevokedIdentity(t *testing.T) {
 	}
 	login := c.call("POST", "/api/login", "", map[string]string{"password": "synthetic", "kind": "web"}, 200)
 	c.call("PUT", "/api/push", login["token"].(string), sub, 200)
+}
+
+func TestIntegrationExpiredPushResponseCannotDeleteReplacement(t *testing.T) {
+	a, d := pushFixture(t)
+	var endpoint, key, auth string
+	if err := a.db.QueryRow("SELECT endpoint,p256dh,auth FROM push_subscriptions WHERE device_id=?", d.ID).Scan(&endpoint, &key, &auth); err != nil {
+		t.Fatal(err)
+	}
+	old := webpush.Subscription{Endpoint: endpoint, Keys: webpush.Keys{P256dh: key, Auth: auth}}
+	// A same-endpoint browser rotation is the strongest fencing case: comparing
+	// endpoint alone would incorrectly delete the replacement and every new job.
+	if _, err := a.db.Exec("UPDATE push_subscriptions SET p256dh=?,auth=? WHERE device_id=?", "replacement-key", "replacement-auth", d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.removeDeadPushSubscription(context.Background(), d.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	var subscriptions, jobs int
+	if err := a.db.QueryRow("SELECT (SELECT COUNT(*) FROM push_subscriptions WHERE device_id=?),(SELECT COUNT(*) FROM push_jobs WHERE device_id=?)", d.ID, d.ID).Scan(&subscriptions, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions != 1 || jobs != 1 {
+		t.Fatalf("stale response deleted replacement state: subscriptions=%d jobs=%d", subscriptions, jobs)
+	}
+	current := webpush.Subscription{Endpoint: endpoint, Keys: webpush.Keys{P256dh: "replacement-key", Auth: "replacement-auth"}}
+	if err := a.removeDeadPushSubscription(context.Background(), d.ID, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow("SELECT (SELECT COUNT(*) FROM push_subscriptions WHERE device_id=?),(SELECT COUNT(*) FROM push_jobs WHERE device_id=?)", d.ID, d.ID).Scan(&subscriptions, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions != 0 || jobs != 0 {
+		t.Fatalf("matching dead subscription was not cleaned: subscriptions=%d jobs=%d", subscriptions, jobs)
+	}
 }

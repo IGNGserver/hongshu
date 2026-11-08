@@ -280,6 +280,8 @@ class BackgroundTest {
             }
             Hub().use { hub ->
                 config.url = hub.url
+                // The hub fixture speaks plain HTTP; authorise that exact origin
+                config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 config.keepAlive = true
                 config.hideFromRecents = true
@@ -346,6 +348,8 @@ class BackgroundTest {
             Store(context).use { it.resetSyncedCache(1) }
             Hub(withMessage = true).use { hub ->
                 config.url = hub.url
+                // The hub fixture speaks plain HTTP; authorise that exact origin
+                config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 config.deviceId = "viewer-fixture"
                 config.keepAlive = true
@@ -381,6 +385,8 @@ class BackgroundTest {
         withConfig { context, config ->
             Hub(unauthorized = true).use { hub ->
                 config.url = hub.url
+                // The hub fixture speaks plain HTTP; authorise that exact origin
+                config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 config.keepAlive = true
                 ActivityScenario.launch(MainActivity::class.java).use {

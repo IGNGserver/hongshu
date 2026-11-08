@@ -5,8 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
-import java.util.concurrent.Executors
-import kotlinx.coroutines.runBlocking
 
 internal data class IncomingSms(
     val sender: String,
@@ -70,12 +68,13 @@ internal fun persistIncomingSms(
     generation: Long,
     receivedAt: Long,
     databaseName: String = "hongshu.db",
+    enforceGeneration: Boolean = true,
 ): Boolean =
     synchronized(identityLock) {
         val config = Config(context)
         if (
             !config.upload ||
-                config.captureGeneration != generation ||
+                (enforceGeneration && config.captureGeneration != generation) ||
                 !hasPermission(context, Manifest.permission.RECEIVE_SMS)
         )
             return@synchronized false
@@ -128,39 +127,52 @@ internal suspend fun saveAndScheduleIncomingSms(
     }
 }
 
-class SmsReceiver : BroadcastReceiver() {
-    companion object {
-        private val executor = Executors.newSingleThreadExecutor()
+internal fun drainIncomingSms(context: Context, databaseName: String = "hongshu.db"): Int {
+    val queued = Store(context, databaseName).use { it.queuedBroadcasts() }
+    var completed = 0
+    for (item in queued) {
+        val saved = try {
+            persistIncomingSms(context, item.message, item.generation, item.receivedAt, databaseName, enforceGeneration = false)
+        } catch (_: Exception) {
+            Store(context, databaseName).use { it.retryBroadcast(item.id) }
+            break
+        }
+        if (!saved) break
+        Store(context, databaseName).use { it.deleteBroadcast(item.id) }
+        completed++
     }
+    return completed
+}
 
+class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         val app = context.applicationContext
         val receivedAt = System.currentTimeMillis()
         Config(app).noteReceivedBroadcast(receivedAt)
-        val generation =
-            synchronized(identityLock) {
-                val config = Config(app)
-                if (!config.upload || !hasPermission(app, Manifest.permission.RECEIVE_SMS)) return
-                config.captureGeneration
-            }
-        val message =
-            try {
-                (parseIncomingSms(intent) ?: error("Empty SMS broadcast")).withReceiveTime(receivedAt)
-            } catch (_: Exception) {
-                synchronized(identityLock) {
-                    if (Config(app).captureGeneration == generation)
-                        Config(app).captureFailure = CaptureFailure.PARSE
-                }
-                return
-            }
-        val pending = goAsync()
-        executor.execute {
-            try {
-                runBlocking { saveAndScheduleIncomingSms(app, message, generation, receivedAt) }
-            } finally {
-                pending.finish()
-            }
+        val generation = synchronized(identityLock) {
+            val config = Config(app)
+            if (!config.upload || !hasPermission(app, Manifest.permission.RECEIVE_SMS)) return
+            config.captureGeneration
         }
+        val message = try {
+            (parseIncomingSms(intent) ?: error("Empty SMS broadcast")).withReceiveTime(receivedAt)
+        } catch (_: Exception) {
+            synchronized(identityLock) {
+                if (Config(app).captureGeneration == generation) Config(app).captureFailure = CaptureFailure.PARSE
+            }
+            return
+        }
+        try {
+            retryLockedDatabase {
+                Store(app).use { it.enqueueBroadcast(message, generation, receivedAt) }
+            }
+        } catch (_: Exception) {
+            Config(app).captureFailure = CaptureFailure.STORAGE
+            return
+        }
+        // The accepted broadcast is durable before onReceive returns. CaptureWorker drains a
+        // bounded page; realtime/WorkManager scheduling is only a hint and never owns the data.
+        requestCapture(app)
     }
 }

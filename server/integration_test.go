@@ -21,31 +21,37 @@ import (
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
+	return testDBFor(t)
+}
+
+// testDBFor also serves benchmarks, which need the same throwaway schema.
+func testDBFor(tb testing.TB) *sql.DB {
+	tb.Helper()
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {
-		t.Skip("TEST_MYSQL_DSN required for real MySQL tests")
+		tb.Skip("TEST_MYSQL_DSN required for real MySQL tests")
 	}
 	cfg, e := mysql.ParseDSN(dsn)
 	if e != nil {
-		t.Fatal(e)
+		tb.Fatal(e)
 	}
 	cfg.DBName = ""
 	root, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
-		t.Fatal(e)
+		tb.Fatal(e)
 	}
 	name := "hongshu_it_" + random(8)
 	if _, e = root.Exec("CREATE DATABASE " + name + " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"); e != nil {
-		t.Fatal(e)
+		tb.Fatal(e)
 	}
 	cfg.DBName = name
 	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
-		t.Fatal(e)
+		tb.Fatal(e)
 	}
-	t.Cleanup(func() { db.Close(); _, _ = root.Exec("DROP DATABASE " + name); root.Close() })
+	tb.Cleanup(func() { db.Close(); _, _ = root.Exec("DROP DATABASE " + name); root.Close() })
 	if e = migrate(context.Background(), db, "../db/migrations"); e != nil {
-		t.Fatal(e)
+		tb.Fatal(e)
 	}
 	return db
 }

@@ -10,7 +10,8 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | --- | --- |
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
-| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`；`call_cursor` 为通话记录提交头 |
+| GET /api/ops | 运维快照（需认证）：`status,version,uptime_ms`，`database` 连接池与延迟，`schema` 已应用版本与 `dirty` 计数，`push` 计数与 `last_loop/last_success/backlog`，`analysis` 的 `finish_failures/last_success/last_loop/queued`，`workers.running/exited`，`realtime.subscribers`，`redis.enabled`。只包含计数、时长与布尔值；不含短信正文、发件人、设备 token、Push endpoint 或 AI 密钥。`backlog`/`queued` 查询失败时为 `null`，不把无法测量当成 0；DB 不可用返回 503 |
+| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`、`conversation_cursor`；`call_cursor` 为通话记录提交头 |
 | GET /api/metadata?since=N | 一致性元数据快照；`revision,epoch,unchanged`，有变化时另含 devices/sims/contacts；需 `metadata_revision` 能力 |
 | GET /api/recent?limit=50 | 最近会话头消息展示快照：messages/head/epoch；head 不可用于推进可靠同步游标，需 `recent_snapshot` 能力 |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
@@ -20,10 +21,10 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
 | POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；按请求顺序返回等长 `{id,duplicate,error?,fingerprint}`。fingerprint 为既有幂等指纹（receiver、sender、timestamp、body 以 NUL 分隔的 UTF-8 SHA-256），每条成功/失败均回传，旧客户端可忽略新增字段。格式非法的消息只拒绝该条 `invalid_message`，同批有效短信仍提交；已存在的相同 fingerprint 优先返回 duplicate，即使当前 SIM 注册后来丢失；其他未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端先验证整组 ACK，再按指纹关联；旧中枢无此字段时按请求顺序关联，不能检测重排。异常响应保留队列；旧中枢整批 invalid_message 可二分隔离，单条失败只阻塞该条。历史导入设 historical=true，不生成新短信通知。可选 `direction`：省略或 `"in"` 为本机 SIM 收到的短信，`"out"` 为本机发出的短信，其他值按该条 `invalid_message` 拒绝；见下文“收发方向” |
-| POST /api/messages/read | `{sender?, message_id?, all?}` 标记已读；all=true 推进全局已读水位线为最新消息；指定 sender 则推进该会话已读游标。显式正数 message_id 必须是该 sender 已提交的消息，否则返回 400；负数无效，省略或 0 保留“当前整个会话已读”的兼容语义，自动标读客户端必须提交实际展示的 ID。返回 `{ok, global_watermark_id, unread_count}` |
+| POST /api/messages/read | `{sender?, message_id?, all?}` 标记已读；all=true 且省略/0 message_id 时推进全局已读水位线为最新消息，正数 message_id 则推进到 min(目标,当前提交头)，用于 Android 持久目标补传；指定 sender 则推进该会话已读游标。显式正数 message_id 必须是该 sender 已提交的消息，否则返回 400；负数无效，省略或 0 保留“当前整个会话已读”的兼容语义，自动标读客户端必须提交实际展示的 ID。返回 `{ok, global_watermark_id, unread_count}` |
 | GET /api/read-state?epoch=&since=&head=&limit= | 授权设备共享已读状态，返回 `{items:[{sender,message_id}],global_watermark_id,revision,head,epoch,more,next}`。首请求可带已同步的 since 修订、head 及 epoch，修订和消息头均相同则返回空 items；后续页用 `after=next&revision=首屏修订&head=首屏消息头&epoch=首屏代次`，不可同时使用 since。每页最多 200 条，修订或消息头变化返回 409 read_state_changed，epoch 不匹配返回 409 epoch_changed，409 后从首屏重试。客户端逐页合并，只有完整读取后才保存修订与消息头，不把下行合并再次加入上报队列；旧非法水位仅下发 0，部署者仍须显式修复存量异常 |
 | GET /api/sync?after=N&limit=L | `{messages, cursor, more, epoch}`，按 ID 升序；不得跨过未处理页面。epoch 与客户端已记录的值不同表示数据库已回档，必须丢弃已同步缓存并从 0 重拉；未上传队列保留。`after` 大于当前 sequence 返回 `epoch_changed`，旧客户端不得把空页当成已经同步完成 |
-| GET /api/conversations?q=&sim=&device=&offset=&limit= | 会话列表，按发件人分组、每个发件人只返回最新消息并按时间降序；搜索发件人/名称/正文；offset 分页。返回消息中的 receiver 仅表示该会话最新消息的接收号码 |
+| GET /api/conversations?q=&sim=&device=&offset=&cursor=&limit= | 会话列表，按发件人分组、每个发件人只返回最新消息并按时间、消息 ID 降序；搜索发件人/名称/正文。旧客户端可继续 offset 分页；新客户端首请求省略 offset/cursor，后续仅传上一页 `next_cursor` 并保持筛选不变。返回另含 `more,next_cursor,head,epoch`；`head` 与页面来自同一 RR 快照，页间 head/epoch 变化必须废弃整条游标链并从首屏重读，不得合并不同提交的页面。返回消息中的 receiver 仅表示该会话最新消息的接收号码 |
 | GET /api/messages?sender=&q=&sim=&device=&before=&limit= | 按短信时间、ID 降序；before 指向上一页最早消息的 ID，服务端按该消息的时间/ID 二元游标分页 |
 | GET /api/ws | 同源 cookie 或 bearer WS，`{type:"changed",cursor:N,call_cursor:M}`；无重放保证，必须补齐 |
 | POST /api/calls | Android 上传通话记录，见下文“通话记录” |
@@ -115,7 +116,7 @@ Android 每页提交消息、epoch、cursor、初次补齐和待通知状态；W
   type `incoming`、duration `75` → `bf4ef9880762b3b21e9f1cf296615e8af7492beea5aaa2020f18afceb543ae97`。
 - `GET /api/calls?before=&limit=`：返回 `{calls,more,head,epoch}`，按 `timestamp`、`id` 降序；
   `before` 是上一页最后一条的 ID（不存在返回 400 `invalid_cursor`）；`head` 是同一快照下的 `call_clock`。
-- `GET /api/calls/{id}`：`{call}`；不存在返回 404 `not_found`。
+- `GET /api/calls/{id}`：`{call,epoch}`；通话与 epoch 来自同一 RR 快照，客户端必须拒绝旧代次详情；不存在返回 404 `not_found`。
 - `GET /api/calls/sync?after=N&limit=L`：`{calls,cursor,more,epoch}`，语义同 `/api/sync`；
   `after` 大于当前通话提交头返回 409 `epoch_changed`。客户端将本地通话与游标同事务保存。
 - 能力协商：Android 只在 `/api/me` 的 `features` 含 `call_log` 时上传通话；旧中枢没有该接口，

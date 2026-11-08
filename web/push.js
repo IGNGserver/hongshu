@@ -31,42 +31,60 @@ self.addEventListener("push", (e) => {
 });
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = notificationPath(e.notification.data?.url);
-  e.waitUntil(
-    self.clients
-      .matchAll({ type: "window", includeUncontrolled: true })
-      .then((clients) => {
-        for (const c of clients) {
-          if (new URL(c.url).origin === self.location.origin) return c.focus();
-        }
-        return self.clients.openWindow(url);
-      }),
-  );
+  let target = notificationPath(e.notification.data?.url);
+  try {
+    const candidate = new URL(target, self.location.origin);
+    if (candidate.origin !== self.location.origin) target = "/";
+    else target = candidate.pathname + candidate.search + candidate.hash;
+  } catch { target = "/"; }
+  e.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      try {
+        if (new URL(client.url).origin !== self.location.origin) continue;
+        const navigated = await client.navigate(new URL(target, self.location.origin).href);
+        await (navigated || client).focus?.();
+        return;
+      } catch { /* try another existing window before opening a new one */ }
+    }
+    const client = await self.clients.openWindow(target);
+    await client?.focus?.();
+  })());
 });
 // Safari/Chrome can rotate an endpoint without involving the page. Rebind it
 // immediately; if the event is not supported, the next app start does the same.
 self.addEventListener("pushsubscriptionchange", (e) => {
   e.waitUntil((async () => {
+    const tell = async message => {
+      const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of clients) { try { client.postMessage(message); } catch { /* closed client */ } }
+    };
     try {
       let subscription = e.newSubscription;
       if (!subscription) {
         const me = await fetch("/api/me", { credentials: "same-origin", headers: { Accept: "application/json" } });
-        if (!me.ok) return;
+        if (!me.ok) throw new Error("push_session_unavailable");
         const session = await me.json();
-        if (!session.vapid_public_key) return;
+        if (!session.vapid_public_key) throw new Error("push_not_configured");
         subscription = await self.registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: decodeKey(session.vapid_public_key),
         });
       }
-      if (!subscription) return;
+      if (!subscription) throw new Error("push_subscription_unavailable");
       const json = subscription.toJSON();
-      await fetch("/api/push", {
+      const bound = await fetch("/api/push", {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
       });
-    } catch { /* next app start retries the binding */ }
+      if (!bound.ok) throw new Error("push_binding_rejected");
+      await tell({ type: "PUSH_SUBSCRIPTION_CHANGED" });
+    } catch {
+      // The next app start can reuse or replace this still-local subscription.
+      // Never report a rotated endpoint as bound until the hub accepted it.
+      await tell({ type: "PUSH_SUBSCRIPTION_FAILED" }).catch(() => {});
+    }
   })());
 });

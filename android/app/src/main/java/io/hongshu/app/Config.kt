@@ -32,6 +32,7 @@ class Config(context: Context) {
         loadingNetwork.reset()
         val saved = prefs.edit()
             .putString("url", identity.origin)
+            .putString("cleartext_origin", if (identity.origin.startsWith("http://")) identity.origin else "")
             .putString("token", encryptedToken)
             .putString("device", identity.deviceId)
             .putString("device_name", identity.name)
@@ -42,6 +43,8 @@ class Config(context: Context) {
             .putStringSet("registered_sims", emptySet())
             .putBoolean("notify", identity.notify)
             .putBoolean("sync_healthy", false)
+            .putInt("sync_failures", 0)
+            .putLong("sync_retry_at", 0)
             .putBoolean("inbox_scan_pending", false)
             .putBoolean("recovery_pending", false)
             .putString("status", "已连接")
@@ -414,6 +417,25 @@ class Config(context: Context) {
             prefs.edit().putString("last_sync_error", value).apply()
         }
 
+    internal fun noteSyncFailure(
+        now: Long = System.currentTimeMillis(),
+        jitter: Double = java.util.concurrent.ThreadLocalRandom.current().nextDouble(),
+    ): Long {
+        val failures = (prefs.getInt("sync_failures", 0) + 1).coerceAtLeast(1)
+        val delay = realtimeRetryDelay(failures, jitter)
+        check(prefs.edit().putInt("sync_failures", failures).putLong("sync_retry_at", now + delay).commit()) {
+            "无法保存同步重试状态"
+        }
+        return delay
+    }
+
+    internal fun clearSyncRetry() {
+        prefs.edit().putInt("sync_failures", 0).putLong("sync_retry_at", 0).apply()
+    }
+
+    internal fun syncRetryDelay(now: Long = System.currentTimeMillis()): Long =
+        (prefs.getLong("sync_retry_at", 0) - now).coerceAtLeast(0)
+
     var contactsHealthy: Boolean
         get() = prefs.getBoolean("contacts_healthy", true)
         set(value) {
@@ -456,6 +478,27 @@ class Config(context: Context) {
         set(v) {
             prefs.edit().putString("url", v.trimEnd('/')).commit()
         }
+
+    val cleartextOrigin: String
+        get() = prefs.getString("cleartext_origin", "")!!
+
+    /**
+     * Records that the user explicitly authorised plain HTTP for this exact origin.
+     * Login does this through [completeIdentity]; tests and re-authorisation paths use
+     * this entry point so the rule lives in one place.
+     */
+    internal fun rememberCleartextOrigin(rawOrigin: String) {
+        val origin = hubOrigin(rawOrigin)
+        prefs.edit().putString("cleartext_origin", if (origin.startsWith("http://")) origin else "").apply()
+    }
+
+    internal fun requireOriginAccess(rawOrigin: String, explicitlyAllowCleartext: Boolean = false): String {
+        val origin = hubOrigin(rawOrigin)
+        require(origin.startsWith("https://") || explicitlyAllowCleartext || cleartextOrigin == origin) {
+            "HTTP 明文连接未获授权，请仅对当前受控局域网地址显式确认"
+        }
+        return origin
+    }
 
     var deviceId: String
         get() = prefs.getString("device", "")!!

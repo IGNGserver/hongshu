@@ -236,6 +236,9 @@ func sanitizeDatabaseConfig(driver *mysql.Config, fromURL bool) error {
 	if driver.AllowAllFiles || driver.AllowCleartextPasswords || driver.AllowOldPasswords {
 		return errors.New("unsafe MySQL DSN option is not allowed")
 	}
+	if !fromURL && driver.AllowFallbackToPlaintext {
+		return errors.New("AllowFallbackToPlaintext is not allowed in MYSQL_DSN; use an explicit mysql:// TLS mode")
+	}
 	if driver.DBName == "" {
 		return errors.New("database name is required")
 	}

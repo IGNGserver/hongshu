@@ -11,7 +11,7 @@ curl --fail http://127.0.0.1:18473/healthz
 docker compose ps
 ```
 
-初始化脚本会安全提示输入一次中枢密码，也可通过受保护的环境变量 `HONGSHU_PASSWORD` 提供；弱密码允许，但不能为空。密码保存在权限为 0600 的 `.env`，不要粘贴到日志/issue。Web 登录只需这个密码，无用户名；每次新浏览器登录创建一个管理员设备会话。退出或撤销最后一个管理员后仍可用中枢密码重新登录。
+初始化脚本会安全提示输入一次中枢密码，也可通过受保护的环境变量 `HONGSHU_PASSWORD` 提供；弱密码允许，但不能为空。它先在同目录创建 0600 临时配置，只有镜像拉取、VAPID 生成和 Compose 校验全部成功后才原子发布 `.env`；中途失败或并发初始化都不会留下半成品/覆盖既有凭据。密码保存在权限为 0600 的 `.env`，不要粘贴到日志/issue。Web 登录只需这个密码，无用户名；每次新浏览器登录创建一个管理员设备会话。退出或撤销最后一个管理员后仍可用中枢密码重新登录。发布镜像默认构建 `linux/amd64` 与 `linux/arm64`，部署端选择固定版本后由容器运行时选择本机架构。
 
 已有部署升级时，在现有 `.env` 中添加 `HONGSHU_PASSWORD`，再重建 hub：`docker compose up -d --force-recreate hub`。原有短信、Android token 和设备记录不变；已登录浏览器的会话不会因更改配置密码而自动撤销，需要在设备页单独撤销旧 Web 会话。
 
@@ -32,8 +32,16 @@ docker compose -f compose.external.yml up -d
 DDL 账号执行一次 `hongshu migrate`，运行时账号只保留 DML 权限并设置 `HONGSHU_MIGRATE=check`。
 完整 URL 参数、授权、TLS、连接池、备份和故障排查见 [数据库与缓存部署](DATABASE.md)。
 
-外部模式的 `backup` 不随 `compose.external.yml` 启动；请使用托管快照或独立 `mysqldump` 任务。
-内置 `scripts/backup.sh` 已支持 `MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_DATABASE` 覆盖。
+外部模式的 `backup` 不随 `compose.external.yml` 启动。需要本仓库的一致性 dump 时，可在 `.env` 另行设置
+`BACKUP_MYSQL_HOST/BACKUP_MYSQL_PORT/BACKUP_MYSQL_USER/BACKUP_MYSQL_DATABASE/BACKUP_MYSQL_PWD`
+（可选 `BACKUP_MYSQL_SSL_MODE=VERIFY_IDENTITY` 并自行挂载 CA），启动独立单元：
+
+```bash
+docker compose -f compose.external.yml -f compose.external-backup.yml up -d backup
+```
+
+它不会复用或解析 hub 的 DSN，也不依赖 hub/db 容器健康；可使用托管快照替代。内置与外部单元共用
+`scripts/backup.sh`，因此 retention、deadline 和 last-success 健康合同一致。
 
 ## 可选 Redis
 
@@ -138,9 +146,14 @@ Web Push 需要 HTTPS、浏览器支持、用户授权，以及服务器能访�
 
 ## 备份
 
-backup 服务每天一次一致性 mysqldump，文件在 `runtime-data/backups/`，不会自动删除。
+backup 服务每天一次一致性 mysqldump，文件在 `runtime-data/backups/`。每轮默认最多运行 3600 秒
+（`BACKUP_TIMEOUT`），失败/超时会原子更新 `last-failure` 并保留 `.partial` 供隔离排查；只有 dump、压缩、
+`gzip -t` 和原子改名全部成功才更新 `last-success`。容器 healthcheck 按
+`BACKUP_INTERVAL + BACKUP_TIMEOUT + BACKUP_HEALTH_GRACE` 判断成功时间是否超龄，不能只看进程仍在循环。判断逻辑在随包交付的 `scripts/backup-healthcheck.sh`，可在宿主手动执行排障；`scripts/backup-healthcheck.sh` 只读 `last-success`，不会触发新的备份。
+默认保留 30 天且最多 60 个成功 dump（`BACKUP_RETENTION_DAYS` / `BACKUP_MAX_FILES`），只清理本服务
+命名空间内的普通文件；应按实际库大小和异地副本容量设置预算。日志由 Compose 限制为 3 × 10 MiB。
 同时备份 `.env`（含 VAPID 私钥）至加密的异地存储；短信 dump 和身份 token_hash 仍属敏感数据。
-磁盘空间需要监控；备份服务日志失败必须处理。定期 `gzip -t`，在隔离数据库实际恢复并核对消息数量、
+磁盘空间需要监控；备份 unhealthy 或日志失败必须处理。定期 `gzip -t`，在隔离数据库实际恢复并核对消息数量、
 最高 ID、schema_migrations、设备授权/撤销状态。只检查压缩文件不是完整恢复演练。
 
 恢复不是升级脚本的一部分。**恢复前记录现行库的 epoch（PRE_RESTORE_EPOCH）并保存在不会随数据库回档的记录中**。

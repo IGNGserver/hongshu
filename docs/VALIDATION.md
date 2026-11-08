@@ -1046,6 +1046,25 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 派生表；本轮只增加迁移 014 索引、进程内/Redis 版本化缓存和批处理，未引入计数表。真实大历史、
 高 RTT 和并发写入下若仍出现慢查询，再按实测迁移。
 
+## 真实 MySQL 演练
+
+本机没有 MySQL 与 Docker，因此下载 MySQL 官方 8.4.5 二进制（`mysql-8.4.5-linux-glibc2.28-x86_64`）到
+`~/.build/hongshu-quality-9ceea66/`，在工作区外初始化临时实例（端口 33306，数据目录与日志都在该 scratch 内），
+未安装系统包、未写入源码卷。`libaio.so.1` 由临时解包的 RPM 提供，只通过 `LD_LIBRARY_PATH` 生效。
+
+| 演练 | 命令要点 | 结果 |
+| --- | --- | --- |
+| 迁移 | `HONGSHU_DATABASE_URL=mysql://root@127.0.0.1:33306/… hongshu migrate` | 15 条迁移全部 `dirty=0`，head 为 `015_drop_redundant_indexes.up.sql` |
+| 索引审计 | `information_schema.STATISTICS` 按列序分组比对前缀 | 发现 `messages_unread(historical,id,sender)` 与 `push_jobs.pending(next_at)` 被 014 索引严格覆盖，迁移 015 删除并验证只剩宽索引 |
+| 执行计划 | `TestIntegrationConversationIndexQueryPlan`（2000 条短信/10 会话） | 通过；摘要查询 `index lookup on m using PRIMARY`，无表扫描与窗口聚合 |
+| 并发 Push/读 | `TestIntegrationPush*`、`TestConcurrentReadAndUploadLockOrdering` | 通过；同设备只领取一条、队尾保持排队、慢设备不阻塞其他设备 |
+| 一致性备份 | `MYSQL_HOST=127.0.0.1 MYSQL_PORT=33306 BACKUP_ONCE=1 bash scripts/backup.sh` | 生成 `hongshu-20261108T051251Z-*.sql.gz`（0600），`gzip -t` 通过，`last-success` 原子写入 |
+| 备份健康 | `bash scripts/backup-healthcheck.sh` | `backup freshness healthy` |
+| 恢复 | `gzip -dc … | mysql hongshu_restore_drill` | 成功；18 张表、15 条迁移全部 `dirty=0`，head 一致 |
+
+真实库同时暴露了三个此前被跳过掩盖的问题（详见台账“真实 MySQL 暴露并修复的问题”）：两个既有读 revision
+用例与 S7 合同矛盾、一个并发 Push 用例假设同设备可并发违反 S10 顺序约束。三者已按合同修正测试并通过。
+
 ## 未执行 / 边界
 
 - 本机没有 Docker daemon，未实际执行 `docker compose -f compose.external.yml up -d`、镜像构建或
@@ -1054,3 +1073,213 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
   本轮用本地 MySQL 和 miniredis 覆盖逻辑，不把合成结果当作生产延迟验收。
 - 未执行 Android Gradle 测试/lint/APK 构建（本机无 Android SDK/设备）；中枢 API 响应字段保持兼容。
 - 未做浏览器 smoke、真实 Web Push、真实短信和设备撤销验收。
+
+# 2026-11-08 全平台质量整改（基线 9ceea66）
+
+分支 `agent/full-quality-remediation`，工作区 `/home/lvziw/dev/.wt/短信同步系统/full-quality-remediation`，
+基线 `9ceea66b576ffeba3892189416cf403da1b70816`（`0.2.0-alpha.23`）。逐项台账见
+[QUALITY_REMEDIATION.md](QUALITY_REMEDIATION.md)。本轮不创建 PR、不合并 `main`、不打 tag、不发布 Release、
+不访问生产环境。
+
+## 实际执行
+
+所有依赖、缓存与产物位于 `/home/lvziw/.build/hongshu-quality-9ceea66/`，未写入源码卷；`web/node_modules`
+为指向该目录的本地符号链接，提交前删除。
+
+| 验证 | 命令 | 结果 |
+| --- | --- | --- |
+| Go 格式 | `test -z "$(gofmt -l *.go cmd/vapid/*.go)"` | 通过 |
+| Go 测试（无外部库） | `go test -race -count=1 ./...`（Go 1.24.10 linux/amd64） | 通过，8.18s；真实 MySQL 用例按设计跳过 |
+| Go 测试（真实 MySQL 8.4.5） | 同上，另设 `TEST_MYSQL_DSN`/`MYSQL_BIN`/`MYSQLDUMP_BIN` | 通过，96.8s；含迁移、并发 Push/read、游标、索引执行计划、逻辑备份/恢复与跨端错误码合同 |
+| Go 静态检查/构建 | `go vet ./...`、`go build -trimpath -o …/hongshu .` | 通过 |
+| Web 单测 | `npm test` | 122 项通过，0 失败，0 跳过，约 4.1s |
+| Web 语法/构建 | `npm run check && npm run build` | 通过；生产资源校验并复制 |
+| Android 单测 | `:app:testDebugUnitTest` | 355 项，0 失败，20 项既有截图用例按条件跳过 |
+| Android lint | `:app:lintDebug` | 通过 |
+| Android 构建 | `:app:assembleDebug`、`:app:assembleDebugAndroidTest` | 通过（Debug APK 与设备测试 APK） |
+| 运维与仓库合同 | `bash scripts/verify-repository.sh` | 通过；`test-operations.py` 18 项 OK |
+| 官网 | `python3 website/scripts/check-site.py` | 通过，7 文件 12 KB |
+| 空白字符 | `git diff --check` | 通过 |
+| Workflow 语法 | PyYAML 解析 4 个 workflow；38 个 `run` 块 `bash -n`；内嵌 Python 片段 `compile()` | 全部通过 |
+| Action 固定 | 12 个唯一 40 位 SHA 逐一查询 `git/commits` | 全部为解引用后的真实 commit |
+
+Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADLE_USER_HOME=…/gradle`、
+`JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=…/jvm-tmp`，使用外部校验过的 Gradle 8.11.1（仓库 wrapper JAR 不存在）。
+
+## 本轮新增回归测试
+
+- `RealtimeResourceTest`：wakelock 非引用计数租约续租、取消释放、总时限取消并释放；跨进程重建后同步退避仍生效、成功后清零。
+- `NetworkCancellationTest`：协程取消触发真实 OkHttp `Call.cancel()`，并以本地 socket 验证对端读到 EOF（证明连接真的关闭，而非只是停止等待）。
+- `OtpClipboardTest`：SDK 26 与 35 下，延迟清理不清除用户更新的剪贴板；自有 OTP 剪贴板在两种 API 上被清空。
+- `DurabilityRemediationTest`、`conversation_cursor_test.go`、`shell-lifecycle.test.js` 等其余新增用例随各平台任务执行。
+
+## 修复的失败与偏差
+
+- `:app:lintDebug` 曾因 `OtpClipboard.kt` 在 minSdk 26 调用 API 28 的 `clearPrimaryClip()` 失败；已分支处理并补 SDK 26/35 测试。
+- `:app:compileDebugAndroidTestKotlin` 曾因 `saveConnection`/`login` 改为 suspend 后设备测试未同步而失败；已在 5 处调用点包裹 `runBlocking`。
+- `NetworkCancellationTest` 首版在 `runBlocking` 单线程上阻塞等待服务端，协程从未启动；改为 IO 调度后通过。
+- `update-feed.yml` 的浮动 `actions/checkout@v4` 与 `ubuntu-latest` 已固定；`ci.yml` 中 `gradle/actions` 的旧 40 位值在上游不存在（HTTP 404），已换为 `v4.4.4` commit。
+- 早期 JVM 全量运行曾因 `/tmp` 仅 2GB 磁盘写满导致大量 SQLite 失败；改用工作区外的 `java.io.tmpdir` 后消失，属环境问题而非代码缺陷。
+
+## 未执行 / 边界
+
+- **真实 MySQL**：未设 `TEST_MYSQL_DSN`，真实 MySQL 8.4 的迁移、并发 Push/read 集成、逻辑备份/恢复、游标与 `EXPLAIN` 执行计划用例在本机跳过；S12 的索引与计划证据因此未取得。
+- **容器与部署**：本机无 Docker daemon，未执行最终归档/镜像的 Compose 初始化、迁移、备份、恢复与升级演练（O4）。脚本层由 18 项运维测试覆盖，不替代该演练。
+- **真机与 OEM**：未连接真实手机，未验证锁屏/Doze、双卡、断网恢复、系统扣留短信与厂商后台限制。
+- **真实 Push / 外部 AI**：未向真实 Push 服务投递，也未调用外部 AI 端点；这些均为合成传输验证。
+- **浏览器交互**：未在真实浏览器完成双标签登录/退出、旧 Service Worker 升级、滚动焦点保持与 OTP 计时验收。
+- **跨端版本偏斜**：未构建旧 APK×新 hub、新 APK×旧 hub 的真实矩阵（O12）。
+- **结构性重构**：R1–R7 按审查报告自身的建议保留为独立后续任务，未在本轮以机械拆文件方式处理。
+
+## 共享协议合同（O12 部分）
+
+`protocol/error-codes.v1.json` 是三端唯一的错误码真源，版本 1。三方校验：
+
+- Go：`TestSharedErrorCodeContractMatchesHub` 用 `go/parser` 提取所有 `fail(...)` 字面量码和
+  `aiHTTPFailure`/`aiErrorDescriptor` 的返回码，要求与 fixture **完全一致**；另用正则比对
+  `upload_batch.go`/`calls_batch.go` 的逐项 ACK 错误码（`invalid_message`、`invalid_call`、
+  `sim_not_confirmed`），并校验运行时拼装的 `ai_http_%d[_unknown]` 仍存在。
+- Web：`web/test/protocol-contract.test.js` 要求 `app.js` 错误文案表的每个键都是中枢可返回的码，
+  且 `cursor_reset` 等分支的文案与恢复逻辑仍在。
+- Android：`ProtocolContractTest` 要求合同版本、码唯一、每个码在多种 status 下都产生非空且无占位符的
+  文案；已处理的码必须仍在合同内并保留专属文案（不得退化成 `中枢返回错误`），并锁定两个上传 surface
+  的 ACK 词表。
+
+该合同只能防止词汇漂移，**不能**替代真实版本偏斜联调：仍未构建旧 APK×新 hub、新 APK×旧 hub 矩阵。
+
+## 运维可观测性（R7）
+
+新增 `GET /api/ops`（需认证，`server/ops.go`）。所有字段都是计数、时长或布尔值；`backlog`/`queued`
+在查询失败时返回 `null`，避免把“测不到”误读成“队列为空”。
+
+| 用例 | 断言 |
+| --- | --- |
+| `TestOpsRequiresAuthentication` | 无 token 与伪造 token 均 401；真实 token 返回 `status=ok` |
+| `TestOpsReportsLivenessSchemaAndQueueCounts` | `push.last_loop`、`analysis.last_success`、`push.dropped`、`analysis.finish_failures` 反映真实计数；`schema.version` 为已应用迁移且 `dirty=0`；`push.backlog`/`analysis.queued` 可测量；`workers.running` 存在 |
+| `TestOpsNeverLeaksContentCredentialsOrEndpoints` | 载荷不含短信正文、发件人、接收号码、设备 token、VAPID 公私钥或 origin；不含 body/sender/token/endpoint/secret/password 字段名 |
+
+真实 MySQL 8.4.5 + `-race` 全量通过（74.1s）。`/healthz` 保持原有脱敏字段不变，未认证探针语义未改。
+
+## 部署归档合同（O4 的归档部分）
+
+新增 3 项运维用例，把发布时才暴露的失败提前到 PR 阶段：
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_deployment_archive_sources_exist_in_the_repository` | 从 `release.yml` 解析每个 `cp` 的源路径（至少 10 个），逐个要求仓库内存在；脚本改名前就会被拦下 |
+| `test_current_version_has_release_notes_ready` | `docs/releases/v$(cat VERSION).md` 存在且非空，对应 `release.yml` 发布前的 `test -s` |
+| `test_archive_manifest_matches_documented_deployment_files` | compose/external/external-backup/.env.example/VERSION 均存在，且 DEPLOYMENT.md 引用了独立备份单元与 `scripts/backup-healthcheck.sh` |
+
+`scripts/test-operations.py` 由 18 项增至 21 项，全部通过（6.6s）。仍未执行镜像/最终归档的 Compose 启动与升级演练。
+
+## N/N-1 版本偏斜探针（O12）
+
+`scripts/protocol-compat.py` 用真实二进制和真实 MySQL 跑同一组请求：上一版发布（`v0.2.0-alpha.22`，
+commit `6ac6f1f`）与当前构建各占一个临时库与端口。
+
+```
+python3 scripts/protocol-compat.py \
+  --old hongshu-alpha22 --new hongshu-new \
+  --old-src <alpha.22 checkout> --new-src <current checkout> \
+  --mysql-bin <mysql client>
+```
+
+| 契约 | 旧 hub（alpha.22） | 当前 hub | 结论 |
+| --- | --- | --- | --- |
+| login / me / PATCH devices / PUT sims / 上传 / sync / offset 会话 / 两种标读 / read-state / healthz | 200，必备字段齐全 | 200，必备字段齐全 | 旧客户端请求形状在新 hub 上全部仍可用 |
+| `next_cursor/more/head/epoch`（keyset） | 不返回 | 返回 | 属新增能力；Web 依 `conversation_cursor` 能力回退 `offset`，Android 不调用该接口 |
+| `offset` 与 `cursor` 同时出现 | 接受 | 400 `invalid_page` | 新客户端不会同时发送；旧 hub 行为被记录而非当成缺陷 |
+| `/api/ops` | 404 | 200（需认证） | 新增运维面，客户端不得依赖 |
+
+实测输出：
+
+```
+note: alpha N-1 predates keyset paging (missing ['next_cursor', 'more', 'head', 'epoch']); clients must fall back to offset
+note: alpha N-1 accepts offset together with cursor; new clients never send both
+note: /healthz adds ['database', 'redis'] over the previous release
+note: /api/ops is additive; the previous release does not serve it
+protocol compatibility probe passed: legacy request shapes and required fields hold on both hubs
+```
+
+`verify-repository.sh` 新增 `compile()` 检查，保证 `scripts/*.py` 语法不会在无人运行时腐坏。仍未覆盖：旧 APK × 新 hub
+的设备级联调（无真机）、真实 Push 与外部 AI。
+
+## 服务端查询基准与由此得到的优化（R6）
+
+`server/bench_test.go` 用真实 MySQL 8.4.5 与 10 万条短信 / 200 会话 / 2 万 Push 积压的夹具测量
+（`-benchtime 20x`，本机 i9-14900HX，空载，单机参考值）：
+
+```
+BenchmarkSnapshotUnreadCold-8        49043448 ns/op   100000 messages   (49.0 ms)
+BenchmarkSnapshotUnreadCached-8         40403 ns/op                     (40.4 µs)
+BenchmarkConversationPage-8            417705 ns/op                     (417.7 µs)
+BenchmarkConversationPageFiltered-8 144235037 ns/op                     (144.2 ms)
+BenchmarkHistoryPage-8              112936253 ns/op                     (112.9 ms)
+BenchmarkSyncPage-8                 114794030 ns/op                     (114.8 ms)
+BenchmarkClaimPushJobs-8             30437655 ns/op   20000 queued_jobs  (30.4 ms)
+BenchmarkUploadBatch-8                9786263 ns/op                     (9.8 ms)
+```
+
+历史页与补拉页的 113/115ms 不是索引缺失：plain `EXPLAIN` 显示 `key: timeline`、`rows: 50`，但
+`EXPLAIN ANALYZE` 显示运行期实际选成了 `Table scan on m` + `Sort`（10 万行，119ms）。原因是
+`LEFT JOIN contacts` / `LEFT JOIN message_analysis` 让优化器改用 hash join，ORDER BY 无法再借用索引。
+
+修法：无搜索/分组过滤时，先用索引物化一页，再对这几行做 join：
+
+```sql
+SELECT <messageColumns>
+FROM (SELECT <基础列> FROM messages m WHERE … ORDER BY m.timestamp DESC, m.id DESC LIMIT ?) m
+LEFT JOIN contacts c ON c.phone=m.sender
+LEFT JOIN message_analysis x ON x.message_id=m.id
+JOIN ai_settings ai ON ai.id=1
+ORDER BY m.timestamp DESC, m.id DESC
+```
+
+带 `q` 或 `group` 的过滤仍走原 join-then-filter 路径（这些查询本来就要全表过滤，不能先截断）。
+
+复测：
+
+```
+BenchmarkHistoryPage-8   580682 ns/op    (0.58 ms，约 195×)
+BenchmarkSyncPage-8     1286491 ns/op    (1.29 ms，约 89×)
+BenchmarkConversationPage-8  467291 ns/op (未见回退)
+```
+
+真实 MySQL + `-race` 全量（含全部历史页/同步页/搜索/分页断言）通过（65.6s）。基准夹具不进入常规
+`go test`（只在 `-bench` 时运行），无 `TEST_MYSQL_DSN` 时跳过。
+
+## 跨端重试语义（R5）
+
+`protocol/error-codes.v1.json` 新增 `retry_policy`，把 49 个码划入四类：
+`retry`（可重试）、`reauthorize`（凭据不可用，停止并让用户重新授权）、
+`resync`（服务端状态前进，丢弃本地游标重读）、`permanent`（请求本身错误）。
+
+| 端 | 断言 |
+| --- | --- |
+| Go | `compareRetryPolicy` 要求每个码恰好归一类；未归类、重复归类、归类不存在的码都直接失败 |
+| Web | `resync` ∪ `reauthorize` 的每个码都必须在 `errors` 文案表里，否则用户会看到裸码 |
+| Android | 同两类每个码 `describeApiError` 不得返回通用兜底 `中枢返回错误` |
+
+分类立刻暴露了一处真实体验缺陷：`cursor_reset`（Android 不调用该接口）、`read_state_changed`、
+`analysis_cursor_changed`、`invalid_cursor`、`invalid_revision` 在两端都没有文案，用户会看到
+`中枢返回错误 409（read_state_changed）` 这类字符串。已按 resync 语义补齐。
+
+验证：真实 MySQL + `-race` 全量通过（75.2s）；Web 123 项通过（新增 1 项），`check`/`build` 通过；
+Android 356 项单测 0 失败（20 项截图按条件跳过）+ lint 通过。
+
+## Store 事务所有权清单（R1 前置）
+
+新增 `docs/ANDROID_STORE_TRANSACTIONS.md` 与 `StoreTableOwnershipTest`。测试真实打开 Store，
+从 `sqlite_master` 读出实际表集合，再与清单比对：
+
+| 断言 | 作用 |
+| --- | --- |
+| 每张表都有且只有一个所属领域 | 新增表却没决定归属会失败 |
+| 清单里没有已不存在的表 | 删除表后忘记更新会失败 |
+| 每个领域至少有一张表 | 防止拆出一个空仓储 |
+| `meta` 标记为共享且列出使用它的领域 | 防止拆分后把共享键值表交给单一仓储独占 |
+
+首次运行时测试立刻失败，报出 `calls`、`call_outbox`、`call_ledger` 三张未登记的表——它们定义在
+`CallLog.kt` 与 `CallView.kt` 而非 `Store.kt`，正是拆分时最容易漏掉的一类。补登通话领域后通过。
+
+这是 R1 的前置产物，不是 R1 本身：仓储拆分仍需真机回归验收。

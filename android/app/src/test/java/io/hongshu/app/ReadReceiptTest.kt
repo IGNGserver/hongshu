@@ -44,19 +44,34 @@ class ReadReceiptTest {
         }
     }
 
-    @Test fun epochAndIdentityResetDiscardReadStateWithoutLosingSmsQueue() = withStore { name ->
+    @Test fun epochResetPreservesSmsQueueButIdentityResetClearsIt() = withStore { name ->
         Store(context, name).use { s ->
             s.queue(SmsRecord("+1234567890", "10086", "queued", 100, 7))
             for (identityReset in listOf(false, true)) {
                 s.applySync(JSONArray().put(message(1000)), 1000)
                 s.markRead("10086", 1000)
                 s.markRead(all = true)
-                if (identityReset) s.resetForNewIdentity() else s.resetSyncedCache(2)
+                if (identityReset) s.resetForNewIdentity(clearCaptures = true) else s.resetSyncedCache(2)
                 assertTrue(s.pendingReads().isEmpty())
                 s.applySync(JSONArray().put(message(1)), 1)
                 assertEquals(1, s.unreadCounts()["10086"])
-                assertEquals(1, s.pendingCount())
+                assertEquals(if (identityReset) 0 else 1, s.pendingCount())
             }
+        }
+    }
+
+    @Test fun globalReadTargetIsDurableAndAckCannotConsumeANewerTarget() = withStore { name ->
+        Store(context, name).use { s ->
+            s.applySync(JSONArray().put(message(1)).put(message(2)), 2)
+            assertTrue(s.markRead(all = true))
+            assertEquals(listOf("" to 2L), s.pendingReads())
+            s.acknowledgeRead("", 1)
+            assertEquals(listOf("" to 2L), s.pendingReads())
+        }
+        Store(context, name).use { s ->
+            assertEquals(listOf("" to 2L), s.pendingReads())
+            s.acknowledgeRead("", 2)
+            assertTrue(s.pendingReads().isEmpty())
         }
     }
 
@@ -70,7 +85,7 @@ class ReadReceiptTest {
             s.writableDatabase.execSQL("DROP TABLE upload_fingerprints")
         }
         Store(context, name).use { s ->
-            assertEquals(17, s.readableDatabase.version)
+            assertEquals(18, s.readableDatabase.version)
             assertEquals(1, s.unreadCounts()["10086"])
             assertTrue(s.pendingReads().isEmpty())
             assertTrue(s.markRead("10086", 2))

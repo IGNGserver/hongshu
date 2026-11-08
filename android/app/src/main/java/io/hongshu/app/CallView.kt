@@ -252,7 +252,7 @@ internal fun Store.cachedCall(id: Long): CachedCall? =
         .use { c -> if (c.moveToFirst()) c.call() else null }
 
 // Pages /calls/sync after the message sync. Returns true when a bounded pass left more pages.
-internal fun syncCallLog(store: Store, request: (String) -> JSONObject, maxPages: Int = 5): Boolean {
+internal suspend fun syncCallLog(store: Store, request: suspend (String) -> JSONObject, maxPages: Int = 5): Boolean {
     if (!store.hubSupportsCallLog()) return false
     repeat(maxPages) {
         val data =

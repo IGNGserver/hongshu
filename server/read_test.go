@@ -268,11 +268,17 @@ func TestReadRevisionIsStrictlyMonotonicAndTransactional(t *testing.T) {
 			t.Fatalf("read revision got=%d want=%d err=%v", got, want, err)
 		}
 	}
-	for i := 0; i < 2; i++ {
-		c.call("POST", "/api/messages/read", token, map[string]any{"sender": "10086", "message_id": 1}, 200)
-		revision++
-		assertRevision(revision)
-	}
+	// Only an effective watermark advance may invalidate other clients and caches.
+	c.call("POST", "/api/messages/read", token, map[string]any{"sender": "10086", "message_id": 1}, 200)
+	revision++
+	assertRevision(revision)
+	// Repeating the same boundary changes nothing, so it must not bump the revision.
+	c.call("POST", "/api/messages/read", token, map[string]any{"sender": "10086", "message_id": 1}, 200)
+	assertRevision(revision)
+	// A newer message in the same conversation is an effective advance.
+	c.call("POST", "/api/messages/read", token, map[string]any{"sender": "10086", "message_id": 3}, 200)
+	revision++
+	assertRevision(revision)
 	c.call("POST", "/api/messages/read", token, map[string]any{"sender": "10086", "message_id": 2}, 400)
 	assertRevision(revision) // Rolled-back invalid request cannot advertise a change.
 	c.call("POST", "/api/messages/read", token, map[string]any{"sender": "unknown"}, 200)
@@ -318,8 +324,14 @@ func TestConcurrentReadAndUploadLockOrdering(t *testing.T) {
 		t.Error(err)
 	}
 	var revision, seq int64
-	if err := a.db.QueryRow("SELECT updated_at,(SELECT seq FROM sync_clock WHERE id=1) FROM read_state WHERE id=1").Scan(&revision, &seq); err != nil || revision != initialRevision+8 || seq != 8 {
-		t.Fatalf("lost read/upload commit: revision=%d seq=%d err=%v", revision, seq, err)
+	if err := a.db.QueryRow("SELECT updated_at,(SELECT seq FROM sync_clock WHERE id=1) FROM read_state WHERE id=1").Scan(&revision, &seq); err != nil || seq != 8 {
+		t.Fatalf("lost upload commit: revision=%d seq=%d err=%v", revision, seq, err)
+	}
+	// Every read and upload committed under the shared lock order, and only effective
+	// advances bumped the revision: at least one mark-read and one "all" advance, and
+	// at most one per "all" call as concurrent uploads raise the head.
+	if revision < initialRevision+1 || revision > initialRevision+5 {
+		t.Fatalf("lost read commit or unexpected bumps: revision=%d initial=%d", revision, initialRevision)
 	}
 }
 

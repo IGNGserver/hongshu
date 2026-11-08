@@ -48,10 +48,12 @@ PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md
   系统/服务通知忽略，“[N条]”等汇总通知只触发补读不落库；消息类通知落库后在与广播/收件箱关联前暂缓上传
   （号码标题 30 秒、名称标题 150 秒），期满仍无对端的才作为“只在通知中出现”的记录按原规则上传。
   开启通知兜底会在同一次同意内联动开启新短信补漏。历史读取推进水位时同步推进补漏水位，两个前向游标收敛。
-  权威广播/收件箱副本 ACK 或同步确认后，未配对的通知副本按正文与极窄时间窗唯一匹配吸收：转移通知身份与
-  指纹归属、删除通知 outbox 行、保留 capture 账本，避免同一短信留下“已上传 + 待确认号码”两份。
+  权威广播/收件箱副本 ACK 或同步确认后，未配对的通知副本按发送者（双方存在号码证据时必须一致）、正文与极窄时间窗
+  唯一匹配吸收：转移通知身份与指纹归属、删除通知 outbox 行、保留 capture 账本，避免同一短信留下“已上传 + 待确认号码”两份。
+  不同发送者或存在多个歧义候选时保留记录，不做物理删除。
   无法解析接收号码的记录可由用户开启“自动忽略无法确认接收号码的短信”软忽略（`outbox.blocked=auto_ignored`），
-  不计入提示与上传；后续出现权威副本或有效 SIM 时恢复。细节见 [HYPEROS_SMS.md](HYPEROS_SMS.md)。
+  不计入提示与上传；后续出现权威副本或有效 SIM 时恢复。自动忽略仍是未上传数据，换绑检查必须包含这些记录；
+  不同中枢换绑不得保留任何旧 outbox，避免软状态恢复后跨中枢泄露。细节见 [HYPEROS_SMS.md](HYPEROS_SMS.md)。
 - 历史导入标记 historical，只更新历史与实时会话视图，不触发跨设备新短信通知，避免导入通知风暴。
   导入时间使用收件箱 date（本机接收时间）。它和广播 PDU 时间可能不同，不能靠改时间戳假装去重；
   已有广播记录时，同设备、同发件人、同正文、时间差在 2 分钟内的导入行视为同一条，不重复入库；
@@ -61,7 +63,12 @@ PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md
 - 服务端事务锁定 singleton sync_clock，分配提交顺序 ID、存储短信、创建推送任务后提交。
   不能使用普通 AUTO_INCREMENT 作为可靠游标（并发事务提交顺序可能与 ID 不一致）。
   同一批里未确认接收号码的条目返回错误并不入库，已确认条目仍提交；客户端只删除已确认条目。
+  Android 每行 outbox 持久保存实际发送代次与 wire fingerprint；ACK 仅删除 key 和已发送 fingerprint 均匹配的行。
+  HTTP 在途期间 sender/receiver 被权威来源修正时，旧 ACK 不得删除新身份，新身份保留并再次上传。
 - 初次同步基线与完成状态独立持久保存，不以非零游标判断完成。待通知意图与同步页同事务保存，
+- Android 本地 schema v18 为每次实际发送持久化 `outbox.sent_fingerprint`；成功 ACK、永久拒绝和整批 invalid_message 仅作用于该代次。HTTP 在途时产生的新 sender/receiver 指纹必须再次上传，旧 ACK 不能删除新代次。
+- “全部已读”以空 sender 的保留目标写入 `read_outbox`，记录本地目标 message ID；只有中枢确认后才删除。新 hub 按该目标推进全局水位，旧 hub 忽略可选目标并保持其原有的全部已读语义。断网时 UI 只能报告“本机已读，等待同步”。
+- SMS_RECEIVED 先在有界 SQLite 广播恢复表保存解析后的消息、代次和接收时间，再由后台有界批量补全 SIM/配对；恢复行只有进入正式 capture 账本后才删除。进程死亡和调度失败由启动/周期任务恢复。
   页面中断后重试仍能通知；连接之后由其他设备上传的非历史短信发一条汇总通知。
 - `/sync?after=N` 升序分页；客户端必须将本地消息与游标在同一事务保存。无历史自动清理。
   Web 没有持久消息缓存，只观察 /me 的 head 与 epoch，并按需分页读取显示历史；空更新保留阅读范围和位置。
@@ -69,20 +76,29 @@ PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md
   恢复前记录现行 epoch，恢复后设置为高于现行与备份值的代次，禁止仅对备份值加一。
   每个同步页面写入前检查 epoch；客户端第一次见到 epoch 只记录；
   之后若变化，清空已同步缓存和游标并从头补齐，不删除尚未上传的短信，也不清除本机捕获账本。
+- Android 会话与全局已读均先写持久 read_outbox；全局项使用独立 sender 保留键并携带目标全局水位，ACK 只能消费不超过已确认水位的项。
+  网络失败显示“本机已读，等待同步”，重启后由 WorkManager 补传，不能无提示地只改本机水位。
+- SIGTERM 生命周期由可测试的 run 协调：先停止接收新连接并有界等待 HTTP drain，再取消和 join Push/AI/backfill/state/Redis worker，
+  关闭共享 transport 与 Redis，最后关闭数据库。外部服务已接受的 Push/AI 请求仍按至少一次语义处理，不假装可撤回。
 - 同步 ID 只决定提交顺序；会话/对话按短信时间与 ID 排序，历史导入不能盖过真正的新短信。
   conversation_heads 与上传同事务维护每个发件人的最新消息；无搜索、SIM 或设备筛选的会话查询读取摘要，不重新计算全部历史。对话详情始终按发件人读取全部接收号码的短信。
+  会话新游标按 timestamp/message ID 降序，响应 head/epoch 与页面处于同一 RR 快照；客户端仅连接相同 head/epoch 的页面，
+  页间提交头变化时从首屏重建，不能用去重掩盖跨快照缺页。旧 offset 保留用于兼容，不再作为新 Web 的主分页机制。
   搜索正文或按来源设备过滤仍从匹配历史计算会话，分页不代表海量搜索已压测。
 - WebSocket 只发无正文的更新提示，连接/重连及周期轮询均执行增量补齐。
 - Web Push 到达时，Service Worker 同时向已打开的页面发送无正文更新提示，独立触发刷新，
   不等待旧 WebSocket 恢复；Worker 仍不请求或缓存短信正文，不以提示代替真实 Push 可达性验收。
   提示覆盖其他设备的新短信，也覆盖本机上传后其他客户端需要看到的变更；来源设备是否弹通知由客户端判断。
-- Web Push 队列只服务已订阅的浏览器。失败不能回滚短信。每条消息临发送时领取 60 秒租约，每轮最多进行 20 次投递尝试，不提前为整批等待中的任务消耗租期；过期租约不得发送，请求 deadline 不晚于租期结束。崩溃后租约到期可重试，推送提供至少一次投递而非严格恰好一次。过期订阅 404/410 只删除该 endpoint 自己的任务和订阅，不删除短信，也不清掉同设备其他积压任务。
+- Web Push 队列只服务已订阅的浏览器。失败不能回滚短信。每条消息临发送时领取 60 秒租约，每轮最多进行 20 次投递尝试，不提前为整批等待中的任务消耗租期；过期租约不得发送，请求 deadline 不晚于租期结束。崩溃后租约到期可重试，推送提供至少一次投递而非严格恰好一次。过期订阅 404/410 的清理事务先锁当前订阅，完整比对 endpoint、p256dh、auth 与投递快照；仅全部匹配才删除该订阅及其任务，旧响应不能删除重订阅后的任务，也不删除短信。
   推送默认仅显示“有新短信”。Android 不依赖 Web Push：实时服务在线时由 WS 触发本地通知，否则由 WorkManager 补齐后通知。
   来源设备不创建自己的推送任务。Push HTTP 客户端优先解析并拨号 IPv4，失败时回退其余地址；Docker 默认
   bridge 没有 IPv6，不能只拨 DNS 返回的第一个地址。
 - `/api/push/test` 直接向当前设备订阅发送一条通用通知，不经过 `push_jobs`，因此不会因真实短信缺失而无法验证，也不会在离线时留下队列任务；仍使用同一套 VAPID、加密和 404/410 清理。
 - iOS/iPadOS 16.4+ 的 Web Push 只对“添加到主屏幕”的 Web App 生效；Safari 标签页不能申请后台推送。Web 设置页在 iOS 非 standalone 时显示安装引导，而不是只把开关置灰。
 - 浏览器或 VAPID 密钥变化会让旧订阅失效。客户端在启动时比较 `applicationServerKey`、读取 `/api/me.push_subscribed` 并在需要时重新订阅；Service Worker 的 `pushsubscriptionchange` 也重新绑定。重新绑定只影响当前身份，不跨越退出/重新登录代次。
+- Web 旧 shell 使用 client-ID→revision 租约与七天宽限期，未知打开页面一律保守保留；构建清单保留 30 天，只有超过七天且不被清单引用的内容 hash 普通文件可回收。详细规则见 PWA_WEB.md。
+- Web 会话使用 head/epoch fencing 的 keyset；旧 hub 保留 offset。分析计数独立 dirty/退避，WS 在离在线和可见性事件下做有界指数重连；消息显示窗口最多 500 条，会话行 keyed 原位更新。
+- 本机联系人以 device ID 为 owner，旧版无 owner 记录只能通过 IndexedDB 事务内 generation CAS 认领；其他身份的隐藏记录不会被当前身份退出删除。
 - 备份使用一致性逻辑备份，包含授权、消息、游标、队列和 epoch；恢复必须同时保留部署密钥。
   恢复后必须生成不复用的 sync_clock.epoch，否则客户端会把重用的短信 ID 当成已经同步过。
 
@@ -99,7 +115,8 @@ PWA 安装、版本更新与手机/平板视口约定见 [PWA_WEB.md](PWA_WEB.md
   epoch、已读水位和 Push 至少一次投递语义保持不变。
 - Redis 是可选加速层，不是数据源：只保存未读数、变更事件和 worker 选主等非敏感派生状态；
   短信正文、号码、联系人、token、AI 密钥和 Push endpoint 不进入 Redis。Redis 不可用时回退到
-  进程内缓存和数据库轮询，短信写入不依赖缓存。
+  进程内缓存和数据库轮询，短信写入不依赖缓存。同一部署副本可显式设置相同 `HONGSHU_DEPLOYMENT_ID`
+  与 `HONGSHU_REDIS_PREFIX`；默认命名空间包含规范化 MySQL host/port/database，独立部署不因同名 schema 碰撞。
 
 ## 身份与安全
 
@@ -110,9 +127,13 @@ Web 身份使用 HttpOnly / SameSite=Strict cookie，HTTPS 时 Secure；HTTP 时
 Android 使用 Keystore AES-GCM 保存凭据。撤销身份阻止后续 HTTP/WS/Push。
   Push 订阅写入在事务内重新锁定并检查设备撤销状态，与退出/撤销使用相同锁序，避免已认证的旧在途请求复活订阅。
 Android 禁用应用备份，并通过 Android 12+ dataExtractionRules 明确排除云备份和设备迁移的全部应用数据；厂商迁移行为仍需真机验证。
+Android SQLite 中的短信正文依赖应用私有目录、系统文件级加密和禁备份，并未使用 SQLCipher；Keystore AES-GCM 只保护 bearer token，不能加密数据库镜像。该边界不防御 root/解锁设备镜像、已root恶意应用或系统级读取。若未来把这类攻击纳入威胁模型，数据库加密必须另做密钥锁定、明文到密文迁移、撤权/回滚和恢复设计，不能仅替换 SQLite 依赖就宣称完成。
 浏览器写请求检查 Origin；WS 检查 Origin；不提供跨域访问。HTTPS 代理必须配置 HTTPS PUBLIC_URL；
 登录 Origin 的 HTTPS scheme 也强制 Secure cookie，不能被 HTTP 默认配置降级。
 公网 HTTP 会明文传输密码、短信和会话凭据，强烈建议使用 HTTPS 或 VPN。
+Android 默认拒绝 HTTP。受控局域网兼容必须在连接表单逐项显式授权，授权仅保存规范化后的当前 origin；修改 host/port/scheme 必须重新授权，设置页持续显示“明文连接”。Android 系统的 cleartext 开关只是 OS 通道许可，不是业务授权，API/WS 在每次使用前还检查持久 origin。
+实时同步使用非引用计数 wakelock，每 45 秒按仍在执行的关键段续租 60 秒，单次任务有 15 分钟总期限并 finally 释放。协程 HTTP 请求取消时立即取消 OkHttp Call，不以 call timeout 代替取消。
+OTP 复制在 identityLock 内重读 message ID 对应的持久意图，核对 epoch、代码、expires_at 和已读撤销；剪贴板 60 秒后仅当内容仍是本次复制的完整 ClipData 时清理，绝不覆盖用户后来复制的内容。
 浏览器 Service Worker、可安装离线应用和 Web Push 需要 HTTPS 或 localhost；公网 HTTP 下不可用。
 推送服务只能访问公开 HTTPS 地址，解析与拨号均阻止私网/回环，防止订阅接口成为 SSRF 通道。
 不记录请求正文、Authorization、Cookie、凭据、短信、号码或 Push endpoint。
@@ -125,7 +146,10 @@ Android 禁用应用备份，并通过 Android 12+ dataExtractionRules 明确排
 诊断仅包含计数、时间和固定错误类别，不持久化或导出短信正文、号码、验证码、凭据及完整广播 extras。
 “接收全部通知”表示中枢其他设备的新短信通知，不是读取其他应用的通知历史。
 连接设置始终提供保存：首次登录传入名称，已连接且地址不变时 PATCH 本设备名称，不新建设备身份。
-更换中枢或填写新密码时重新认证；旧中枢还有待传短信时阻止切换，失败保留原凭据。
+更换中枢或填写新密码时重新认证；旧中枢存在任何未上传 outbox（包括 auto_ignored、blocked、held）都阻止静默切换，失败保留原凭据。
+  用户显式选择清除旧数据并换绑时，全部旧 outbox/capture/receipt/call/read 状态必须在同一事务删除，不能留下可恢复的孤立行。
+  浏览器认证另有独立跨标签协调：每次采用 `/me` 前比较 device ID，变化时递增 generation、取消旧请求并清理详情、联系人和 Push；
+  login/logout 通过 auth BroadcastChannel 立即通知其他标签。主动退出先撤销服务器身份，网络失败保持原会话；成功或 401 后再持久清本地联系人，清理失败必须可重试。
 开机补扫需要 RECEIVE_BOOT_COMPLETED，始终调度 WorkManager；仅在用户同时开启实时连接和
 “开机恢复实时连接”、凭据可用且系统允许时启动实时前台服务，不在解锁前读取 Keystore 凭据。
 SMS_RECEIVED 广播与通知链路独立，普通查看设备无需短信权限。

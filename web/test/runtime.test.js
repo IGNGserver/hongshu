@@ -104,3 +104,21 @@ test('pushsubscriptionchange obtains the VAPID key and re-binds the rotated endp
   assert.equal(runtime.subscribeOptions.userVisibleOnly,true);
   assert.equal(runtime.subscribeOptions.applicationServerKey.length,1);
 });
+test('notification click navigates and focuses an existing same-origin window',async()=>{
+  const calls=[];
+  const client={url:'https://example.test/inbox',postMessage(){},navigate:async url=>{calls.push(['navigate',url]);return client},focus:async()=>{calls.push(['focus'])}};
+  const runtime=workerRuntime(readFileSync(new URL('../push.js',import.meta.url),'utf8'),new Map(),undefined,{clients:[client]});
+  await runtime.click({data:{url:'/?sender=13800000000#latest'},close(){}});
+  assert.deepEqual(calls,[['navigate','https://example.test/?sender=13800000000#latest'],['focus']]);
+  assert.equal(runtime.opened,null);
+});
+test('failed Push rotation is reported and never reported as bound',async()=>{
+  const messages=[];
+  const rotated={toJSON:()=>({endpoint:'https://push.example.test/rotated',keys:{p256dh:'synthetic-key',auth:'synthetic-auth'}})};
+  const runtime=workerRuntime(readFileSync(new URL('../push.js',import.meta.url),'utf8'),new Map(),async path=>({ok:path!=='/api/push',json:async()=>({})}),{
+    newSubscription:rotated,clients:[{postMessage:message=>messages.push(message)}],
+  });
+  await runtime.subscriptionChange({newSubscription:rotated});
+  assert.equal(messages.length,1);
+  assert.equal(messages[0].type,'PUSH_SUBSCRIPTION_FAILED');
+});

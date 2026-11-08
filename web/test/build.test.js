@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, cp, readFile, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, cp, readFile, writeFile, rm, symlink, utimes, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -50,5 +50,35 @@ test("content-only upgrade pins a new public graph and a stable manifest identit
     assert.ok(!worker.includes('url: "/api/'), "authenticated responses are outside the precache");
     const oldApp = (await readFile(join(temp, "v1/index.html"), "utf8")).match(/src="(\/assets\/[^\"]+-app.js)"/)[1];
     assert.notEqual(oldApp, appPath);
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
+
+test("build manifests retain referenced assets and conservatively collect only stale hashed files", async () => {
+  const temp = await mkdtemp(join(process.env.HONGSHU_TEST_TMP || tmpdir(), "hongshu-retention-"));
+  try {
+    const source = join(temp, "source");
+    const out = join(temp, "out");
+    await cp(new URL("../", import.meta.url), source, { recursive: true, filter: path => !path.includes("node_modules") });
+    await symlink(new URL("../node_modules", import.meta.url), join(source, "node_modules"), "dir");
+    const build = () => execFileSync(process.execPath, [join(source, "build.mjs")], { env: { ...process.env, WEB_BUILD_DIR: out } });
+    build();
+    const first = JSON.parse(await readFile(join(out, "shell-manifest.json"), "utf8"));
+    const oldApp = first.assets.find(path => path.endsWith("-app.js"));
+    await writeFile(join(source, "app.js"), (await readFile(join(source, "app.js"), "utf8")) + "\n// retention fixture\n");
+    build();
+    const second = JSON.parse(await readFile(join(out, "shell-manifest.json"), "utf8"));
+    assert.notEqual(first.revision, second.revision);
+    const history = JSON.parse(await readFile(join(out, ".hongshu-releases", first.revision + ".json"), "utf8"));
+    assert.ok(history.assets.includes(oldApp));
+    assert.ok(Number.isFinite(Date.parse(history.retiredAt)));
+    const stale = join(out, "assets", "0000000000000000-stale.js");
+    const unknown = join(out, "assets", "keep.js");
+    await writeFile(stale, "stale"); await writeFile(unknown, "unknown");
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await utimes(stale, old, old); await utimes(unknown, old, old);
+    build();
+    await assert.rejects(access(stale));
+    await access(unknown);
+    await access(join(out, oldApp.slice(1)));
   } finally { await rm(temp, { recursive: true, force: true }); }
 });

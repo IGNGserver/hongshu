@@ -105,12 +105,14 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON hongshu.* TO 'hongshu'@'10.0.0.%';
 # 使用迁移账号，执行一次；命令不会启动 HTTP 服务。
 HONGSHU_DATABASE_URL='mysql://hongshu_migrate:...@mysql.example:3306/hongshu?...' \
   docker run --rm --env HONGSHU_DATABASE_URL \
-  -v "$PWD/db/migrations:/app/migrations:ro" \
   ghcr.io/igngserver/hongshu:0.2.0-alpha.23 migrate
 
 # 运行时账号 + check 模式
 HONGSHU_MIGRATE=check docker compose -f compose.external.yml up -d
 ```
+
+迁移 SQL 已内嵌于同版本镜像的 `/app/migrations`，部署包和空目录初始化都不需要源码树或 `db/migrations`
+宿主目录。不要再用宿主 bind mount 覆盖该目录；镜像 digest 与迁移版本必须保持一致。
 
 迁移锁按 schema 名派生，不再是整个 MySQL 服务器共用一把锁；同一台服务器上不同中枢库可以
 独立升级。迁移仍以 checksum + dirty 审计，DDL 失败会阻止继续启动，不能直接清除 dirty。
@@ -169,6 +171,9 @@ docker compose -f compose.external.yml up -d
 - AI 回填按批分配 revision，完成后停止每秒事务；AI 分析、Push 在空闲时等待唤醒，而不是固定 1s/3s 轮询。
 - 元数据（设备/SIM/联系人）按 `metadata_clock.revision` 做进程内缓存；联系人不会进入 Redis。
 - 迁移 014 增加 `messages(historical,direction,id,sender)` 和 `push_jobs(next_at,leased_until,id)` 索引。
+- 迁移 015 删除被 014 完全覆盖的冗余索引 `messages_unread(historical,id,sender)` 和
+  `push_jobs.pending(next_at)`。所有未读聚合都同时过滤 `historical=FALSE AND direction='in'`，
+  两条旧索引都是新索引的严格前缀，保留只会让每条短信和每个 Push 多写一次索引。回滚脚本重建两者。
 
 这些改动不改变提交顺序、幂等键、epoch、已读水位或 Push 至少一次投递语义。
 

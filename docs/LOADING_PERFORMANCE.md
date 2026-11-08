@@ -31,4 +31,21 @@ Android 有界同步轮次保证下载和上传公平，不让历史上传先占
 
 隔离回归覆盖正常/延迟/超时/离线、统计挂起、元数据失败、身份切换、epoch 回档、快照与可靠页重叠、旧中枢兼容、壳升级和敏感缓存隔离。CI 使用合成数据，不能替代用户网络与真机验收。真实入口、机型和指标应记录在 VALIDATION.md，未测的性能目标不得写成已达到。
 
+服务端查询基准（`go test -run XXX -bench . ./...`，真实 MySQL 8.4.5，夹具 10 万条短信 / 200 个会话 / 2 万条 Push 队列，
+本机 i9-14900HX；这是单机空载参考值，不是生产容量承诺）：
+
+| 基准 | 优化前 | 优化后 | 说明 |
+| --- | --- | --- | --- |
+| `BenchmarkHistoryPage`（50 条历史页） | 112.9 ms | 0.58 ms | 先按索引取一页再 join；否则优化器改选 hash join 全表扫 |
+| `BenchmarkSyncPage`（200 条补拉） | 114.8 ms | 1.29 ms | 同上，按 ID 窗口物化后再 join |
+| `BenchmarkConversationPage`（50 会话摘要） | 267 µs | 467 µs | 走 `conversation_heads`，未见回退 |
+| `BenchmarkConversationPageFiltered`（搜索） | 144 ms | 未改动 | 搜索必然全表过滤，属预期 |
+| `BenchmarkSnapshotUnreadCold` | 49 ms | 未改动 | 仅变更后首次请求；之后命中缓存/Redis 或 singleflight |
+| `BenchmarkSnapshotUnreadCached` | 40 µs | 未改动 | 稳态每页成本 |
+| `BenchmarkClaimPushJobs`（2 万积压） | 30 ms | 未改动 | 成本来自按设备顺序的 `NOT EXISTS` 守卫，换取同设备不并发投递 |
+| `BenchmarkUploadBatch`（100 条批次） | 9.8 ms | 未改动 | 写路径 |
+
+判断依据：5 万条以下历史页本来就在毫秒级，只有规模上来后 join 计划才劣化，因此按基准而不是按直觉改动。
+未测项：真实网络 RTT、并发写入与大表膨胀后的表现。
+
 公开资源对照探测：`python3 scripts/probe-loading.py --origin https://your-hub.example --label cf --samples 3`。仅允许无凭据 origin，不输出响应内容/查询；每个资源首个样本含建连，后续尝试复用连接。该结果不是已登录整页速度。浏览器 CI 在挂起元数据/统计时断言列表可见，再验证离线重启壳；Android 原生 SQLite 测试验证预览不跳游标、不吞通知、摘要按时间/ID 排序和回档隔离。

@@ -99,17 +99,38 @@ export class ContactStorage {
       return version;
     }, previous => (previous || 0) + 1);
   }
-  clear() {
+  clear(owner = null) {
+    let changed = false;
     return this.transact("readwrite", store => {
       const version = store.get("generation");
-      version.addEventListener("success", () => {
+      const contacts = store.get("contacts");
+      contacts.addEventListener("success", () => {
+        // Logging into another account must never delete the previous account's
+        // hidden records. A null owner retains the legacy explicit-clear behavior.
+        if (owner !== null && contacts.result?.owner !== owner) return;
         try {
+          changed = true;
           store.put((version.result || 0) + 1, "generation");
           store.delete("contacts");
         } catch { store.transaction.abort(); }
       });
       return version;
-    }, previous => (previous || 0) + 1);
+    }, previous => changed ? (previous || 0) + 1 : (previous || 0));
+  }
+  claim(owner, expectedGeneration) {
+    return this.transact("readwrite", store => {
+      const version = store.get("generation");
+      const contacts = store.get("contacts");
+      contacts.addEventListener("success", () => {
+        const saved = contacts.result;
+        if ((version.result || 0) !== expectedGeneration || saved?.owner !== "") { store.transaction.abort(); return; }
+        try {
+          store.put(expectedGeneration + 1, "generation");
+          store.put({ ...saved, owner }, "contacts");
+        } catch { store.transaction.abort(); }
+      });
+      return version;
+    }, () => expectedGeneration + 1);
   }
 }
 
@@ -139,6 +160,7 @@ export class BrowserContacts {
     this.release();
     this.enabled = false;
     this.records = [];
+    this.owner = "";
   }
   async load(owner) {
     const version = ++this.version;
@@ -147,7 +169,17 @@ export class BrowserContacts {
     this.records = [];
     this.owner = owner;
     return this.serialize(async () => {
-      const saved = await this.storage.read();
+      let saved = await this.storage.read();
+      if (version !== this.version || owner !== this.owner) return;
+      if (owner && saved?.owner === "" && Array.isArray(saved.records)) {
+        try {
+          this.generation = await this.storage.claim(owner, saved.generation || 0);
+          saved = { ...saved, owner, generation: this.generation };
+        } catch {
+          // Another tab may have claimed the legacy records for a different session.
+          saved = await this.storage.read();
+        }
+      }
       if (version !== this.version || owner !== this.owner) return;
       this.generation = saved?.generation || 0;
       if (!saved || saved.owner !== owner || !Array.isArray(saved.records)) {
@@ -182,9 +214,9 @@ export class BrowserContacts {
     return this.save(mergeSelectedContacts(this.records, selectedContacts(selected)), true);
   }
   toggle(enabled) { return this.save(this.records, enabled); }
-  clear() {
+  clear(owner = this.owner) {
     this.reset(); // Hide immediately, including when persistent deletion fails.
-    return this.serialize(async () => { this.generation = (await this.storage.clear()) ?? this.generation + 1; });
+    return this.serialize(async () => { this.generation = (await this.storage.clear(owner)) ?? this.generation + 1; });
   }
   find(sender) {
     if (!this.enabled) return null;

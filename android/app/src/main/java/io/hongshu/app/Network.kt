@@ -4,15 +4,21 @@ import android.content.Context
 import java.io.IOException
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 
 class ApiException(val status: Int, val code: String) : IOException(describeApiError(status, code))
@@ -30,6 +36,11 @@ internal fun describeApiError(status: Int, code: String): String =
         "invalid_batch" -> "上传批次无效，将拆分后重试"
         "invalid_sim" -> "中枢不接受该 SIM 号码格式"
         "epoch_changed" -> "中枢数据已恢复或重置，正在重新同步"
+        "cursor_reset" -> "列表已更新，正在重新加载"
+        "read_state_changed",
+        "analysis_cursor_changed" -> "中枢已读状态有更新，正在重新同步"
+        "invalid_cursor",
+        "invalid_revision" -> "同步位置已失效，正在重新同步"
         "forbidden",
         "admin_required" -> "没有权限执行此操作"
         "origin_denied",
@@ -76,7 +87,7 @@ internal fun validatedLogin(origin: String, response: JSONObject): LoginIdentity
     check((created is Int || created is Long) && (created as Number).toLong() > 0) {
         "中枢返回的连接时间无效"
     }
-    return LoginIdentity(origin, token, id, name, (created as Number).toLong(), notify)
+    return LoginIdentity(hubOrigin(origin), token, id, name, (created as Number).toLong(), notify)
 }
 
 internal fun hubOrigin(url: String): String {
@@ -102,15 +113,31 @@ internal fun realtimeURL(url: String): String {
     return "$scheme://${URI(origin).rawAuthority}/api/ws"
 }
 
+internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(e)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (continuation.isActive) continuation.resume(response) else response.close()
+        }
+    }.let { enqueue(it) }
+}
+
 /**
  * Unauthenticated reachability check against the hub's /healthz, for the "test connection"
  * button. It only reports whether the address answers; logging in still verifies the password.
  */
-internal fun probeHub(url: String): String {
+internal suspend fun probeHub(url: String, allowCleartext: Boolean = false): String {
     val origin = hubOrigin(url.trim())
+    require(origin.startsWith("https://") || allowCleartext) { "请先显式确认此 origin 的 HTTP 明文连接" }
     val request = Request.Builder().url("$origin/healthz").build()
     return try {
-        Api.client.newCall(request).execute().use { response ->
+        val call = Api.client.newCall(request)
+        call.timeout().timeout(15, TimeUnit.SECONDS)
+        call.awaitResponse().use { response ->
             when {
                 response.isSuccessful -> "中枢可以访问"
                 response.code == 503 -> "中枢在线，但数据库暂不可用"
@@ -140,12 +167,21 @@ class Api(private val config: Config, private val originOverride: String? = null
         body: JSONObject? = null,
         authorized: Boolean = true,
         timeoutMillis: Long = 45_000L,
+    ): JSONObject = runBlocking {
+        requestCancellable(path, method, body, authorized, timeoutMillis)
+    }
+
+    suspend fun requestCancellable(
+        path: String,
+        method: String = "GET",
+        body: JSONObject? = null,
+        authorized: Boolean = true,
+        timeoutMillis: Long = 45_000L,
     ): JSONObject {
-        val (origin, token) =
-            synchronized(identityLock) {
-                check(!authorized || !config.identityChanging) { "身份切换未完成，请重新连接" }
-                hubOrigin(originOverride ?: config.url) to config.token
-            }
+        val (origin, token) = synchronized(identityLock) {
+            check(!authorized || !config.identityChanging) { "身份切换未完成，请重新连接" }
+            config.requireOriginAccess(originOverride ?: config.url) to config.token
+        }
         val builder = Request.Builder().url(origin + "/api" + path)
         if (authorized) {
             builder.header("Authorization", "Bearer $token")
@@ -156,37 +192,35 @@ class Api(private val config: Config, private val originOverride: String? = null
         builder.method(
             method,
             if (method == "GET" || method == "DELETE") null
-            else
-                (body ?: JSONObject())
-                    .toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType()),
+            else (body ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType()),
         )
         val call = client.newCall(builder.build())
-        call.timeout().timeout(if ((config.lowSpeed || loadingNetwork.slow) && timeoutMillis == 45_000L) 60_000L else timeoutMillis, TimeUnit.MILLISECONDS)
+        call.timeout().timeout(
+            if ((config.lowSpeed || loadingNetwork.slow) && timeoutMillis == 45_000L) 60_000L else timeoutMillis,
+            TimeUnit.MILLISECONDS,
+        )
         val started = System.nanoTime()
-        try { call.execute().use { response ->
-            val json =
-                try {
+        try {
+            call.awaitResponse().use { response ->
+                val json = try {
                     JSONObject(response.body?.string() ?: "{}")
                 } catch (_: Exception) {
                     JSONObject()
                 }
-            if (!response.isSuccessful) {
-                synchronized(identityLock) {
-                    if (
-                        response.code == 401 &&
-                            authorized &&
-                            config.token == token &&
-                            config.url == origin
-                    ) {
-                        config.token = ""
-                        config.status = "授权已撤销，请重新连接"
+                if (!response.isSuccessful) {
+                    synchronized(identityLock) {
+                        if (response.code == 401 && authorized && config.token == token && config.url == origin) {
+                            config.token = ""
+                            config.status = "授权已撤销，请重新连接"
+                        }
                     }
+                    throw ApiException(response.code, json.optString("error", "network_error"))
                 }
-                throw ApiException(response.code, json.optString("error", "network_error"))
+                return json
             }
-            return json
-        } } finally { loadingNetwork.observe(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)) }
+        } finally {
+            loadingNetwork.observe(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
+        }
     }
 }
 
@@ -195,20 +229,18 @@ class Repository(val context: Context, databaseName: String = "hongshu.db") {
     val store = Store(context, databaseName)
     val api = Api(config)
 
-    fun saveConnection(url: String, password: String, name: String) = runBlocking {
+    suspend fun saveConnection(url: String, password: String, name: String, allowCleartext: Boolean = false) {
         identityMutex.withLock {
             withContext(Dispatchers.IO) {
-                val origin = hubOrigin(url.trim())
+                val origin = config.requireOriginAccess(url.trim(), allowCleartext)
                 val savedName = name.trim()
                 check(
                     savedName.isNotEmpty() &&
                         savedName.toByteArray().size <= 100 &&
                         !savedName.contains('\u0000')
-                ) {
-                    "请输入有效设备名称（最多 100 字节）"
-                }
+                ) { "请输入有效设备名称（最多 100 字节）" }
                 if (config.token.isNotEmpty() && origin == config.url && password.isEmpty()) {
-                    api.request(
+                    api.requestCancellable(
                         "/devices/${config.deviceId}",
                         "PATCH",
                         JSONObject().put("name", savedName),
@@ -216,56 +248,44 @@ class Repository(val context: Context, databaseName: String = "hongshu.db") {
                     config.deviceName = savedName
                 } else {
                     check(password.isNotEmpty()) { "首次连接或更换中枢时请填写中枢密码" }
-                    loginUnlocked(origin, password, savedName)
+                    loginUnlocked(origin, password, savedName, allowCleartext)
                 }
                 syncNow(context)
             }
         }
     }
 
-    fun login(url: String, password: String, name: String) = runBlocking {
+    suspend fun login(url: String, password: String, name: String, allowCleartext: Boolean = false) {
         identityMutex.withLock {
-            withContext(Dispatchers.IO) { loginUnlocked(url, password, name) }
+            withContext(Dispatchers.IO) { loginUnlocked(url, password, name, allowCleartext) }
         }
     }
 
-    private fun loginUnlocked(url: String, password: String, name: String) {
+    private suspend fun loginUnlocked(url: String, password: String, name: String, allowCleartext: Boolean) {
         val oldUrl = config.url
         check(oldUrl.isEmpty() || oldUrl == url.trimEnd('/') || store.pendingCount() == 0) {
             "旧中枢尚有未上传短信，不能更换中枢以免泄露内容；可在“未上传到中枢的短信”中上传或放弃这些记录"
         }
-        val newUrl = hubOrigin(url)
-        try {
-            val r =
-                Api(config, newUrl)
-                    .request(
-                        "/login",
-                        "POST",
-                        JSONObject()
-                            .put("password", password)
-                            .put("name", name.trim())
-                            .put("kind", "android"),
-                        false,
-                    )
-            val identity = validatedLogin(newUrl, r)
-            val encryptedToken = config.encryptToken(identity.token)
-            synchronized(identityLock) {
-                check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
-                    "连接期间采集了尚未上传的短信，不能更换中枢"
-                }
-                // Re-authorizing the same hub keeps local capture on, so SMS arriving after the
-                // login are not dropped; the new hub device record starts with upload disabled,
-                // so the switch is re-sent on the next sync. A different hub always starts off.
-                val keepUpload = oldUrl == newUrl && config.upload
-                config.beginIdentityChange()
-                store.resetForNewIdentity(
-                    connectedAt = identity.createdAt,
-                    clearCaptures = oldUrl.isNotEmpty() && oldUrl != newUrl,
-                )
-                config.completeIdentity(identity, encryptedToken, keepUpload)
+        val newUrl = config.requireOriginAccess(url, allowCleartext)
+        val r = Api(config, newUrl).requestCancellable(
+            "/login", "POST",
+            JSONObject().put("password", password).put("name", name.trim()).put("kind", "android"),
+            false,
+        )
+        val identity = validatedLogin(newUrl, r)
+        val encryptedToken = config.encryptToken(identity.token)
+        synchronized(identityLock) {
+            check(oldUrl.isEmpty() || oldUrl == newUrl || store.pendingCount() == 0) {
+                "连接期间采集了尚未上传的短信，不能更换中枢"
             }
-        } catch (e: Exception) {
-            throw e
+            // Re-authorizing the same hub keeps local capture on. A different hub always starts off.
+            val keepUpload = oldUrl == newUrl && config.upload
+            config.beginIdentityChange()
+            store.resetForNewIdentity(
+                connectedAt = identity.createdAt,
+                clearCaptures = oldUrl.isNotEmpty() && oldUrl != newUrl,
+            )
+            config.completeIdentity(identity, encryptedToken, keepUpload)
         }
     }
 }

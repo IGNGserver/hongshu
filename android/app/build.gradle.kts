@@ -83,6 +83,13 @@ android {
     }
 }
 
+// protocol/ holds the contracts shared with the hub and the Web client. Put it on the
+// unit-test classpath instead of copying it into the source tree, so the Android contract
+// test reads exactly the same file the Go and Web tests read.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    systemProperty("hongshu.protocol.dir", rootProject.file("../protocol").absolutePath)
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.09.00"))
     implementation("androidx.activity:activity-compose:1.10.1")

@@ -3,7 +3,7 @@ package io.hongshu.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal data class UploadAck(val key: String, val error: String)
+internal data class UploadAck(val key: String, val error: String, val fingerprint: String = "")
 
 // Validate the entire response before mutating the queue. Old hubs guarantee array order;
 // new hubs echo fingerprints, allowing safe correlation even if a proxy reorders ACKs.
@@ -33,43 +33,44 @@ internal fun uploadAcks(pending: List<Pair<String, SmsRecord>>, acks: JSONArray)
         check(ackId >= 0) { "上传确认 ID 无效" }
         check(duplicate is Boolean) { "上传确认重复标记无效" }
         check(if (error.isEmpty()) ackId > 0 else ackId == 0L && !duplicate) { "上传确认字段冲突" }
-        UploadAck(message.first, error)
+        UploadAck(message.first, error, message.second.fingerprint())
     }
 }
 
-internal fun uploadPending(
+internal suspend fun uploadPending(
     api: Api,
     store: Store,
     pending: List<Pair<String, SmsRecord>>,
     enabled: () -> Boolean = { true },
-    request: (List<Pair<String, SmsRecord>>) -> JSONObject = { batch ->
-        api.request(
+    request: suspend (List<Pair<String, SmsRecord>>) -> JSONObject = { batch ->
+        api.requestCancellable(
             "/messages",
             "POST",
             JSONObject()
                 .put("messages", JSONArray().apply { batch.forEach { put(it.second.json()) } }),
         )
     },
-) {
-    if (pending.isEmpty() || !enabled()) return
+): Boolean {
+    if (pending.isEmpty() || !enabled()) return false
     val safe = store.prepareUpload(pending)
-    if (safe.isEmpty()) return
-    val response =
-        try {
-            request(safe)
-        } catch (e: ApiException) {
-            if (e.status != 400 || e.code != "invalid_message") throw e
-            // An old hub rejects the whole batch. Isolate the rejected row without
-            // discarding valid neighbours, or treating a network/protocol failure as bad SMS.
-            if (safe.size == 1) store.block(safe.single().first, "invalid_message")
-            else {
-                val middle = safe.size / 2
-                uploadPending(api, store, safe.take(middle), enabled, request)
-                uploadPending(api, store, safe.drop(middle), enabled, request)
-            }
-            return
+    if (safe.isEmpty()) return false
+    val response = try {
+        request(safe)
+    } catch (e: ApiException) {
+        if (e.status != 400 || e.code != "invalid_message") throw e
+        // An old hub rejects the whole batch. Isolate the rejected row without
+        // discarding valid neighbours, or treating a network/protocol failure as bad SMS.
+        if (safe.size == 1) {
+            store.block(safe.single().first, "invalid_message", safe.single().second.fingerprint())
+            return true
         }
+        val middle = safe.size / 2
+        val first = uploadPending(api, store, safe.take(middle), enabled, request)
+        val second = uploadPending(api, store, safe.drop(middle), enabled, request)
+        return first || second
+    }
     val acks = uploadAcks(safe, response.getJSONArray("acks"))
-    store.ack(acks.filter { it.error.isEmpty() }.map { it.key })
-    acks.filter { it.error.isNotEmpty() }.forEach { store.block(it.key, it.error) }
+    store.acknowledgeUploads(acks.filter { it.error.isEmpty() })
+    acks.filter { it.error.isNotEmpty() }.forEach { store.block(it.key, it.error, it.fingerprint) }
+    return true
 }

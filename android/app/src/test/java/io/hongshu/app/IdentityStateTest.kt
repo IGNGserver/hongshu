@@ -67,6 +67,23 @@ class IdentityStateTest {
         assertFalse(restarted.identityChanging)
     }
 
+    @Test fun cleartextAuthorizationIsExactOriginAndSurvivesIdentityRecreation() {
+        val config = Config(context)
+        assertThrows(IllegalArgumentException::class.java) { config.requireOriginAccess("http://192.168.1.2:8080") }
+        assertEquals("http://192.168.1.2:8080", config.requireOriginAccess("http://192.168.1.2:8080/", true))
+        val identity = validatedLogin("http://192.168.1.2:8080/", response())
+        assertEquals("http://192.168.1.2:8080", identity.origin)
+        config.completeIdentity(identity, "prepared-ciphertext", false)
+        val restarted = Config(context)
+        assertEquals(identity.origin, restarted.cleartextOrigin)
+        assertEquals(identity.origin, hubOrigin(identity.origin))
+        assertTrue(restarted.cleartextOrigin == hubOrigin(identity.origin))
+        assertEquals(identity.origin, restarted.requireOriginAccess(identity.origin))
+        assertThrows(IllegalArgumentException::class.java) { restarted.requireOriginAccess("http://192.168.1.2:8081") }
+        assertThrows(IllegalArgumentException::class.java) { restarted.requireOriginAccess("http://192.168.1.3:8080") }
+        assertEquals("https://example.com", restarted.requireOriginAccess("https://example.com/"))
+    }
+
     @Test fun offlineToggleAndLateAckKeepNewestPendingVersion() {
         val config = Config(context)
         config.upload = true

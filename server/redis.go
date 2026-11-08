@@ -33,6 +33,22 @@ return 0
 // configureRedis is optional. A cache outage must never block SMS writes or startup; when
 // the URL is absent or the initial ping fails, the hub simply runs with in-process state.
 func (a *app) configureRedis(ctx context.Context, databaseName string) error {
+	return a.configureRedisAt(ctx, databaseName, "")
+}
+
+func defaultRedisPrefix(databaseName, databaseAddress, deploymentID string) string {
+	// An explicit deployment ID lets replicas share a lease even when their DB
+	// addresses differ (for example behind different local proxies). Without one,
+	// include the normalized target as well as the schema to isolate same-name DBs.
+	material := strings.TrimSpace(deploymentID)
+	if material == "" {
+		material = strings.ToLower(strings.TrimSpace(databaseAddress)) + "/" + databaseName
+	}
+	sum := sha256.Sum256([]byte(material))
+	return "hongshu:" + hex.EncodeToString(sum[:12]) + ":"
+}
+
+func (a *app) configureRedisAt(ctx context.Context, databaseName, databaseAddress string) error {
 	raw := strings.TrimSpace(os.Getenv("HONGSHU_REDIS_URL"))
 	if raw == "" {
 		return nil
@@ -56,10 +72,7 @@ func (a *app) configureRedis(ctx context.Context, databaseName string) error {
 	}
 	prefix := strings.TrimSpace(os.Getenv("HONGSHU_REDIS_PREFIX"))
 	if prefix == "" {
-		// Same database on several hub replicas must share a namespace; independent
-		// databases on one Redis server must not.
-		sum := sha256.Sum256([]byte(databaseName))
-		prefix = "hongshu:" + hex.EncodeToString(sum[:6]) + ":"
+		prefix = defaultRedisPrefix(databaseName, databaseAddress, os.Getenv("HONGSHU_DEPLOYMENT_ID"))
 	} else if !strings.HasSuffix(prefix, ":") {
 		prefix += ":"
 	}
@@ -68,8 +81,8 @@ func (a *app) configureRedis(ctx context.Context, databaseName string) error {
 		return errors.New("HONGSHU_REDIS_PREFIX is too long")
 	}
 	a.redis = &redisCache{client: client, prefix: prefix, timeout: 250 * time.Millisecond}
-	go a.redisPublisher(ctx)
-	go a.redisSubscriber(ctx)
+	a.startWorker(ctx, a.redisPublisher)
+	a.startWorker(ctx, a.redisSubscriber)
 	return nil
 }
 
