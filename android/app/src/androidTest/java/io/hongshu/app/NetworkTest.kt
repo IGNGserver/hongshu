@@ -147,6 +147,8 @@ class NetworkTest {
                 }
             }.use { hub ->
                 config.url = hub.url
+                // The hub fixture speaks plain HTTP; authorise that exact origin
+                config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 config.deviceId = "source-phone"
                 config.upload = true
@@ -216,6 +218,8 @@ class NetworkTest {
                 }
                 .use { hub ->
                     config.url = hub.url
+                    // The hub fixture speaks plain HTTP; authorise that exact origin
+                    config.rememberCleartextOrigin(hub.url)
                     config.token = "s".repeat(64)
                     config.deviceId = "synthetic"
                     config.deviceName = "before"
@@ -300,6 +304,8 @@ class NetworkTest {
             }
             .use { hub ->
                 config.url = hub.url
+                // The hub fixture speaks plain HTTP; authorise that exact origin
+                config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 try {
                     Api(config).request("/me")
@@ -381,6 +387,8 @@ class NetworkTest {
                 }
                 .use { hub ->
                     config.url = hub.url
+                    // The hub fixture speaks plain HTTP; authorise that exact origin
+                    config.rememberCleartextOrigin(hub.url)
                     config.token = "s".repeat(64)
                     config.deviceId = "synthetic"
                     config.upload = true
@@ -484,6 +492,8 @@ class NetworkTest {
                 }
                 .use { hub ->
                     config.url = hub.url
+                    // The hub fixture speaks plain HTTP; authorise that exact origin
+                    config.rememberCleartextOrigin(hub.url)
                     config.token = "s".repeat(64)
                     config.upload = true
                     Store(context).use { store ->
@@ -556,6 +566,8 @@ class NetworkTest {
                 }
                 .use { hub ->
                     config.url = hub.url
+                    // The hub fixture speaks plain HTTP; authorise that exact origin
+                    config.rememberCleartextOrigin(hub.url)
                     config.token = "s".repeat(64)
                     config.deviceId = "synthetic"
                     config.upload = true

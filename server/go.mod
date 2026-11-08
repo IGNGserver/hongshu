@@ -7,7 +7,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.33.0
 	github.com/go-sql-driver/mysql v1.9.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/redis/go-redis/v9 v9.7.0
+	github.com/redis/go-redis/v9 v9.7.3
 	golang.org/x/crypto v0.31.0
 )
 

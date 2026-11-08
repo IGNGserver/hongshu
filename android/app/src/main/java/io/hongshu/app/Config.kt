@@ -482,6 +482,16 @@ class Config(context: Context) {
     val cleartextOrigin: String
         get() = prefs.getString("cleartext_origin", "")!!
 
+    /**
+     * Records that the user explicitly authorised plain HTTP for this exact origin.
+     * Login does this through [completeIdentity]; tests and re-authorisation paths use
+     * this entry point so the rule lives in one place.
+     */
+    internal fun rememberCleartextOrigin(rawOrigin: String) {
+        val origin = hubOrigin(rawOrigin)
+        prefs.edit().putString("cleartext_origin", if (origin.startsWith("http://")) origin else "").apply()
+    }
+
     internal fun requireOriginAccess(rawOrigin: String, explicitlyAllowCleartext: Boolean = false): String {
         val origin = hubOrigin(rawOrigin)
         require(origin.startsWith("https://") || explicitlyAllowCleartext || cleartextOrigin == origin) {
