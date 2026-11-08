@@ -124,6 +124,41 @@ test("clear, logout reset and newer reload fence late reads/writes", async () =>
   assert.equal(f.source.records.length, 0);
 });
 
+test("legacy records are atomically claimed and owner-scoped logout never deletes another identity", async () => {
+  let generation = 2;
+  let saved = { owner: "", enabled: true, records: [{ phone: "13800000001", name: "旧版联系人" }] };
+  const storage = {
+    read: async () => ({ ...saved, generation }),
+    claim: async (owner, expected) => {
+      if (expected !== generation || saved?.owner !== "") throw Error("contention");
+      saved = { ...saved, owner }; return ++generation;
+    },
+    clear: async owner => {
+      if (owner !== null && saved?.owner !== owner) return generation;
+      saved = undefined; return ++generation;
+    },
+    write: async (value, expected) => {
+      if (expected !== generation) throw Error("contention");
+      saved = structuredClone(value); return ++generation;
+    },
+  };
+  const first = new BrowserContacts(storage);
+  await first.load("browser-A");
+  assert.equal(first.records[0].name, "旧版联系人");
+  assert.equal(saved.owner, "browser-A");
+  const second = new BrowserContacts(storage);
+  await second.load("browser-B");
+  assert.equal(second.records.length, 0);
+  await second.clear("browser-B");
+  assert.equal(saved.owner, "browser-A", "a nonmatching logout must not erase hidden records");
+  await first.load("browser-A");
+  assert.equal(first.records.length, 1);
+  generation = 5; saved = { owner: "", enabled: true, records: [{ phone: "13800000001", name: "竞争声明" }] };
+  storage.claim = async () => { saved = { ...saved, owner: "browser-B" }; generation++; throw Error("lost CAS"); };
+  await first.load("browser-A");
+  assert.equal(first.records.length, 0, "a lost claim rereads instead of adopting another owner's data");
+  assert.equal(saved.owner, "browser-B");
+});
 test("UI resolves local names before hub aliases without modifying messages or network arguments", async () => {
   const ctx = vm.createContext({ URLSearchParams, Uint8Array, AbortController, DOMException, console, Blob, URL });
   vm.runInContext(runtimeSource(), ctx);

@@ -1,10 +1,12 @@
 """Isolated release/restore/deployment contracts. No real gh/docker writes."""
 import json
+import gzip
 import os
 import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -13,6 +15,37 @@ import json,os,pathlib,sys,shutil
 path=pathlib.Path(os.environ['MOCK_STATE']);s=json.loads(path.read_text());args=sys.argv[1:]
 digest='sha256:'+'a'*64
 def save(): path.write_text(json.dumps(s))
+if pathlib.Path(sys.argv[0]).name=='jq':
+ raw_args=sys.argv[1:];args=list(raw_args);named={};named_json={};flags=set();null_input=False
+ while args and args[0].startswith('-'):
+  flag=args.pop(0);flags.add(flag)
+  if flag in ('-n','--null-input'):null_input=True
+  elif flag in ('--arg','--argjson'):
+   key=args.pop(0);value=args.pop(0)
+   if flag=='--arg':named[key]=value
+   else:named_json[key]=json.loads(value)
+ expression=args.pop(0)
+ text='{}' if null_input else (pathlib.Path(args[0]).read_text() if args else sys.stdin.read())
+ data=json.loads(text)
+ if expression=='.':result=data
+ elif expression=='{sha:$sha,image:$image,version:$version,digest:$digest,assets:$assets}':
+  result={key:named[key] for key in ('sha','image','version','digest')};result['assets']=named_json['assets']
+ elif expression=='. + {($name): $hash}':data[named['name']]=named['hash'];result=data
+ elif expression=='."containerimage.digest"':result=data['containerimage.digest']
+ elif expression=='.digest':result=data['digest']
+ elif expression=='.assets[$name]':result=data['assets'][named['name']]
+ else:
+  valid=True
+  for key in ('sha','image','version'):
+   if f'.{key}==${key}' in expression:valid=valid and data.get(key)==named[key]
+  if 'test("^sha256:' in expression:valid=valid and isinstance(data.get('digest'),str) and len(data['digest'])==71 and data['digest'].startswith('sha256:')
+  if '.assets|length==2' in expression:valid=valid and len(data.get('assets',{}))==2
+  if '.assets[$apk]|type=="string"' in expression:valid=valid and isinstance(data['assets'].get(named['apk']),str)
+  if '.assets[$deployment]|type=="string"' in expression:valid=valid and isinstance(data['assets'].get(named['deployment']),str)
+  result=valid
+ if isinstance(result,str) and flags.intersection({'-r','-er'}):print(result)
+ else:print(json.dumps(result,separators=(',',':')))
+ sys.exit(0 if result is not False else 1)
 if pathlib.Path(sys.argv[0]).name=='docker':
  if args[:3]==['buildx','imagetools','inspect']:
   if s.get('outage'):print('connection refused',file=sys.stderr);sys.exit(1)
@@ -22,6 +55,7 @@ if pathlib.Path(sys.argv[0]).name=='docker':
   print(json.dumps({'digest':value}))
  elif args[:2]==['buildx','build']:
   s['builds']+=1
+  s['platforms']=args[args.index('--platform')+1] if '--platform' in args else ''
   pathlib.Path(args[args.index('--metadata-file')+1]).write_text(json.dumps({'containerimage.digest':digest}));save()
  elif args[:3]==['buildx','imagetools','create']:
   tag=args[args.index('-t')+1].split(':')[-1]
@@ -42,6 +76,9 @@ else:
    values=[s['tags'][wanted]] if wanted in s['tags'] else []
   for value in values: print(value)
  elif args[:2]==['release','view']:
+  if len(args)==2 or args[2].startswith('--'):
+   if not s.get('latest_tag'):print('no releases',file=sys.stderr);sys.exit(1)
+   print(s['latest_tag']);sys.exit(0)
   if not s['release']:print('release not found',file=sys.stderr);sys.exit(1)
   if '--jq' in args and '.body' in args[args.index('--jq')+1]:print(s.get('body',''))
   else:print('true' if s['release']=='draft' else 'false')
@@ -68,7 +105,7 @@ class Operations(unittest.TestCase):
         self.root = pathlib.Path(self.temp.name)
         tools = self.root / 'bin'
         tools.mkdir()
-        for tool in ('gh', 'docker'):
+        for tool in ('gh', 'docker', 'jq'):
             file = tools / tool
             file.write_text(MOCK)
             file.chmod(0o700)
@@ -92,8 +129,8 @@ class Operations(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_publish(self):
-        return subprocess.run(['bash', str(ROOT/'scripts/publish-release.sh')], env=self.env, capture_output=True).returncode
+    def run_publish(self, env=None):
+        return subprocess.run(['bash', str(ROOT/'scripts/publish-release.sh')], env=env or self.env, capture_output=True).returncode
 
     def update(self, **values):
         state=json.loads(self.state.read_text());state.update(values);self.state.write_text(json.dumps(state))
@@ -130,6 +167,7 @@ class Operations(unittest.TestCase):
         self.assertEqual(0,self.run_publish())
         state=json.loads(self.state.read_text())
         self.assertEqual(1,state['builds']);self.assertEqual('published',state['release'])
+        self.assertEqual('linux/amd64,linux/arm64',state['platforms'])
         self.assertNotIn('latest',state['tags'])
         self.assertNotEqual(0,self.run_publish()) # public release cannot be overwritten
 
@@ -193,6 +231,154 @@ class Operations(unittest.TestCase):
         result=subprocess.run(['bash',str(script)],env=env,capture_output=True)
         self.assertNotEqual(0,result.returncode)
         self.assertIn(b'HONGSHU_VERSION',result.stderr)
+
+    def test_backup_success_failure_timeout_retention_and_health(self):
+        dump = self.root / 'bin/mysqldump'
+        dump.write_text("#!/usr/bin/env bash\ncase ${MOCK_DUMP_MODE:-ok} in\n  fail) echo partial; exit 1 ;;\n  hang) sleep 10 ;;\n  *) printf 'CREATE TABLE synthetic (id INT);\\n' ;;\nesac\n")
+        dump.chmod(0o700)
+        backups = self.root / 'backups'
+        env = dict(self.env)
+        env.update(PATH=str(self.root/'bin')+':'+env['PATH'], BACKUP_DIR=str(backups),
+                   BACKUP_ONCE='1', BACKUP_INTERVAL='1', BACKUP_TIMEOUT='2',
+                   BACKUP_RETENTION_DAYS='30', BACKUP_MAX_FILES='2',
+                   MYSQL_PWD='synthetic-not-a-credential')
+        for _ in range(3):
+            result = subprocess.run(['bash', str(ROOT/'scripts/backup.sh')], env=env,
+                                    capture_output=True, timeout=10)
+            self.assertEqual(0, result.returncode, result.stderr)
+        archives = list(backups.glob('hongshu-*.sql.gz'))
+        self.assertEqual(2, len(archives))
+        self.assertTrue((backups/'last-success').is_file())
+        self.assertFalse((backups/'last-failure').exists())
+        health = subprocess.run(['bash', str(ROOT/'scripts/backup-healthcheck.sh')], env=env,
+                                capture_output=True)
+        self.assertEqual(0, health.returncode, health.stderr)
+        for archive in archives:
+            with gzip.open(archive, 'rt') as stream:
+                self.assertIn('CREATE TABLE synthetic', stream.read())
+
+        failed_dir = self.root/'failed-backups'
+        env.update(BACKUP_DIR=str(failed_dir), MOCK_DUMP_MODE='fail')
+        result = subprocess.run(['bash', str(ROOT/'scripts/backup.sh')], env=env,
+                                capture_output=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((failed_dir/'last-failure').is_file())
+        self.assertFalse((failed_dir/'last-success').exists())
+        self.assertTrue(list(failed_dir.glob('*.partial')))
+        health = subprocess.run(['bash', str(ROOT/'scripts/backup-healthcheck.sh')], env=env,
+                                capture_output=True)
+        self.assertNotEqual(0, health.returncode)
+
+        timeout_dir = self.root/'timeout-backups'
+        env.update(BACKUP_DIR=str(timeout_dir), MOCK_DUMP_MODE='hang', BACKUP_TIMEOUT='1')
+        subprocess.run(['bash', str(ROOT/'scripts/backup.sh')], env=env,
+                       capture_output=True, timeout=10, check=True)
+        self.assertTrue((timeout_dir/'last-failure').is_file())
+        self.assertFalse((timeout_dir/'last-success').exists())
+
+        stale = backups/'last-success'
+        old = time.time()-10
+        os.utime(stale, (old, old))
+        env.update(BACKUP_DIR=str(backups), BACKUP_TIMEOUT='1', BACKUP_HEALTH_GRACE='0',
+                   MOCK_DUMP_MODE='ok')
+        health = subprocess.run(['bash', str(ROOT/'scripts/backup-healthcheck.sh')], env=env,
+                                capture_output=True)
+        self.assertNotEqual(0, health.returncode)
+
+    def isolated_initializer(self):
+        isolated = self.root/'initializer'
+        (isolated/'scripts').mkdir(parents=True)
+        shutil.copyfile(ROOT/'scripts/init-deployment.sh', isolated/'scripts/init-deployment.sh')
+        for name in ('compose.yml', 'compose.external.yml'):
+            shutil.copyfile(ROOT/name, isolated/name)
+        docker = self.root/'bin/docker'
+        docker.write_text("""#!/usr/bin/env bash
+set -eu
+[[ ${1:-} == compose ]] || exit 2
+shift
+[[ " $* " == *' version '* ]] && exit 0
+[[ " $* " == *' pull '* ]] && [[ ${MOCK_PULL_FAIL:-0} != 1 ]] && exit 0
+[[ " $* " == *' pull '* ]] && exit 1
+[[ " $* " == *' config '* ]] && exit 0
+if [[ " $* " == *' run '* ]]; then
+  printf 'VAPID_PUBLIC_KEY=synthetic-public\\nVAPID_PRIVATE_KEY=synthetic-private\\n'
+  exit 0
+fi
+exit 2
+""")
+        docker.chmod(0o700)
+        return isolated
+
+    def test_initializer_publishes_env_atomically_only_after_success(self):
+        isolated = self.isolated_initializer()
+        env = dict(self.env)
+        env.update(PATH=str(self.root/'bin')+':'+env['PATH'], HONGSHU_VERSION='0.2.0-alpha.23',
+                   HONGSHU_PASSWORD='synthetic-test-password', MOCK_PULL_FAIL='1')
+        result = subprocess.run(['bash', str(isolated/'scripts/init-deployment.sh')], env=env,
+                                capture_output=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse((isolated/'.env').exists())
+        self.assertFalse(list(isolated.glob('.env.pending.*')))
+        env['MOCK_PULL_FAIL'] = '0'
+        result = subprocess.run(['bash', str(isolated/'scripts/init-deployment.sh')], env=env,
+                                capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        final = isolated/'.env'
+        self.assertTrue(final.is_file())
+        self.assertEqual(0o600, final.stat().st_mode & 0o777)
+        body = final.read_text()
+        self.assertIn('VAPID_PUBLIC_KEY=synthetic-public', body)
+        self.assertIn('VAPID_PRIVATE_KEY=synthetic-private', body)
+        self.assertFalse(list(isolated.glob('.env.pending.*')))
+
+    def prepare_stable_publish(self, version, latest):
+        tag = 'v'+version
+        release = self.root/'build/release'
+        for file in release.iterdir():
+            file.unlink()
+        for name in (f'Hongshu-Android-{version}.apk', f'hongshu-{tag}-deployment.tar.gz'):
+            (release/name).write_text('synthetic stable fixture')
+        self.notes.write_text(self.notes.read_text().replace('0.1.0-alpha.99', version))
+        self.update(latest_tag=latest)
+        env = dict(self.env)
+        env.update(TAG=tag, VERSION=version, IS_PRERELEASE='false')
+        return env
+
+    def test_stable_latest_moves_only_forward(self):
+        env = self.prepare_stable_publish('1.0.0', '2.0.0')
+        self.assertEqual(0, self.run_publish(env))
+        state = json.loads(self.state.read_text())
+        self.assertNotIn('latest', state['promotions'])
+        self.assertIn('v1.0.0', state['promotions'])
+
+        other = Operations(methodName='test_stable_latest_moves_only_forward')
+        other.setUp()
+        try:
+            env = other.prepare_stable_publish('2.0.0', '1.0.0')
+            self.assertEqual(0, other.run_publish(env))
+            self.assertIn('latest', json.loads(other.state.read_text())['promotions'])
+        finally:
+            other.tearDown()
+
+    def test_semver_comparison_rejects_prerelease_and_regressions(self):
+        script = ROOT/'scripts/compare-semver.sh'
+        self.assertEqual(0, subprocess.run(['bash', str(script), 'v2.0.0', '1.9.9']).returncode)
+        self.assertNotEqual(0, subprocess.run(['bash', str(script), '1.0.0', '1.0.0']).returncode)
+        self.assertNotEqual(0, subprocess.run(['bash', str(script), '1.0.0', '2.0.0']).returncode)
+        self.assertEqual(2, subprocess.run(['bash', str(script), '1.0.0-rc.1', '1.0.0'],
+                                           capture_output=True).returncode)
+
+    def test_external_backup_is_independent_and_migration_uses_image_sql(self):
+        external = (ROOT/'compose.external-backup.yml').read_text()
+        self.assertNotIn('depends_on:', external)
+        self.assertIn('BACKUP_MYSQL_HOST', external)
+        self.assertIn('/backup-healthcheck.sh', external)
+        bundled = (ROOT/'compose.yml').read_text().split('  backup:', 1)[1]
+        self.assertNotIn('hub: {condition: service_healthy}', bundled)
+        database = (ROOT/'docs/DATABASE.md').read_text()
+        self.assertNotIn('-v "$PWD/db/migrations:/app/migrations:ro"', database)
+        dockerfile = (ROOT/'Dockerfile').read_text()
+        self.assertIn('/app/migrations', dockerfile)
 
     def test_docker_context_contains_web_manifests_used_by_the_image(self):
         dockerfile=(ROOT/'Dockerfile').read_text()

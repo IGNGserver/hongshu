@@ -179,10 +179,15 @@ fun sameMessage(left: SmsRecord, right: SmsRecord, windowMillis: Long = 120_000)
         kotlin.math.abs(left.timestamp - right.timestamp) <= windowMillis
 
 fun uploadBatchCount(encodedSizes: List<Int>, budget: Int = 900000): Int {
+    require(budget > 32) { "上传预算无效" }
     var bytes = 32
     var count = 0
     for (size in encodedSizes.take(100)) {
-        if (size > budget) break
+        // Store.pending has already blocked malformed records. A legal record larger than the
+        // low-speed soft budget must still make progress as a singleton; the 900 KiB hard JSON
+        // limit is not relaxed here.
+        if (size !in 1..900_000) break
+        if (count == 0 && size + 33 > budget) return 1
         if (bytes + size + 1 > budget) break
         bytes += size + 1
         count++

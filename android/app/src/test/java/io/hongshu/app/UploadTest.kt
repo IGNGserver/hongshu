@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -20,6 +21,14 @@ class UploadTest {
     private val message = SmsRecord("+1234567890", "10086", "synthetic upload", 100, 7)
     private val pending = listOf("a" to message, "b" to message.copy(timestamp = 101))
 
+    private fun uploadPendingForTest(
+        api: Api,
+        store: Store,
+        pending: List<Pair<String, SmsRecord>>,
+        enabled: () -> Boolean = { true },
+        request: suspend (List<Pair<String, SmsRecord>>) -> JSONObject,
+    ) = runBlocking { uploadPending(api, store, pending, enabled, request) }
+
     private fun ack(id: Long = 1, fingerprint: String? = null, error: String? = null) =
         JSONObject().put("id", id).put("duplicate", false).apply {
             if (fingerprint != null) put("fingerprint", fingerprint)
@@ -31,13 +40,13 @@ class UploadTest {
         val accepted = ack()
         val rejected = ack(0, error = "sim_not_confirmed")
         assertEquals(
-            listOf(UploadAck("a", ""), UploadAck("b", "sim_not_confirmed")),
+            listOf(UploadAck("a", "", message.fingerprint()), UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint())),
             uploadAcks(pending, JSONArray().put(accepted).put(rejected)),
         )
         accepted.put("fingerprint", pending[0].second.fingerprint())
         rejected.put("fingerprint", pending[1].second.fingerprint())
         assertEquals(
-            listOf(UploadAck("b", "sim_not_confirmed"), UploadAck("a", "")),
+            listOf(UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint()), UploadAck("a", "", message.fingerprint())),
             uploadAcks(pending, JSONArray().put(rejected).put(accepted)),
         )
     }
@@ -88,7 +97,7 @@ class UploadTest {
             )
         for (acks in malformed) {
             assertThrows(Exception::class.java) {
-                uploadPending(
+                uploadPendingForTest(
                     Api(Config(context)),
                     store,
                     queued,
@@ -105,7 +114,7 @@ class UploadTest {
         repeat(8) { store.queue(message.copy(body = "synthetic $it")) }
         val queued = store.pending(allowFallback = false)
         var requests = 0
-        uploadPending(
+        uploadPendingForTest(
             Api(Config(context)),
             store,
             queued,
@@ -138,7 +147,7 @@ class UploadTest {
                 java.io.IOException(),
             )) {
             assertThrows(Exception::class.java) {
-                uploadPending(
+                uploadPendingForTest(
                     Api(Config(context)),
                     store,
                     store.pending(false),
@@ -155,7 +164,7 @@ class UploadTest {
         repeat(4) { store.queue(message.copy(body = "synthetic $it")) }
         var enabled = true
         var calls = 0
-        uploadPending(
+        uploadPendingForTest(
             Api(Config(context)),
             store,
             store.pending(false),
@@ -198,6 +207,23 @@ class UploadTest {
         store.ack(store.pending(false, historical = false).map { it.first })
         assertEquals(100, store.uploadCandidates(0).size)
         assertTrue(store.uploadCandidates(0).all { it.second.historical })
+    }
+
+    @Test
+    fun sentFingerprintFencesAckAndPermanentRejectionFromModifiedGeneration() = store { _, store ->
+        store.queue(message)
+        val key = store.pending(false).single().first
+        val sent = store.prepareUpload(store.pending(false)).single().second.fingerprint()
+        store.writableDatabase.execSQL("UPDATE outbox SET receiver=? WHERE key=?", arrayOf("+1999999999", key))
+        store.acknowledgeUploads(listOf(UploadAck(key, "", sent)))
+        assertEquals(1, store.pendingCount())
+        assertEquals("+1999999999", store.pending(false).single().second.receiver)
+        store.block(key, "invalid_message", sent)
+        assertEquals(0, store.blockedCount())
+        val current = store.prepareUpload(store.pending(false)).single().second.fingerprint()
+        assertNotEquals(sent, current)
+        store.acknowledgeUploads(listOf(UploadAck(key, "", current)))
+        assertEquals(0, store.pendingCount())
     }
 
     @Test

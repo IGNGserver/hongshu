@@ -1054,3 +1054,59 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
   本轮用本地 MySQL 和 miniredis 覆盖逻辑，不把合成结果当作生产延迟验收。
 - 未执行 Android Gradle 测试/lint/APK 构建（本机无 Android SDK/设备）；中枢 API 响应字段保持兼容。
 - 未做浏览器 smoke、真实 Web Push、真实短信和设备撤销验收。
+
+# 2026-11-08 全平台质量整改（基线 9ceea66）
+
+分支 `agent/full-quality-remediation`，工作区 `/home/lvziw/dev/.wt/短信同步系统/full-quality-remediation`，
+基线 `9ceea66b576ffeba3892189416cf403da1b70816`（`0.2.0-alpha.23`）。逐项台账见
+[QUALITY_REMEDIATION.md](QUALITY_REMEDIATION.md)。本轮不创建 PR、不合并 `main`、不打 tag、不发布 Release、
+不访问生产环境。
+
+## 实际执行
+
+所有依赖、缓存与产物位于 `/home/lvziw/.build/hongshu-quality-9ceea66/`，未写入源码卷；`web/node_modules`
+为指向该目录的本地符号链接，提交前删除。
+
+| 验证 | 命令 | 结果 |
+| --- | --- | --- |
+| Go 格式 | `test -z "$(gofmt -l *.go cmd/vapid/*.go)"` | 通过 |
+| Go 测试 | `go test -race -count=1 ./...`（Go 1.24.10 linux/amd64） | 通过，8.18s |
+| Go 静态检查/构建 | `go vet ./...`、`go build -trimpath -o …/hongshu .` | 通过 |
+| Web 单测 | `npm test` | 120 项通过，0 失败，0 跳过，约 4.0s |
+| Web 语法/构建 | `npm run check && npm run build` | 通过；生产资源校验并复制 |
+| Android 单测 | `:app:testDebugUnitTest` | 351 项，0 失败，20 项既有截图用例按条件跳过 |
+| Android lint | `:app:lintDebug` | 通过 |
+| Android 构建 | `:app:assembleDebug`、`:app:assembleDebugAndroidTest` | 通过（Debug APK 与设备测试 APK） |
+| 运维与仓库合同 | `bash scripts/verify-repository.sh` | 通过；`test-operations.py` 18 项 OK |
+| 官网 | `python3 website/scripts/check-site.py` | 通过，7 文件 12 KB |
+| 空白字符 | `git diff --check` | 通过 |
+| Workflow 语法 | PyYAML 解析 4 个 workflow；38 个 `run` 块 `bash -n`；内嵌 Python 片段 `compile()` | 全部通过 |
+| Action 固定 | 12 个唯一 40 位 SHA 逐一查询 `git/commits` | 全部为解引用后的真实 commit |
+
+Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADLE_USER_HOME=…/gradle`、
+`JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=…/jvm-tmp`，使用外部校验过的 Gradle 8.11.1（仓库 wrapper JAR 不存在）。
+
+## 本轮新增回归测试
+
+- `RealtimeResourceTest`：wakelock 非引用计数租约续租、取消释放、总时限取消并释放；跨进程重建后同步退避仍生效、成功后清零。
+- `NetworkCancellationTest`：协程取消触发真实 OkHttp `Call.cancel()`，并以本地 socket 验证对端读到 EOF（证明连接真的关闭，而非只是停止等待）。
+- `OtpClipboardTest`：SDK 26 与 35 下，延迟清理不清除用户更新的剪贴板；自有 OTP 剪贴板在两种 API 上被清空。
+- `DurabilityRemediationTest`、`conversation_cursor_test.go`、`shell-lifecycle.test.js` 等其余新增用例随各平台任务执行。
+
+## 修复的失败与偏差
+
+- `:app:lintDebug` 曾因 `OtpClipboard.kt` 在 minSdk 26 调用 API 28 的 `clearPrimaryClip()` 失败；已分支处理并补 SDK 26/35 测试。
+- `:app:compileDebugAndroidTestKotlin` 曾因 `saveConnection`/`login` 改为 suspend 后设备测试未同步而失败；已在 5 处调用点包裹 `runBlocking`。
+- `NetworkCancellationTest` 首版在 `runBlocking` 单线程上阻塞等待服务端，协程从未启动；改为 IO 调度后通过。
+- `update-feed.yml` 的浮动 `actions/checkout@v4` 与 `ubuntu-latest` 已固定；`ci.yml` 中 `gradle/actions` 的旧 40 位值在上游不存在（HTTP 404），已换为 `v4.4.4` commit。
+- 早期 JVM 全量运行曾因 `/tmp` 仅 2GB 磁盘写满导致大量 SQLite 失败；改用工作区外的 `java.io.tmpdir` 后消失，属环境问题而非代码缺陷。
+
+## 未执行 / 边界
+
+- **真实 MySQL**：未设 `TEST_MYSQL_DSN`，真实 MySQL 8.4 的迁移、并发 Push/read 集成、逻辑备份/恢复、游标与 `EXPLAIN` 执行计划用例在本机跳过；S12 的索引与计划证据因此未取得。
+- **容器与部署**：本机无 Docker daemon，未执行最终归档/镜像的 Compose 初始化、迁移、备份、恢复与升级演练（O4）。脚本层由 18 项运维测试覆盖，不替代该演练。
+- **真机与 OEM**：未连接真实手机，未验证锁屏/Doze、双卡、断网恢复、系统扣留短信与厂商后台限制。
+- **真实 Push / 外部 AI**：未向真实 Push 服务投递，也未调用外部 AI 端点；这些均为合成传输验证。
+- **浏览器交互**：未在真实浏览器完成双标签登录/退出、旧 Service Worker 升级、滚动焦点保持与 OTP 计时验收。
+- **跨端版本偏斜**：未构建旧 APK×新 hub、新 APK×旧 hub 的真实矩阵（O12）。
+- **结构性重构**：R1–R7 按审查报告自身的建议保留为独立后续任务，未在本轮以机械拆文件方式处理。

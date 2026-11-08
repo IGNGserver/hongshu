@@ -125,7 +125,7 @@ private fun SettingsHost.enableWithPermission(
 }
 
 private suspend fun SettingsHost.patchDevice(field: String, value: Boolean) {
-    repo.api.request("/devices/${config.deviceId}", "PATCH", JSONObject().put(field, value))
+    repo.api.requestCancellable("/devices/${config.deviceId}", "PATCH", JSONObject().put(field, value))
 }
 
 @Composable

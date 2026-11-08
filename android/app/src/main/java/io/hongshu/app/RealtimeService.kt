@@ -152,6 +152,9 @@ class RealtimeService : Service() {
                 if (error is ApiException && error.status == 401 && Config(app).token.isEmpty())
                     stopConnection("凭据失效，请重新连接中枢；周期同步等待重新授权")
             },
+            initialRetryMillis = Config(app).syncRetryDelay(),
+            retryStarted = { Config(app).noteSyncFailure() },
+            retryCleared = { Config(app).clearSyncRetry() },
         )
         delivery = runner
         RealtimeDelivery.attach(runner)
@@ -163,7 +166,7 @@ class RealtimeService : Service() {
                 refreshHealth()
             }
         }
-        runner.request(capture = true)
+        if (Config(app).syncRetryDelay() == 0L) runner.request(capture = true)
     }
 
     private fun stopDelivery() {
@@ -266,7 +269,7 @@ class RealtimeService : Service() {
                         if (config.token.isEmpty() || !config.keepAlive) null
                         else
                             Request.Builder()
-                                .url(realtimeURL(config.url))
+                                .url(realtimeURL(config.requireOriginAccess(config.url)))
                                 .header("Authorization", "Bearer ${config.token}")
                                 .header("Cookie", "hongshu=${config.token}")
                                 .build()

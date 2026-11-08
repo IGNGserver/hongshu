@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -607,6 +608,11 @@ private fun HubForm(
     var name by rememberSaveable { mutableStateOf(c.deviceName) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
+    val normalizedOrigin = runCatching { hubOrigin(url.trim()) }.getOrDefault("")
+    val cleartext = normalizedOrigin.startsWith("http://")
+    var allowCleartext by rememberSaveable(normalizedOrigin) {
+        mutableStateOf(cleartext && c.cleartextOrigin == normalizedOrigin)
+    }
     var probe by remember { mutableStateOf<String?>(null) }
     val urlError =
         url.isNotBlank() && runCatching { hubOrigin(url.trim()) }.isFailure
@@ -614,12 +620,12 @@ private fun HubForm(
     val needsPassword = !sameHub
     val canSave =
         !host.busy && url.isNotBlank() && !urlError && name.isNotBlank() &&
-            (!needsPassword || password.isNotEmpty())
+            (!needsPassword || password.isNotEmpty()) && (!cleartext || allowCleartext)
 
     fun save() {
         host.action {
             val previousDevice = c.deviceId
-            host.repo.saveConnection(url, password, name)
+            host.repo.saveConnection(url, password, name, allowCleartext = allowCleartext)
             withContext(Dispatchers.Main) {
                 if (previousDevice != c.deviceId) {
                     val service = Intent(host.activity, RealtimeService::class.java)
@@ -665,8 +671,9 @@ private fun HubForm(
                 Text(
                     when {
                         urlError -> "需以 http:// 或 https:// 开头，且不含路径"
-                        url.trim().startsWith("http://", ignoreCase = true) ->
-                            "HTTP 不加密，建议只在局域网内使用"
+                        cleartext ->
+                            if (c.cleartextOrigin == normalizedOrigin) "已授权此 origin 的明文连接；公网请勿使用 HTTP"
+                            else "HTTP 默认拒绝，需逐 origin 显式授权；公网请勿使用"
                         else -> "例如 https://sms.example.com"
                     }
                 )
@@ -674,6 +681,15 @@ private fun HubForm(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
             modifier = Modifier.fillMaxWidth(),
         )
+        AnimatedVisibility(cleartext) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = allowCleartext, onCheckedChange = { allowCleartext = it })
+                Text(
+                    "我确认仅在受控局域网向 $normalizedOrigin 明文发送密码、短信和凭据",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         OutlinedTextField(
             name,
             { name = it },
@@ -717,12 +733,12 @@ private fun HubForm(
                 onClick = {
                     val target = url
                     host.action {
-                        val result = probeHub(target)
+                        val result = probeHub(target, allowCleartext = allowCleartext)
                         withContext(Dispatchers.Main) { probe = result }
                         result
                     }
                 },
-                enabled = !host.busy && url.isNotBlank() && !urlError,
+                enabled = !host.busy && url.isNotBlank() && !urlError && (!cleartext || allowCleartext),
                 modifier = Modifier.weight(1f),
             ) {
                 Text("测试连接")

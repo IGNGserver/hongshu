@@ -37,6 +37,20 @@ class IdentityConcurrencyTest {
         .put("sender", "10086").put("receiver", "+1234567890").put("body", "synthetic cached SMS")
         .put("timestamp", 1L)
 
+    private fun seedOtp(name: String, id: Long, code: String, epoch: Long) {
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        channels(context)
+        Config(context).liveOtpIsland = true
+        val page = JSONArray().put(JSONObject().put("id", id).put("device_id", "remote")
+            .put("sender", "10086").put("receiver", "+1234567890").put("body", "验证码 $code")
+            .put("timestamp", System.currentTimeMillis()).put("historical", false))
+        Store(context, name).use { store ->
+            store.rememberEpoch(epoch)
+            store.applySync(page, id, self = "self", pairedAt = 1, pageEpoch = epoch)
+            assertTrue(store.pendingOtpIntents().any { it.messageId == id && it.otp == code })
+        }
+    }
+
     @Test fun stalledMeRequestCannotBlockLocalConversationAndStaleSnapshotCannotMarkRead() {
         val name = "local-snapshot-${java.util.UUID.randomUUID()}.db"
         val requestReceived = CountDownLatch(1)
@@ -46,6 +60,8 @@ class IdentityConcurrencyTest {
         val pool = Executors.newSingleThreadExecutor()
         ServerSocket(0, 10, InetAddress.getByName("127.0.0.1")).use { server ->
             Config(context).url = "http://127.0.0.1:${server.localPort}"
+            context.getSharedPreferences("hongshu", Context.MODE_PRIVATE).edit()
+                .putString("cleartext_origin", Config(context).url).commit()
             val responder = thread {
                 try {
                     server.accept().use { socket ->
@@ -101,7 +117,7 @@ class IdentityConcurrencyTest {
         val switching = CountDownLatch(1)
         val switched = CountDownLatch(1)
         val failures = CopyOnWriteArrayList<Throwable>()
-        Store(context, name).use { it.rememberEpoch(1) }
+        seedOtp(name, 1, "123456", 1)
         val tag = OtpNotificationManager.notificationTag(context, 1, 1)
         val copier = thread {
             try {
@@ -142,12 +158,13 @@ class IdentityConcurrencyTest {
     @Test fun oldEpochOtpCannotCopyEvenWhenDeviceIdentityIsUnchanged() {
         val name = "otp-epoch-${java.util.UUID.randomUUID()}.db"
         try {
-            Store(context, name).use { it.rememberEpoch(1) }
+            seedOtp(name, 7, "123456", 1)
             val oldTag = OtpNotificationManager.notificationTag(context, 7, 1)
             assertTrue(copyNotificationOtp(context, oldTag, "123456", name))
             Store(context, name).use { it.resetSyncedCache(2) }
             assertFalse(copyNotificationOtp(context, oldTag, "654321", name))
             assertEquals("123456", context.getSystemService(ClipboardManager::class.java).primaryClip!!.getItemAt(0).text.toString())
+            seedOtp(name, 7, "987654", 2)
             assertTrue(copyNotificationOtp(context, OtpNotificationManager.notificationTag(context, 7, 2), "987654", name))
         } finally { context.deleteDatabase(name) }
     }

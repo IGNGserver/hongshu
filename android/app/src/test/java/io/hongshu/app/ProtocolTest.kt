@@ -70,6 +70,9 @@ class ProtocolTest {
         assertEquals(1, uploadBatchCount(listOf(450000, 450000)))
         assertEquals(0, uploadBatchCount(emptyList()))
         assertEquals(0, uploadBatchCount(listOf(950000)))
+        assertEquals(1, uploadBatchCount(listOf(200_000, 100), budget = 128_000))
+        assertEquals(1, uploadBatchCount(listOf(100), budget = 128_000))
+        assertEquals(2, uploadBatchCount(listOf(60_000, 60_000), budget = 128_000))
     }
 
     @Test

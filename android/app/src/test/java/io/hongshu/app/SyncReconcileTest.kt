@@ -8,6 +8,7 @@ import java.net.ServerSocket
 import kotlin.concurrent.thread
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -74,12 +75,14 @@ class SyncReconcileTest {
         config = Config(context)
         config.url = "http://127.0.0.1:${server.localPort}"
         config.deviceId = "device-a"
+        context.getSharedPreferences("hongshu", Context.MODE_PRIVATE).edit()
+            .putString("cleartext_origin", config.url).commit()
     }
 
     @After fun stop() = server.close()
 
     @Test
-    fun hubValueWinsUnlessLocalSwitchIsUnconfirmed() {
+    fun hubValueWinsUnlessLocalSwitchIsUnconfirmed() = runBlocking {
         config.upload = true
         config.uploadPatchPending = false // No local pending intent: an administrator's value wins.
         assertFalse(reconcileUploadSwitch(Api(config), config, false))
@@ -103,7 +106,7 @@ class SyncReconcileTest {
     }
 
     @Test
-    fun registrationsAreCachedPerDeviceAndRetriedAfterRejection() {
+    fun registrationsAreCachedPerDeviceAndRetriedAfterRejection() = runBlocking {
         SimRegistrations(Api(config), config).apply {
             ensure("+8613800000000", "SIM1", 7)
             ensure("+8613800000000", "SIM1", 7)
@@ -122,7 +125,7 @@ class SyncReconcileTest {
         assertEquals(3, requests.size)
     }
 
-    @Test fun lateNetworkConfirmationCannotClearRapidToggleIntent() {
+    @Test fun lateNetworkConfirmationCannotClearRapidToggleIntent() = runBlocking {
         config.upload = true
         val sentVersion = config.uploadVersion
         onRequest = {
@@ -137,7 +140,7 @@ class SyncReconcileTest {
         assertFalse(config.uploadPatchPending)
     }
 
-    @Test fun failedReadReceiptIsRetriedWithDisplayedIdAndDoesNotConsumeNewerRead() {
+    @Test fun failedReadReceiptIsRetriedWithDisplayedIdAndDoesNotConsumeNewerRead() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "receipt-network-${java.util.UUID.randomUUID()}.db"
         fun message(id: Long) = org.json.JSONObject().put("id", id).put("device_id", "remote")
@@ -148,7 +151,7 @@ class SyncReconcileTest {
                 s.applySync(org.json.JSONArray().put(message(1)).put(message(2)), 2)
                 s.markRead("10086", 1)
                 status.set(503)
-                assertThrows(ApiException::class.java) { uploadReadReceipts(Api(config), s) }
+                assertThrows(ApiException::class.java) { runBlocking { uploadReadReceipts(Api(config), s) } }
             }
             Store(context, name).use { s ->
                 status.set(200)

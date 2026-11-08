@@ -20,14 +20,17 @@ internal fun copyNotificationOtp(
     tag: String,
     otp: String,
     databaseName: String = "hongshu.db",
+    now: Long = System.currentTimeMillis(),
     writeClipboard: (Context, String) -> Unit = ::copyOtp,
 ): Boolean = synchronized(identityLock) {
     if (otp.isEmpty() || Config(context).identityChanging) return@synchronized false
     val messageId = tag.substringAfterLast(':').toLongOrNull() ?: return@synchronized false
     if (messageId <= 0) return@synchronized false
     Store(context, databaseName).use { store ->
-        if (tag != OtpNotificationManager.notificationTag(context, messageId, store.epoch()))
+        val epoch = store.epoch()
+        if (tag != OtpNotificationManager.notificationTag(context, messageId, epoch))
             return@synchronized false
+        if (!store.consumeOtpIntent(messageId, otp, epoch, now)) return@synchronized false
         writeClipboard(context, otp)
         true
     }

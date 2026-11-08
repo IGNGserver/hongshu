@@ -55,7 +55,7 @@ func (a *app) startStatePoller(ctx context.Context) {
 		if interval <= 0 {
 			interval = time.Second
 		}
-		go func() {
+		a.startWorker(ctx, func(ctx context.Context) {
 			a.refreshHubState(ctx)
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -69,7 +69,7 @@ func (a *app) startStatePoller(ctx context.Context) {
 					a.refreshHubState(ctx)
 				}
 			}
-		}()
+		})
 	})
 }
 

@@ -154,36 +154,71 @@ type unreadSnapshot struct {
 	valid                                   bool
 }
 
-// Callers supply a repeatable-read transaction and the already-read watermark/revision.
-// Cache keys are durable state, not wall-clock TTLs, so revocation and restored IDs cannot
-// hit stale counts. The mutex is never held across the COUNT query: at high RTT that would
-// serialize every /me request behind one database round trip.
+type unreadCall struct {
+	done  chan struct{}
+	count int64
+	err   error
+}
+
+// Callers supply a repeatable-read transaction and durable state read from that
+// snapshot. Equal keys share one in-flight COUNT per process; waiters never hold
+// the cache mutex or issue a duplicate query during a cache miss.
 func (a *app) snapshotUnread(ctx context.Context, tx *sql.Tx, epoch, head, watermark, revision int64) (int64, error) {
+	key := fmt.Sprintf("%d/%d/%d/%d", epoch, head, watermark, revision)
 	a.unreadMu.Lock()
-	c := a.unreadSnapshot
+	cached := a.unreadSnapshot
 	a.unreadMu.Unlock()
-	if c.valid && c.epoch == epoch && c.head == head && c.watermark == watermark && c.revision == revision {
-		return c.count, nil
+	if cached.valid && cached.epoch == epoch && cached.head == head && cached.watermark == watermark && cached.revision == revision {
+		return cached.count, nil
 	}
+	redisKey := ""
 	if a.redis != nil {
-		key := a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
-		if count, ok := a.redis.getInt(ctx, key); ok {
+		redisKey = a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
+		if count, ok := a.redis.getInt(ctx, redisKey); ok {
 			return count, nil
 		}
 	}
+
+	a.unreadMu.Lock()
+	cached = a.unreadSnapshot
+	if cached.valid && cached.epoch == epoch && cached.head == head && cached.watermark == watermark && cached.revision == revision {
+		a.unreadMu.Unlock()
+		return cached.count, nil
+	}
+	if a.unreadFlights == nil {
+		a.unreadFlights = make(map[string]*unreadCall)
+	}
+	if existing := a.unreadFlights[key]; existing != nil {
+		a.unreadMu.Unlock()
+		select {
+		case <-existing.done:
+			return existing.count, existing.err
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	flight := &unreadCall{done: make(chan struct{})}
+	a.unreadFlights[key] = flight
+	a.unreadMu.Unlock()
+
 	var count int64
+	a.unreadQueries.Add(1)
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender=m.sender
 WHERE m.historical=FALSE AND m.direction='in' AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`, watermark).Scan(&count)
+	flight.count, flight.err = count, err
 	if err == nil {
 		a.unreadMu.Lock()
 		a.unreadSnapshot = unreadSnapshot{epoch, head, watermark, revision, count, true}
 		a.unreadMu.Unlock()
 		if a.redis != nil {
-			key := a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
-			a.redis.setInt(ctx, key, count, 30*time.Second)
+			a.redis.setInt(ctx, redisKey, count, 30*time.Second)
 		}
 	}
+	a.unreadMu.Lock()
+	delete(a.unreadFlights, key)
+	close(flight.done)
+	a.unreadMu.Unlock()
 	return count, err
 }
 

@@ -26,9 +26,19 @@ if [[ -z "${HONGSHU_PASSWORD+x}" ]]; then
 fi
 password_bytes=$(LC_ALL=C printf '%s' "$HONGSHU_PASSWORD" | wc -c)
 [[ -n "$HONGSHU_PASSWORD" && "$password_bytes" -le 1024 && "$HONGSHU_PASSWORD" != *$'\n'* ]] || { echo 'HONGSHU_PASSWORD must contain 1 to 1024 bytes on one line' >&2; exit 1; }
+for single_line in "$PUBLIC_URL" "${TRUSTED_PROXY_CIDRS:-}" "${VAPID_SUBJECT:-}"; do
+  [[ "$single_line" != *$'\n'* && "$single_line" != *$'\r'* ]] || { echo 'Persisted configuration values must be one line' >&2; exit 1; }
+done
 command -v openssl >/dev/null
 docker compose version >/dev/null
 umask 077
+env_tmp=$(mktemp "$PWD/.env.pending.XXXXXX")
+cleanup() {
+  if [[ -n "${env_tmp:-}" && -f "$env_tmp" && "$env_tmp" == "$PWD/.env.pending."* ]]; then
+    rm -f -- "$env_tmp"
+  fi
+}
+trap cleanup EXIT
 quote_compose_single() {
   local value=$1
   value=${value//\'/\\\'}
@@ -47,24 +57,33 @@ quote_compose_single() {
     printf "HONGSHU_DATABASE_URL='%s'\n" "$(quote_compose_single "$HONGSHU_DATABASE_URL")"
   fi
   printf 'VAPID_SUBJECT=%s\n' "${VAPID_SUBJECT:-mailto:admin@example.invalid}"
-} > .env
-compose_args=()
+} >"$env_tmp"
+compose_args=(--env-file "$env_tmp")
 if [[ "$DB_MODE" == external ]]; then
-  compose_args=(-f compose.external.yml)
+  compose_args+=(-f compose.external.yml)
 fi
+# No final .env exists until every fallible registry/key/config step has succeeded.
 docker compose "${compose_args[@]}" pull hub
-docker compose "${compose_args[@]}" run --rm --no-deps --entrypoint /vapid hub >> .env
+docker compose "${compose_args[@]}" run --rm --no-deps --entrypoint /vapid hub >>"$env_tmp"
+for key in VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY; do
+  [[ "$(grep -c "^${key}=." "$env_tmp")" -eq 1 ]] || { echo "Image did not return exactly one $key" >&2; exit 1; }
+done
+docker compose "${compose_args[@]}" config --quiet
 if [[ "$DB_MODE" == bundled ]]; then
   mkdir -p runtime-data/backups
 fi
+# Linux mv -n is atomic on this same filesystem and never replaces a racer's .env.
+mv -n -- "$env_tmp" .env
+[[ ! -e "$env_tmp" ]] || { echo '.env was created concurrently; refusing to replace it' >&2; exit 1; }
+trap - EXIT
 if [[ "$PUBLIC_URL" == http://* ]]; then
   echo 'Configuration generated for plaintext HTTP. Protect .env; expose the port only if you accept the network risk.'
 else
   echo 'Configuration generated. Protect .env; configure your HTTPS reverse proxy.'
 fi
 if [[ "$DB_MODE" == external ]]; then
-  echo 'External MySQL selected. Create the schema with utf8mb4_bin, run migrations with a DDL account, then: docker compose -f compose.external.yml up -d'
-  echo 'External databases are not covered by the bundled backup service; configure your own backup.'
+  echo 'External MySQL selected. Run migrations with the image-internal SQL, then: docker compose -f compose.external.yml up -d'
+  echo 'Optional independent backup: docker compose -f compose.external.yml -f compose.external-backup.yml up -d backup'
 else
   echo 'Run: docker compose up -d'
 fi

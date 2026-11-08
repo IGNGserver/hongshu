@@ -39,15 +39,25 @@ type app struct {
 	pushLastSuccess                   atomic.Int64
 	pushSuppressed                    atomic.Int64
 	pushDropped                       atomic.Int64
-	// pushClient is only set by tests; production always uses the SSRF-guarded client.
-	pushClient      *http.Client
-	wsCheckInterval time.Duration
-	unreadMu        sync.Mutex
-	unreadSnapshot  unreadSnapshot
-	metadataMu      sync.Mutex
-	metadataCache   metadataSnapshot
-	aiMu            sync.Mutex
-	aiStatusCache   aiStatusSnapshot
+	pushClientMu                      sync.Mutex
+	// pushClient is shared by deliveries and tests may inject an SSRF-safe equivalent.
+	pushClient             *http.Client
+	workers                sync.WaitGroup
+	wsCheckInterval        time.Duration
+	unreadMu               sync.Mutex
+	unreadSnapshot         unreadSnapshot
+	unreadFlights          map[string]*unreadCall
+	unreadQueries          atomic.Int64
+	metadataMu             sync.Mutex
+	metadataCache          metadataSnapshot
+	aiMu                   sync.Mutex
+	aiStatusCache          aiStatusSnapshot
+	aiClientsMu            sync.Mutex
+	aiClients              map[string]*http.Client
+	aiErrorMu              sync.Mutex
+	aiErrorGeneration      int64
+	aiUnknown400           int
+	analysisFinishFailures atomic.Int64
 
 	instanceID        string
 	pushWake          chan struct{}

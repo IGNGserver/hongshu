@@ -48,6 +48,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -383,22 +384,26 @@ fun HongshuUI(activity: MainActivity) {
             onLoadMoreCalls = { callLimit += 200 },
             onChangeCategory = { id, category ->
                 action {
-                    identityMutex.withLock { repo.api.request("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
+                    identityMutex.withLock { repo.api.requestCancellable("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
                     if (syncAndWait(activity)) "分类已更新" else "分类已保存，等待同步到本机"
                 }
             },
             onMarkAllRead = {
                 action {
-                    withContext(Dispatchers.IO) {
+                    val synchronized = withContext(Dispatchers.IO) {
                         repo.store.markRead(all = true)
                         try {
                             activity.getSystemService(NotificationManager::class.java).cancel(2)
-                            identityMutex.withLock {
-                                repo.api.request("/messages/read", "POST", JSONObject().put("all", true))
-                            }
-                        } catch (_: Exception) {}
+                            identityMutex.withLock { uploadReadReceipts(repo.api, repo.store) }
+                            true
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            syncNow(activity, manual = true, capture = false)
+                            false
+                        }
                     }
-                    "已全部标记为已读"
+                    if (synchronized) "已全部标记为已读" else "本机已读，等待同步到中枢"
                 }
             },
         )

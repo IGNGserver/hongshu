@@ -62,7 +62,7 @@ internal fun Store.applyReadState(page: JSONObject) = synchronized(identityLock)
     if (changed) Store.changes.value++
 }
 
-internal suspend fun syncReadState(store: Store, request: (String) -> JSONObject): Boolean {
+internal suspend fun syncReadState(store: Store, request: suspend (String) -> JSONObject): Boolean {
     val epoch = store.epoch()
     check(epoch > 0) { "Read state requires a synchronized epoch" }
     val previous = store.readStateRevision()

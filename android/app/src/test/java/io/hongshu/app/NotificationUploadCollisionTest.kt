@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -54,7 +55,13 @@ class NotificationUploadCollisionTest {
     }
 
     private fun upload(store: Store, hub: MockHub, batch: List<Pair<String, SmsRecord>> = store.pending(false)) =
-        uploadPending(Api(Config(context)), store, batch, request = hub::request)
+        runBlocking { uploadPending(Api(Config(context)), store, batch, request = hub::request) }
+
+    private fun uploadRequest(
+        store: Store,
+        batch: List<Pair<String, SmsRecord>>,
+        request: suspend (List<Pair<String, SmsRecord>>) -> JSONObject,
+    ) = runBlocking { uploadPending(Api(Config(context)), store, batch, request = request) }
 
     private fun syncedMessage(device: String) = JSONObject().put("id", 1).put("device_id", device)
         .put("receiver", sms.receiver).put("sender", sms.sender).put("body", sms.body)
@@ -78,7 +85,7 @@ class NotificationUploadCollisionTest {
             assertEquals(1, batch.size)
             // Hub commits, but the client never receives its first ACK.
             assertThrows(java.io.IOException::class.java) {
-                uploadPending(Api(Config(context)), store, batch, request = {
+                uploadRequest(store, batch, request = {
                     hub.request(it)
                     throw java.io.IOException("synthetic interrupted response")
                 })
@@ -166,7 +173,7 @@ class NotificationUploadCollisionTest {
             store.assignReceiver(listOf(key), other)
             val beforeResolution = store.pending(false)
             assertEquals(other.phone, beforeResolution.single().second.receiver)
-            uploadPending(Api(Config(context)), store, beforeResolution, request = { batch ->
+            uploadRequest(store, beforeResolution, request = { batch ->
                 val response = hub.request(batch)
                 store.assignReceiver(listOf(key), sim)
                 response

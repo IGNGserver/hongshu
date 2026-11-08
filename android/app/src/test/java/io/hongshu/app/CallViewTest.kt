@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -90,7 +91,7 @@ class CallViewTest {
     }
 
     @Test
-    fun syncPagesIntoTheCacheNewestFirst() {
+    fun syncPagesIntoTheCacheNewestFirst() = runBlocking {
         val requests = mutableListOf<String>()
         val pages = ArrayDeque(listOf(page((1L..200L).map { call(it) }, 200, true), page((201L..250L).map { call(it) }, 250, false)))
         assertFalse(syncCallLog(store, { requests += it; pages.removeFirst() }))
@@ -109,7 +110,7 @@ class CallViewTest {
     }
 
     @Test
-    fun hubContactsAndWithheldNumbersDisplayCorrectly() {
+    fun hubContactsAndWithheldNumbersDisplayCorrectly() = runBlocking {
         store.applyContacts(JSONObject().put("13900000000", "合成联系人"))
         assertTrue(syncCallLog(store, { page(listOf(call(1), call(2, number = "")), 2, false) }).not())
         val calls = store.cachedCalls(10).associateBy { it.id }
@@ -119,7 +120,7 @@ class CallViewTest {
     }
 
     @Test
-    fun aDifferentEpochOrMissingFeatureWritesNothing() {
+    fun aDifferentEpochOrMissingFeatureWritesNothing() = runBlocking {
         assertFalse(syncCallLog(store, { page(listOf(call(1)), 1, false, epoch = 2) }))
         assertEquals(0L, store.callCursor())
         assertTrue(store.cachedCalls(10).isEmpty())
@@ -128,7 +129,7 @@ class CallViewTest {
     }
 
     @Test
-    fun restoresAndCursorConflictsStartOver() {
+    fun restoresAndCursorConflictsStartOver() = runBlocking {
         syncCallLog(store, { page((1L..3L).map { call(it) }, 3, false) })
         // The hub says our cursor is past its call head: drop the cache and page again.
         assertTrue(syncCallLog(store, { throw ApiException(409, "epoch_changed") }))
@@ -147,7 +148,7 @@ class CallViewTest {
     }
 
     @Test
-    fun aPageCannotMoveTheCursorBackOrCarryForeignIds() {
+    fun aPageCannotMoveTheCursorBackOrCarryForeignIds() = runBlocking {
         syncCallLog(store, { page((1L..3L).map { call(it) }, 3, false) })
         try {
             syncCallLog(store, { page(emptyList(), 2, false) })

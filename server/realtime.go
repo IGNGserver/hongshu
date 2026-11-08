@@ -7,12 +7,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -195,10 +198,12 @@ func pushHTTPClient() *http.Client {
 }
 
 func (a *app) effectivePushClient() *http.Client {
-	if a.pushClient != nil {
-		return a.pushClient
+	a.pushClientMu.Lock()
+	defer a.pushClientMu.Unlock()
+	if a.pushClient == nil {
+		a.pushClient = pushHTTPClient()
 	}
-	return pushHTTPClient()
+	return a.pushClient
 }
 
 func (a *app) subscribe(w http.ResponseWriter, r *http.Request) {
@@ -339,15 +344,29 @@ func (a *app) testPush(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) removeDeadPushSubscription(ctx context.Context, id string, sub webpush.Subscription) error {
+	// The response belongs to the subscription snapshot that was sent, not to a
+	// replacement that may have been committed while the provider was thinking.
+	// Lock and compare the complete key set before deleting either row type.
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var endpoint, p256dh, auth string
+	err = tx.QueryRowContext(ctx, "SELECT endpoint,p256dh,auth FROM push_subscriptions WHERE device_id=? FOR UPDATE", id).Scan(&endpoint, &p256dh, &auth)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if endpoint != sub.Endpoint || p256dh != sub.Keys.P256dh || auth != sub.Keys.Auth {
+		return nil
+	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM push_jobs WHERE device_id=?", id); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", id, sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE device_id=? AND endpoint=? AND p256dh=? AND auth=?", id, endpoint, p256dh, auth); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -368,18 +387,26 @@ func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, 
 	defer tx.Rollback()
 	// Claim immediately before delivery, rather than letting the tail of a
 	// serial batch consume its entire lease while earlier requests run.
-	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,j.message_id,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE ORDER BY j.id LIMIT 1 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli())
+	rows, err := tx.QueryContext(ctx, "SELECT j.id,j.device_id,j.attempts,j.message_id,p.endpoint,p.p256dh,p.auth FROM push_jobs j JOIN push_subscriptions p ON p.device_id=j.device_id JOIN devices d ON d.id=j.device_id WHERE j.next_at<=? AND j.leased_until<=? AND d.revoked=FALSE AND d.notify=TRUE AND NOT EXISTS (SELECT 1 FROM push_jobs active WHERE active.device_id=j.device_id AND active.leased_until>?) ORDER BY j.id LIMIT 16 FOR UPDATE SKIP LOCKED", now.UnixMilli(), now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
 	jobs := []claimedPush{}
+	seenDevices := make(map[string]struct{})
 	for rows.Next() {
 		j := claimedPush{lease: now.Add(60 * time.Second).UnixMilli()}
 		if err = rows.Scan(&j.id, &j.device, &j.attempts, &j.messageID, &j.sub.Endpoint, &j.sub.Keys.P256dh, &j.sub.Keys.Auth); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		if _, duplicate := seenDevices[j.device]; duplicate {
+			continue
+		}
+		seenDevices[j.device] = struct{}{}
 		jobs = append(jobs, j)
+		if len(jobs) == 4 {
+			break
+		}
 	}
 	err = rows.Err()
 	rows.Close()
@@ -395,6 +422,27 @@ func (a *app) claimPushJobs(ctx context.Context, now time.Time) ([]claimedPush, 
 		return nil, err
 	}
 	return jobs, nil
+}
+
+func pushRetryAfter(header http.Header, now time.Time) time.Duration {
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	if at, err := http.ParseTime(value); err == nil && at.After(now) {
+		return at.Sub(now)
+	}
+	return 0
+}
+
+func retryablePushStatus(status int) bool {
+	return status == 0 || status == 408 || status == 425 || status == 429 || status >= 500
 }
 
 func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimedPush) error {
@@ -434,9 +482,10 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	var retryAfter time.Duration
 	if res != nil {
 		status = res.StatusCode
-		if seconds, e := strconv.Atoi(res.Header.Get("Retry-After")); e == nil && seconds > 0 {
-			retryAfter = time.Duration(seconds) * time.Second
-		}
+		retryAfter = pushRetryAfter(res.Header, time.Now())
+		// Drain only a bounded error body: enough for normal connection reuse without
+		// letting an abusive provider turn a notification into an unbounded download.
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 32<<10))
 		res.Body.Close()
 	}
 	if sendErr == nil && status >= 200 && status < 300 {
@@ -448,9 +497,17 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	}
 	a.pushDeliveryFailures.Add(1)
 	if status == 404 || status == 410 {
-		// The subscription is gone for good. Remove every job that would only be retried
-		// through the dead endpoint, then the subscription itself.
 		return a.removeDeadPushSubscription(ctx, j.device, j.sub)
+	}
+	if status >= 400 && status < 500 && !retryablePushStatus(status) {
+		// Request/authentication failures will not heal by retrying the identical
+		// ciphertext. Keep the message and subscription for diagnosis, drop only this
+		// undeliverable job, and let later messages exercise repaired configuration.
+		_, err = a.db.ExecContext(ctx, "DELETE FROM push_jobs WHERE id=? AND leased_until=?", j.id, j.lease)
+		if err == nil {
+			a.pushDropped.Add(1)
+		}
+		return err
 	}
 	if retryAfter <= 0 {
 		shift := j.attempts
@@ -469,7 +526,8 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 func (a *app) processPushBatch(ctx context.Context, client *http.Client, now time.Time) error {
 	started := time.Now()
 	a.pushMore.Store(false)
-	for i := 0; i < 20; i++ {
+	processed := 0
+	for processed < 20 {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -482,9 +540,22 @@ func (a *app) processPushBatch(ctx context.Context, client *http.Client, now tim
 			break
 		}
 		a.pushMore.Store(true)
-		if err = a.deliverPushJob(ctx, client, jobs[0]); err != nil {
-			a.pushStateFailures.Add(1)
-			return fmt.Errorf("push state update failed")
+		processed += len(jobs)
+		var wg sync.WaitGroup
+		errorsByJob := make([]error, len(jobs))
+		for index, job := range jobs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errorsByJob[index] = a.deliverPushJob(ctx, client, job)
+			}()
+		}
+		wg.Wait()
+		for _, err = range errorsByJob {
+			if err != nil {
+				a.pushStateFailures.Add(1)
+				return fmt.Errorf("push state update failed")
+			}
 		}
 	}
 	return nil

@@ -33,15 +33,66 @@ new CacheFirst({ cacheName: "hongshu-public-assets-v1", plugins: [{
   cacheWillUpdate: async ({ response }) => response.ok && !response.redirected ? response : null,
   cachedResponseWillBeUsed: async ({ request, cachedResponse }) => cachedResponse || await caches.match(request),
 }, new ExpirationPlugin({ maxEntries: 96, maxAgeSeconds: 31_536_000, purgeOnQuotaError: true })] }));
+const SHELL_METADATA = "hongshu-shell-lifecycle-v1";
+const SHELL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+async function rememberShellLease(clientId, revision) {
+  if (!clientId || typeof revision !== "string" || !/^[a-f0-9]{24}$/.test(revision)) return;
+  const metadata = await caches.open(SHELL_METADATA);
+  const now = Date.now();
+  await metadata.put(`/client/${clientId}`, new Response(JSON.stringify({ revision, at: now }), { headers: { "Content-Type": "application/json" } }));
+  const key = `/shell/${revision}`;
+  const previous = await metadata.match(key);
+  let firstSeen = now;
+  if (previous) {
+    try { firstSeen = (await previous.json()).firstSeen || now; } catch { /* renew malformed metadata */ }
+  }
+  await metadata.put(key, new Response(JSON.stringify({ firstSeen, lastSeen: now }), { headers: { "Content-Type": "application/json" } }));
+}
+async function cleanupShells(current) {
+  const metadata = await caches.open(SHELL_METADATA);
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const active = new Set();
+  let unknown = false;
+  const now = Date.now();
+  for (const client of windows) {
+    const record = await metadata.match(`/client/${client.id}`);
+    if (!record) { unknown = true; continue; }
+    try {
+      const lease = await record.json();
+      if (now - lease.at <= 24 * 60 * 60 * 1000 && typeof lease.revision === "string") active.add(lease.revision);
+      else unknown = true;
+    } catch { unknown = true; }
+  }
+  for (const name of await caches.keys()) {
+    if (!name.startsWith("hongshu-shell-") || name === current) continue;
+    const revision = name.slice("hongshu-shell-".length);
+    if (!/^[a-f0-9]{24}$/.test(revision) || active.has(revision)) continue;
+    const key = `/shell/${revision}`;
+    const record = await metadata.match(key);
+    let lastSeen = now;
+    if (record) {
+      try {
+        const metadataRecord = await record.json();
+        lastSeen = metadataRecord.lastSeen || metadataRecord.firstSeen || now;
+      } catch { /* restart grace below */ }
+    } else {
+      await metadata.put(key, new Response(JSON.stringify({ firstSeen: now, lastSeen: now }), { headers: { "Content-Type": "application/json" } }));
+    }
+    // Unknown open documents may predate leases. Keep every old revision until
+    // they close; a closed revision still gets a full rollback/BFCache grace.
+    if (!unknown && now - lastSeen >= SHELL_GRACE_MS) await caches.delete(name);
+  }
+}
 self.addEventListener("message", event => {
-  if (event.data?.type === "ACTIVATE_UPDATE") void self.skipWaiting();
+  if (event.data?.type === "ACTIVATE_UPDATE") event.waitUntil?.(self.skipWaiting());
+  if (event.data?.type === "SHELL_ACTIVE") event.waitUntil?.((async () => {
+    try {
+      await rememberShellLease(event.source?.id, event.data.revision);
+      await cleanupShells("hongshu-shell-__HONGSHU_SHELL_VERSION__");
+    } catch { /* storage pressure must not break messaging */ }
+  })());
 });
 self.addEventListener("activate", event => event.waitUntil((async () => {
-  // Retire old shells only when no open document can still reference them.
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (!windows.length) {
-    const current = "hongshu-shell-__HONGSHU_SHELL_VERSION__";
-    await Promise.all((await caches.keys()).filter(key => key.startsWith("hongshu-shell-") && key !== current).map(key => caches.delete(key)));
-  }
+  try { await cleanupShells("hongshu-shell-__HONGSHU_SHELL_VERSION__"); } catch { /* next lease retries */ }
   await self.clients.claim();
 })()));

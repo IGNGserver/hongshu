@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 60
     services:
       mysql:
-        image: mysql:8.4.5
+        image: mysql:8.4.5@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
           MYSQL_ROOT_HOST: "%"
@@ -40,7 +40,7 @@ jobs:
       MYSQLDUMP_BIN: /usr/bin/mysqldump
     steps:
       - name: Check out release source and history
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
@@ -74,12 +74,31 @@ jobs:
             is_prerelease=true
           fi
           printf 'TAG=%s\nVERSION=%s\nRELEASE_SHA=%s\nIS_PRERELEASE=%s\n' "$TAG" "$version" "$release_sha" "$is_prerelease" >> "$GITHUB_ENV"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$release_sha/check-runs?per_page=100" > "$RUNNER_TEMP/required-checks.json"
+          python3 - "$RUNNER_TEMP/required-checks.json" <<'PY'
+          import json, sys
+          pages = json.load(open(sys.argv[1]))
+          runs = [run for page in pages for run in page.get('check_runs', [])]
+          latest = {}
+          for run in runs:
+              if run['name'] not in latest or run['id'] > latest[run['name']]['id']:
+                  latest[run['name']] = run
+          required = {'verify', 'server', 'web', 'container image build',
+                      'android (28)', 'android (33)', 'android (35)'}
+          failed = []
+          for name in sorted(required):
+              run = latest.get(name)
+              if not run or run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  failed.append(f"{name}: {run.get('status') if run else 'missing'}/{run.get('conclusion') if run else 'missing'}")
+          if failed:
+              raise SystemExit('Required CI checks have not passed: ' + ', '.join(failed))
+          PY
 
       - name: Verify repository contract and whitespace
         run: bash scripts/verify-repository.sh && git diff --check
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.4"
           cache-dependency-path: server/go.sum
@@ -98,7 +117,7 @@ jobs:
           go build -trimpath -ldflags "-X main.buildVersion=$VERSION" -o "$HONGSHU_BUILD_DIR/hongshu-linux-amd64" .
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -107,30 +126,36 @@ jobs:
         run: npm ci && npm test && npm run check && npm run build
 
       - name: Install browser smoke dependencies
-        run: |
-          npm install --prefix "$RUNNER_TEMP/browser-tools" --no-save playwright@1.56.1
-          "$RUNNER_TEMP/browser-tools/node_modules/.bin/playwright" install --with-deps chromium
+        run: web/node_modules/.bin/playwright install --with-deps chromium
 
       - name: Exercise browser against isolated MySQL
         run: node scripts/browser-smoke.cjs
         env:
-          PLAYWRIGHT_MODULE: ${{ runner.temp }}/browser-tools/node_modules/playwright
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright
           HONGSHU_BINARY: ${{ runner.temp }}/hongshu/hongshu-linux-amd64
           TEST_MYSQL_PORT: "3306"
 
+      - name: Verify device contacts and real Service Worker lifecycle
+        run: |
+          node scripts/local-contacts-smoke.cjs
+          node scripts/pwa-browser-smoke.cjs
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright
+          WEB_BUILD_DIR: ${{ runner.temp }}/hongshu/web
+
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
 
       - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
+        uses: gradle/actions/wrapper-validation@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
 
       - name: Install Android SDK 35
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
@@ -172,18 +197,21 @@ jobs:
 
           rm -rf "$deployment_stage"
           mkdir -p "$deployment_stage/scripts" "$deployment_stage/docs"
-          cp compose.yml compose.external.yml .env.example VERSION "$deployment_stage/"
-          cp scripts/backup.sh scripts/init-deployment.sh scripts/next-restore-epoch.sh scripts/repair-read-watermarks.sql "$deployment_stage/scripts/"
+          cp compose.yml compose.external.yml compose.external-backup.yml .env.example VERSION "$deployment_stage/"
+          cp scripts/backup.sh scripts/backup-healthcheck.sh scripts/compare-semver.sh scripts/init-deployment.sh scripts/next-restore-epoch.sh scripts/repair-read-watermarks.sql "$deployment_stage/scripts/"
           cp docs/DEPLOYMENT.md docs/DATABASE.md "$deployment_stage/docs/"
 
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-            -C "$deployment_stage" -cf - .env.example VERSION compose.yml compose.external.yml scripts docs | gzip -n > "$release/hongshu-${TAG}-deployment.tar.gz"
+            -C "$deployment_stage" -cf - .env.example VERSION compose.yml compose.external.yml compose.external-backup.yml scripts docs | gzip -n > "$release/hongshu-${TAG}-deployment.tar.gz"
 
           test "$(find "$release" -maxdepth 1 -type f | wc -l)" -eq 2
           test -s "$release/Hongshu-Android-${VERSION}.apk"
           test -s "$release/hongshu-${TAG}-deployment.tar.gz"
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'compose.yml'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'compose.external.yml'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'compose.external-backup.yml'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/backup-healthcheck.sh'
+          tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/compare-semver.sh'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/init-deployment.sh'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/backup.sh'
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'scripts/next-restore-epoch.sh'
@@ -192,14 +220,24 @@ jobs:
           tar -tzf "$release/hongshu-${TAG}-deployment.tar.gz" | grep -Fx 'docs/DATABASE.md'
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and scan the release image before publication
+        run: docker buildx build --load -t hongshu:release-check .
+      - name: Block high and critical fixable image vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: hongshu:release-check
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: Stage digest, journal draft, promote version tags and publish
         env:

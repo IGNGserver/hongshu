@@ -14,6 +14,13 @@ import kotlinx.coroutines.flow.update
 
 internal const val REALTIME_STALLED_MS = 20_000L
 internal const val REALTIME_RETRY_MS = 30_000L
+internal const val REALTIME_RETRY_CEILING_MS = 300_000L
+
+internal fun realtimeRetryDelay(failures: Int, jitter: Double = 0.5): Long {
+    val shifts = (failures - 1).coerceIn(0, 3)
+    val base = (REALTIME_RETRY_MS shl shifts).coerceAtMost(REALTIME_RETRY_CEILING_MS)
+    return (base * (0.8 + 0.4 * jitter.coerceIn(0.0, 1.0))).toLong()
+}
 
 internal data class DeliveryHealth(
     val pendingSince: Long = 0,
@@ -65,6 +72,9 @@ internal class RealtimeDeliveryRunner(
     private val fallback: suspend (Exception) -> Unit,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() + 1 },
     private val retryMillis: Long = REALTIME_RETRY_MS,
+    private val initialRetryMillis: Long = 0,
+    private val retryStarted: () -> Long = { retryMillis },
+    private val retryCleared: () -> Unit = {},
 ) {
     private val syncSignals = Channel<Unit>(Channel.CONFLATED)
     private val captureSignals = Channel<Unit>(Channel.CONFLATED)
@@ -78,6 +88,12 @@ internal class RealtimeDeliveryRunner(
     private var reread: Job? = null
     private var rereadAt = Long.MAX_VALUE
 
+    init {
+        if (initialRetryMillis > 0) {
+            retry = scope.launch { delay(initialRetryMillis); request() }
+        }
+    }
+
     private val syncJob = scope.launch {
         for (signal in syncSignals) {
             val ticket = version.get()
@@ -85,6 +101,7 @@ internal class RealtimeDeliveryRunner(
             try {
                 val complete = synchronize()
                 retry?.cancel()
+                retryCleared()
                 mutableHealth.update {
                     it.copy(lastSuccess = clock(), error = "",
                         pendingSince = if (complete && version.get() == ticket) 0 else it.pendingSince)
@@ -103,8 +120,9 @@ internal class RealtimeDeliveryRunner(
                 try { fallback(e) } catch (cancel: CancellationException) { throw cancel }
                 catch (_: Exception) { /* periodic work remains a second fallback */ }
                 if (!isActive) return@launch
+                val delayMillis = try { retryStarted() } catch (_: Exception) { retryMillis }
                 retry?.cancel()
-                retry = scope.launch { delay(retryMillis); request() }
+                retry = scope.launch { delay(delayMillis); request() }
             }
         }
     }
@@ -186,9 +204,34 @@ internal fun syncFailureReason(error: Exception): String = when (error) {
     else -> "同步失败：协议或本地存储异常，将自动重试"
 }
 
-internal suspend fun <T> withDeliveryWakeLock(context: Context, block: suspend () -> T): T {
+internal const val DELIVERY_WAKE_TIMEOUT_MS = 15 * 60 * 1000L
+internal const val DELIVERY_WAKE_RENEW_MS = 45_000L
+internal const val DELIVERY_WAKE_LEASE_MS = 60_000L
+
+internal suspend fun <T> withDeliveryWakeLock(
+    context: Context,
+    leaseMillis: Long = DELIVERY_WAKE_LEASE_MS,
+    renewMillis: Long = DELIVERY_WAKE_RENEW_MS,
+    timeoutMillis: Long = DELIVERY_WAKE_TIMEOUT_MS,
+    block: suspend () -> T,
+): T {
+    require(leaseMillis > 0 && renewMillis > 0 && renewMillis < leaseMillis && timeoutMillis > 0)
     val lock = context.getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hongshu:delivery")
-    lock.acquire(60_000)
-    return try { block() } finally { if (lock.isHeld) lock.release() }
+    lock.setReferenceCounted(false)
+    return withTimeout(timeoutMillis) {
+        coroutineScope {
+            lock.acquire(leaseMillis)
+            val renewal = launch {
+                while (true) {
+                    delay(renewMillis)
+                    lock.acquire(leaseMillis)
+                }
+            }
+            try { block() } finally {
+                renewal.cancel()
+                if (lock.isHeld) lock.release()
+            }
+        }
+    }
 }

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -294,6 +295,43 @@ func aiHTTPClient(s AISettings) *http.Client {
 		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 	}}
 	return &http.Client{Transport: tr, Timeout: time.Duration(s.Timeout) * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errAIRedirectDenied }}
+}
+
+func (a *app) effectiveAIClient(s AISettings) *http.Client {
+	key := hash(fmt.Sprintf("%d/%d/%s/%s", s.Generation, s.Timeout, s.Endpoint, s.Protocol))
+	a.aiClientsMu.Lock()
+	defer a.aiClientsMu.Unlock()
+	if client := a.aiClients[key]; client != nil {
+		return client
+	}
+	if a.aiClients == nil {
+		a.aiClients = make(map[string]*http.Client)
+	}
+	if len(a.aiClients) >= 4 {
+		for oldKey, client := range a.aiClients {
+			client.CloseIdleConnections()
+			delete(a.aiClients, oldKey)
+			break
+		}
+	}
+	client := aiHTTPClient(s)
+	a.aiClients[key] = client
+	return client
+}
+
+func (a *app) noteAIResult(generation int64, code string) bool {
+	a.aiErrorMu.Lock()
+	defer a.aiErrorMu.Unlock()
+	if a.aiErrorGeneration != generation {
+		a.aiErrorGeneration = generation
+		a.aiUnknown400 = 0
+	}
+	if code == "" || code != "ai_http_400_unknown" {
+		a.aiUnknown400 = 0
+		return false
+	}
+	a.aiUnknown400++
+	return a.aiUnknown400 >= 3
 }
 
 func (a *app) saveAISettings(w http.ResponseWriter, r *http.Request) {
@@ -715,28 +753,53 @@ func selectAnalysisCandidate(ctx context.Context, q rowQuerier) (*analysisCandid
 	return c, e
 }
 
+type analysisSchedule struct {
+	reason     string
+	retryAfter time.Duration
+}
+
 func (a *app) claimAnalysis(ctx context.Context) (*analysisJob, error) {
+	job, _, err := a.claimAnalysisScheduled(ctx)
+	return job, err
+}
+
+func (a *app) claimAnalysisScheduled(ctx context.Context) (*analysisJob, analysisSchedule, error) {
 	// Cheap, advisory reads avoid scanning the queue when work is disabled or
 	// throttled. All policy and accounting is checked again under the lock.
 	s, e := loadAI(ctx, a.db, false)
 	if e != nil {
-		return nil, e
+		return nil, analysisSchedule{reason: "error", retryAfter: 5 * time.Second}, e
 	}
-	if !s.Enabled || s.Paused || s.Usage >= s.DailyLimit {
-		return nil, nil
+	if !s.Enabled || s.Paused {
+		return nil, analysisSchedule{reason: "disabled", retryAfter: 30 * time.Second}, nil
+	}
+	if s.Usage >= s.DailyLimit {
+		return nil, analysisSchedule{reason: "daily_limit", retryAfter: time.Minute}, nil
 	}
 	var next int64
 	if e = a.db.QueryRowContext(ctx, "SELECT next_call FROM ai_settings WHERE id=1").Scan(&next); e != nil {
-		return nil, e
+		return nil, analysisSchedule{reason: "error", retryAfter: 5 * time.Second}, e
 	}
-	if time.Now().UnixMilli() < next {
-		return nil, nil
+	if delay := time.Until(time.UnixMilli(next)); delay > 0 {
+		return nil, analysisSchedule{reason: "rate_limit", retryAfter: delay}, nil
 	}
 	c, e := selectAnalysisCandidate(ctx, a.db)
-	if e != nil || c == nil {
-		return nil, e
+	if e != nil {
+		return nil, analysisSchedule{reason: "error", retryAfter: 5 * time.Second}, e
 	}
-	return a.claimAnalysisCandidate(ctx, c)
+	if c == nil {
+		return nil, analysisSchedule{reason: "empty", retryAfter: 30 * time.Second}, nil
+	}
+	job, err := a.claimAnalysisCandidate(ctx, c)
+	if err != nil {
+		return nil, analysisSchedule{reason: "error", retryAfter: 5 * time.Second}, err
+	}
+	if job == nil {
+		// Another hub won the candidate, or an exhausted row was finalized. Recheck
+		// without sleeping but yield long enough to avoid a contended hot loop.
+		return nil, analysisSchedule{reason: "competed", retryAfter: 50 * time.Millisecond}, nil
+	}
+	return job, analysisSchedule{}, nil
 }
 
 func (a *app) claimAnalysisCandidate(ctx context.Context, c *analysisCandidate) (*analysisJob, error) {
@@ -1087,9 +1150,79 @@ func normalizeAICode(body, code string) (string, bool) {
 	return "", false
 }
 
+func aiErrorDescriptor(raw []byte) string {
+	var root any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&root) != nil {
+		return ""
+	}
+	parts := []string{}
+	var walk func(any, int)
+	walk = func(value any, depth int) {
+		if depth > 6 || len(parts) >= 32 {
+			return
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				switch strings.ToLower(key) {
+				case "code", "type", "message", "status", "reason":
+					if text, ok := child.(string); ok && len(text) <= 2048 {
+						parts = append(parts, text)
+					}
+				}
+				walk(child, depth+1)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+	return strings.ToLower(strings.Join(parts, "\n"))
+}
+
+func aiHTTPFailure(status int, raw []byte) (string, bool) {
+	if status == 401 || status == 403 || status == 404 || status == 429 {
+		return fmt.Sprintf("ai_http_%d", status), true
+	}
+	if status == 400 || status == 413 || status == 422 {
+		descriptor := aiErrorDescriptor(raw)
+		contentError := status == 413
+		for _, marker := range []string{"context length", "context window", "too many tokens", "prompt is too long", "maximum context", "content filter", "content_policy", "content policy", "safety", "moderation", "harmful", "invalid content"} {
+			if strings.Contains(descriptor, marker) {
+				contentError = true
+				break
+			}
+		}
+		if contentError {
+			return "ai_message_rejected", false
+		}
+		for _, marker := range []string{"model", "api key", "authentication", "organization", "project", "endpoint", "unknown parameter", "unsupported parameter"} {
+			if strings.Contains(descriptor, marker) {
+				return fmt.Sprintf("ai_http_%d", status), true
+			}
+		}
+		return fmt.Sprintf("ai_http_%d_unknown", status), false
+	}
+	return fmt.Sprintf("ai_http_%d", status), false
+}
+
+func permanentMessageAIError(code string) bool {
+	return code == "ai_message_rejected" || code == "needs_review"
+}
+
 // Only a fixed enum and a verified code are persisted. No model text, tool calls
 // or response diagnostics are logged.
 func classifySMS(ctx context.Context, s AISettings, body, ruleOTP string) (string, string, string, bool) {
+	client := aiHTTPClient(s)
+	defer client.CloseIdleConnections()
+	return classifySMSWithClient(ctx, s, body, ruleOTP, client)
+}
+
+func classifySMSWithClient(ctx context.Context, s AISettings, body, ruleOTP string, client *http.Client) (string, string, string, bool) {
 	if !validAIProtocol(s.Protocol) {
 		return "", "", "invalid_ai_protocol", true
 	}
@@ -1130,8 +1263,6 @@ func classifySMS(ctx context.Context, s AISettings, body, ruleOTP string) (strin
 			req.Header.Set("Authorization", "Bearer "+key)
 		}
 	}
-	client := aiHTTPClient(s)
-	defer client.CloseIdleConnections()
 	res, e := client.Do(req)
 	if e != nil {
 		if errors.Is(e, errAIEndpointDenied) {
@@ -1144,8 +1275,9 @@ func classifySMS(ctx context.Context, s AISettings, body, ruleOTP string) (strin
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		pause := res.StatusCode == 401 || res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 400 || res.StatusCode == 404
-		return "", "", fmt.Sprintf("ai_http_%d", res.StatusCode), pause
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 16<<10))
+		code, pause := aiHTTPFailure(res.StatusCode, raw)
+		return "", "", code, pause
 	}
 	raw, e := io.ReadAll(io.LimitReader(res.Body, 65537))
 	if e != nil || len(raw) > 65536 {
@@ -1204,7 +1336,7 @@ func (a *app) finishAnalysis(ctx context.Context, j *analysisJob, category, otp,
 	if errCode != "" {
 		state = "pending"
 		next = time.Now().Add(time.Duration(attempts*attempts) * 10 * time.Second).UnixMilli()
-		if attempts >= 3 || pause || errCode == "needs_review" {
+		if attempts >= 3 || pause || permanentMessageAIError(errCode) {
 			state = "failed"
 		}
 	}
@@ -1261,6 +1393,24 @@ func (a *app) analysisBackfillLoop(ctx context.Context) {
 	}
 }
 
+func (a *app) finishAnalysisWithRetry(ctx context.Context, j *analysisJob, category, otp, code string, pause bool) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = a.finishAnalysis(ctx, j, category, otp, code, pause); err == nil || ctx.Err() != nil {
+			return err
+		}
+		a.analysisFinishFailures.Add(1)
+		timer := time.NewTimer(time.Duration(100*(1<<attempt)) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
 func (a *app) analysisLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -1285,26 +1435,35 @@ func (a *app) analysisLoop(ctx context.Context) {
 			}
 			continue
 		}
-		j, err := a.claimAnalysis(ctx)
+		j, schedule, err := a.claimAnalysisScheduled(ctx)
 		if err != nil {
-			if !waitFor(ctx, a.analysisWake, 5*time.Second) {
+			if !waitFor(ctx, a.analysisWake, schedule.retryAfter) {
 				return
 			}
 			continue
 		}
 		if j == nil {
-			// The settings row enforces the per-minute rate; poll on that cadence while AI
-			// is enabled instead of sleeping through several queued jobs.
-			if !waitFor(ctx, a.analysisWake, time.Second) {
+			if !waitFor(ctx, a.analysisWake, schedule.retryAfter) {
 				return
 			}
 			continue
 		}
-		category, otp, code, pause := classifySMS(ctx, j.Settings, j.Body, j.OTP)
+		category, otp, code, pause := classifySMSWithClient(ctx, j.Settings, j.Body, j.OTP, a.effectiveAIClient(j.Settings))
 		if ctx.Err() != nil {
 			return // leave the durable lease for restart
 		}
-		_ = a.finishAnalysis(ctx, j, category, otp, code, pause)
+		if a.noteAIResult(j.Settings.Generation, code) {
+			pause = true
+		}
+		if err := a.finishAnalysisWithRetry(ctx, j, category, otp, code, pause); err != nil && ctx.Err() == nil {
+			failures := a.analysisFinishFailures.Load()
+			if failures <= 3 || failures%20 == 0 {
+				log.Printf("analysis result persistence failed %d times; durable lease retained", failures)
+			}
+			if !waitFor(ctx, a.analysisWake, 2*time.Second) {
+				return
+			}
+		}
 	}
 }
 
@@ -1349,7 +1508,7 @@ func (a *app) testAI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	category, _, code, _ := classifySMS(r.Context(), s, "Synthetic service maintenance notification. No action required.", "")
+	category, _, code, _ := classifySMSWithClient(r.Context(), s, "Synthetic service maintenance notification. No action required.", "", a.effectiveAIClient(s))
 	if code != "" {
 		fail(w, 502, code)
 		return

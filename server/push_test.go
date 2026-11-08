@@ -76,3 +76,30 @@ func TestPushExpiredLeaseNeverTouchesNetworkOrStore(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPushRetryAfterAndStatusClassification(t *testing.T) {
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	header := make(http.Header)
+	header.Set("Retry-After", "90")
+	if got := pushRetryAfter(header, now); got != 90*time.Second {
+		t.Fatalf("seconds Retry-After = %s", got)
+	}
+	header.Set("Retry-After", now.Add(2*time.Minute).Format(http.TimeFormat))
+	if got := pushRetryAfter(header, now); got != 2*time.Minute {
+		t.Fatalf("HTTP-date Retry-After = %s", got)
+	}
+	header.Set("Retry-After", "not-a-date")
+	if got := pushRetryAfter(header, now); got != 0 {
+		t.Fatalf("invalid Retry-After = %s", got)
+	}
+	for _, status := range []int{0, 408, 425, 429, 500, 503} {
+		if !retryablePushStatus(status) {
+			t.Fatalf("status %d should be retryable", status)
+		}
+	}
+	for _, status := range []int{400, 401, 403, 404, 409, 410, 413, 499} {
+		if retryablePushStatus(status) {
+			t.Fatalf("status %d should be permanent", status)
+		}
+	}
+}

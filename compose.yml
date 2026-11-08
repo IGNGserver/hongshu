@@ -40,7 +40,7 @@ services:
     networks: [internal, egress]
     logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
   db:
-    image: mysql:8.4.5
+    image: mysql:8.4.5@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: hongshu
@@ -57,7 +57,7 @@ services:
     networks: [internal]
     logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
   backup:
-    image: mysql:8.4.5
+    image: mysql:8.4.5@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
     restart: unless-stopped
     entrypoint: ["/bin/bash", "/backup.sh"]
     environment:
@@ -67,10 +67,19 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-hongshu}
       MYSQL_PWD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
       BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
-    volumes: ["./scripts/backup.sh:/backup.sh:ro", "./runtime-data/backups:/backups"]
+      BACKUP_TIMEOUT: ${BACKUP_TIMEOUT:-3600}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_MAX_FILES: ${BACKUP_MAX_FILES:-60}
+      BACKUP_HEALTH_GRACE: ${BACKUP_HEALTH_GRACE:-900}
+    volumes: ["./scripts/backup.sh:/backup.sh:ro", "./scripts/backup-healthcheck.sh:/backup-healthcheck.sh:ro", "./runtime-data/backups:/backups"]
     depends_on:
       db: {condition: service_healthy}
-      hub: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, /bin/bash, /backup-healthcheck.sh]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 2h
     networks: [internal, egress]
     logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
 volumes:

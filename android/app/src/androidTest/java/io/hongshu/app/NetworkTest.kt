@@ -221,7 +221,7 @@ class NetworkTest {
                     config.deviceName = "before"
                     Repository(context).apply {
                         try {
-                            saveConnection(hub.url, "", "  after  ")
+                            runBlocking { saveConnection(hub.url, "", "  after  ") }
                             assertEquals("after", config.deviceName)
                             assertEquals("synthetic", config.deviceId)
                             assertEquals("s".repeat(64), config.token)
@@ -229,7 +229,7 @@ class NetworkTest {
                             assertEquals("/api/devices/synthetic", rename.first)
                             assertEquals("after", rename.second.getString("name"))
                             try {
-                                login(hub.url, "wrong synthetic password", "replacement")
+                                runBlocking { login(hub.url, "wrong synthetic password", "replacement") }
                                 fail("bad password accepted")
                             } catch (e: ApiException) {
                                 assertEquals(401, e.status)
@@ -258,7 +258,7 @@ class NetworkTest {
                         .put("receiver", "+1234567890").put("sender", "10086").put("body", "synthetic")
                         .put("timestamp", 1L)), 1)
                     Hub { _, _ -> 200 to JSONObject().put("device", JSONObject()) }.use { hub ->
-                        assertThrows(Exception::class.java) { login(hub.url, "synthetic password", "new phone") }
+                        assertThrows(Exception::class.java) { runBlocking { login(hub.url, "synthetic password", "new phone") } }
                     }
                     assertEquals("https://old.example", config.url)
                     assertEquals("a".repeat(64), config.token)
@@ -271,7 +271,7 @@ class NetworkTest {
                     Hub { _, _ -> 200 to JSONObject().put("token", "b".repeat(64)).put("device",
                         JSONObject().put("id", "new-device").put("name", "new phone")
                             .put("created_at", 10L).put("notify", false)) }.use { hub ->
-                        login(hub.url, "synthetic password", "new phone")
+                        runBlocking { login(hub.url, "synthetic password", "new phone") }
                         assertEquals(hub.url, Config(context).url)
                     }
                     assertEquals("b".repeat(64), Config(context).token)
@@ -313,7 +313,7 @@ class NetworkTest {
                 assertEquals("s".repeat(64), config.token)
                 Repository(context).apply {
                     try {
-                        login(hub.url, "  synthetic password  ", "synthetic")
+                        runBlocking { login(hub.url, "  synthetic password  ", "synthetic") }
                     } finally {
                         store.close()
                     }

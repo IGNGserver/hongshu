@@ -71,6 +71,16 @@ class XiaomiAccessTest {
     }
 
     @Test
+    fun processProbeBoundsFirstLineAndTimeout() {
+        assertEquals("ok", boundedProcessLine(listOf("sh", "-c", "printf ok")))
+        val longLine = boundedProcessLine(listOf("sh", "-c", "head -c 100000 /dev/zero | tr '\\0' x"))
+        assertEquals(256, longLine.length)
+        val started = System.nanoTime()
+        assertEquals("", boundedProcessLine(listOf("sh", "-c", "sleep 2; printf late"), timeoutMillis = 30))
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1_000)
+    }
+
+    @Test
     fun permissionSummaryPointsXiaomiUsersAtVendorGates() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         assertNull(vendorSmsStatus(context))

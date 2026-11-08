@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Process
 import android.provider.Settings
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 // MIUI/HyperOS add private AppOps on top of the runtime permissions. When they deny,
 // SMS_RECEIVED is not delivered to a stopped process and service-number ("notification")
@@ -73,17 +74,50 @@ internal fun checkXiaomiOp(context: Context, op: Int): VendorPermission =
             .getOrNull()
     )
 
+internal fun boundedProcessLine(command: List<String>, timeoutMillis: Long = 500): String {
+    val process = try {
+        ProcessBuilder(command).redirectErrorStream(true).start()
+    } catch (_: Exception) {
+        return ""
+    }
+    var line = ""
+    val reader = thread(isDaemon = true, name = "hongshu-process-output") {
+        line = process.inputStream.bufferedReader().use { input ->
+            val output = StringBuilder(256)
+            while (output.length < 256) {
+                val next = input.read()
+                if (next < 0 || next == '\n'.code || next == '\r'.code) break
+                output.append(next.toChar())
+            }
+            // Do not allocate beyond the first 256 characters, but keep draining so a verbose
+            // producer is not killed by our early close before its exit status can be read.
+            while (input.read() >= 0) { /* discard */ }
+            output.toString().trim()
+        }
+    }
+    return try {
+        if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) ""
+        else {
+            reader.join(100)
+            if (process.exitValue() == 0) line else ""
+        }
+    } catch (_: Exception) {
+        ""
+    } finally {
+        runCatching { process.inputStream.close() }
+        runCatching { process.outputStream.close() }
+        runCatching { process.errorStream.close() }
+        if (process.isAlive) {
+            process.destroy()
+            if (!process.waitFor(100, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+        }
+        reader.join(100)
+    }
+}
+
 // HyperOS exposes ro.mi.os.version.name; MIUI exposes ro.miui.ui.version.name.
 internal fun xiaomiRomName(): String {
-    fun prop(name: String): String =
-        runCatching {
-                val process = ProcessBuilder("getprop", name).redirectErrorStream(true).start()
-                if (!process.waitFor(500, TimeUnit.MILLISECONDS)) {
-                    process.destroy()
-                    ""
-                } else process.inputStream.bufferedReader().use { it.readText().trim() }
-            }
-            .getOrDefault("")
+    fun prop(name: String): String = boundedProcessLine(listOf("getprop", name))
     val hyper = prop("ro.mi.os.version.name")
     if (hyper.isNotEmpty()) return "澎湃 OS $hyper"
     val miui = prop("ro.miui.ui.version.name")

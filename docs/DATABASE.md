@@ -105,12 +105,14 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON hongshu.* TO 'hongshu'@'10.0.0.%';
 # 使用迁移账号，执行一次；命令不会启动 HTTP 服务。
 HONGSHU_DATABASE_URL='mysql://hongshu_migrate:...@mysql.example:3306/hongshu?...' \
   docker run --rm --env HONGSHU_DATABASE_URL \
-  -v "$PWD/db/migrations:/app/migrations:ro" \
   ghcr.io/igngserver/hongshu:0.2.0-alpha.23 migrate
 
 # 运行时账号 + check 模式
 HONGSHU_MIGRATE=check docker compose -f compose.external.yml up -d
 ```
+
+迁移 SQL 已内嵌于同版本镜像的 `/app/migrations`，部署包和空目录初始化都不需要源码树或 `db/migrations`
+宿主目录。不要再用宿主 bind mount 覆盖该目录；镜像 digest 与迁移版本必须保持一致。
 
 迁移锁按 schema 名派生，不再是整个 MySQL 服务器共用一把锁；同一台服务器上不同中枢库可以
 独立升级。迁移仍以 checksum + dirty 审计，DDL 失败会阻止继续启动，不能直接清除 dirty。

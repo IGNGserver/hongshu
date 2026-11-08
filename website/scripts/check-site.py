@@ -82,6 +82,8 @@ def check_html(path: Path) -> None:
         if parsed.scheme in ("mailto", "data"):
             continue
         target = local_target(path, ref)
+        if rel.as_posix() == "404.html" and not parsed.path.startswith("/"):
+            errors.append(f"{rel}: nested 404 requires an absolute local target: {ref}")
         if target.is_dir():
             target = target / "index.html"
         if not target.is_file():
@@ -106,6 +108,18 @@ def main() -> int:
     for required in ("index.html", "404.html", "_headers", "robots.txt", "sitemap.xml"):
         if not (ROOT / required).is_file():
             errors.append(f"missing {required}")
+    index_text = (ROOT / "index.html").read_text(encoding="utf-8")
+    version = (ROOT.parent.parent / "VERSION").read_text(encoding="utf-8").strip()
+    versioned_deployment = (
+        f"https://github.com/IGNGserver/hongshu/blob/v{version}/docs/DEPLOYMENT.md"
+    )
+    if versioned_deployment not in index_text:
+        errors.append("index.html: deployment link must match VERSION and its Release tag")
+    if "https://github.com/IGNGserver/hongshu/blob/main/docs/DEPLOYMENT.md" in index_text:
+        errors.append("index.html: download guidance must not use moving main documentation")
+    for disclosure in ("短信正文会发送给你选择的服务商", "不通过运营商代发短信", "通话记录"):
+        if disclosure not in index_text:
+            errors.append(f"index.html: missing product/data-boundary disclosure: {disclosure}")
     if not re.search(r"Sitemap:\s*https://hongshu\.igng\.net/sitemap\.xml", (ROOT / "robots.txt").read_text()):
         errors.append("robots.txt must point at https://hongshu.igng.net/sitemap.xml")
     if errors:

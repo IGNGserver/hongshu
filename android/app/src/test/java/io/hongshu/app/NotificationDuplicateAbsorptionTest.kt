@@ -46,12 +46,12 @@ class NotificationDuplicateAbsorptionTest {
             .put("historical", false)
 
     @Test
-    fun contactNameNotificationIsAbsorbedAfterAuthoritativeAck() = database { name ->
+    fun matchingSenderNotificationIsAbsorbedAfterAuthoritativeAck() = database { name ->
         val body = "synthetic coffee"
         Store(context, name).use { store ->
-            assertTrue(store.queueNotification(SmsRecord("", "张三", body, t, -1)))
-            assertTrue(store.queue(SmsRecord(sim.phone, "10086", body, t + 30_000, sim.sub), 0))
-            assertEquals(2, store.pendingCount())
+            assertTrue(store.queueNotification(SmsRecord("", "10086", body, t, -1)))
+            assertFalse(store.queue(SmsRecord(sim.phone, "10086", body, t + 30_000, sim.sub), 0))
+            assertEquals(1, store.pendingCount())
 
             val batch = store.pending(false)
             assertEquals(1, batch.size)
@@ -71,7 +71,7 @@ class NotificationDuplicateAbsorptionTest {
                     }
             assertEquals(batch.single().first, receiptTarget)
             // The moved receipt keeps the exact notification replay idempotent.
-            assertFalse(store.queueNotification(SmsRecord("", "张三", body, t, -1)))
+            assertFalse(store.queueNotification(SmsRecord("", "10086", body, t, -1)))
             assertEquals(0, store.pendingCount())
         }
     }
@@ -82,9 +82,9 @@ class NotificationDuplicateAbsorptionTest {
         val providerTime = t + 30_000
         Config(context).deviceId = "device-sync"
         Store(context, name).use { store ->
-            assertTrue(store.queueNotification(SmsRecord("", "张三", body, t, -1)))
-            assertTrue(store.queue(SmsRecord(sim.phone, "10086", body, providerTime, sim.sub), 0))
-            assertEquals(2, store.pendingCount())
+            assertTrue(store.queueNotification(SmsRecord("", "10086", body, t, -1)))
+            assertFalse(store.queue(SmsRecord(sim.phone, "10086", body, providerTime, sim.sub), 0))
+            assertEquals(1, store.pendingCount())
 
             store.applySync(
                 JSONArray().put(syncedMessage("device-sync", sim.phone, body, providerTime)),
@@ -98,11 +98,25 @@ class NotificationDuplicateAbsorptionTest {
     }
 
     @Test
+    fun sameBodyAndTimeWithDifferentSenderIsNeverAbsorbed() = database { name ->
+        val body = "synthetic ambiguous sender"
+        Store(context, name).use { store ->
+            assertTrue(store.queueNotification(SmsRecord("", "张三", body, t, -1)))
+            assertTrue(store.queue(SmsRecord(sim.phone, "10086", body, t + 30_000, sim.sub), 0))
+            val batch = store.pending(false)
+            assertEquals(1, batch.size)
+            store.ack(batch.map { it.first })
+            assertEquals(1, store.pendingCount())
+            assertEquals(PendingCounts(needsSim = 1), store.pendingCounts())
+        }
+    }
+
+    @Test
     fun syncCopyFromAnotherDeviceDoesNotAbsorbLocalNotification() = database { name ->
         val body = "synthetic remote"
         Config(context).deviceId = "device-self"
         Store(context, name).use { store ->
-            assertTrue(store.queueNotification(SmsRecord("", "张三", body, t, -1)))
+            assertTrue(store.queueNotification(SmsRecord("", "10086", body, t, -1)))
             store.applySync(
                 JSONArray().put(syncedMessage("device-other", sim.phone, body, t)),
                 cursor = 1,
@@ -118,13 +132,13 @@ class NotificationDuplicateAbsorptionTest {
         Config(context).autoIgnoreUnassigned = true
         Store(context, name).use { store ->
             store.saveSim(sim)
-            assertTrue(store.queueNotification(SmsRecord("", "张三", "synthetic hidden", t, -1)))
+            assertTrue(store.queueNotification(SmsRecord("", "10086", "synthetic hidden", t, -1)))
             assertEquals(1, store.autoIgnoreUnassigned())
 
             val counts = store.pendingCounts()
             assertEquals(PendingCounts(ignored = 1), counts)
             assertEquals(0, counts.total)
-            assertEquals(0, store.pendingCount())
+            assertEquals(1, store.pendingCount())
             assertTrue(store.localPending().isEmpty())
             assertTrue(store.localMessages().isEmpty())
             assertTrue(store.pending(false).isEmpty())
@@ -139,7 +153,7 @@ class NotificationDuplicateAbsorptionTest {
     fun withoutUsableSimOnlyNotificationCopiesAreIgnored() = database { name ->
         Config(context).autoIgnoreUnassigned = true
         Store(context, name).use { store ->
-            assertTrue(store.queueNotification(SmsRecord("", "张三", "synthetic note", t, -1)))
+            assertTrue(store.queueNotification(SmsRecord("", "10086", "synthetic note", t, -1)))
             assertTrue(store.queue(SmsRecord("", "95588", "synthetic broadcast", t, 7), 0))
             assertEquals(1, store.autoIgnoreUnassigned())
 
@@ -171,7 +185,7 @@ class NotificationDuplicateAbsorptionTest {
     @Test
     fun discardedAutoIgnoredRowsKeepTheLedgerAndDoNotReappear() = database { name ->
         Config(context).autoIgnoreUnassigned = true
-        val message = SmsRecord("", "张三", "synthetic discard", t, -1)
+        val message = SmsRecord("", "10086", "synthetic discard", t, -1)
         Store(context, name).use { store ->
             store.saveSim(sim)
             assertTrue(store.queueNotification(message))

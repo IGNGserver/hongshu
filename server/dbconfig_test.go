@@ -132,6 +132,14 @@ func TestDatabaseConfigFromDSNAppliesSafeDefaults(t *testing.T) {
 	}
 }
 
+func TestDatabaseConfigRejectsRawDSNPlaintextFallback(t *testing.T) {
+	clearDatabaseEnv(t)
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/hongshu?tls=preferred&allowFallbackToPlaintext=true")
+	if _, err := loadDatabaseConfig(); err == nil || !strings.Contains(err.Error(), "AllowFallbackToPlaintext") {
+		t.Fatalf("raw DSN plaintext fallback was not rejected clearly: %v", err)
+	}
+}
+
 func TestDatabaseConfigRejectsInvalidPool(t *testing.T) {
 	clearDatabaseEnv(t)
 	t.Setenv("HONGSHU_DATABASE_URL", "mysql://user:pass@host/db?tls=false")

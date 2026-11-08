@@ -152,13 +152,24 @@ func (a *app) callDetail(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_call")
 		return
 	}
-	rows, e := a.db.QueryContext(r.Context(), "SELECT "+callColumns+" FROM calls k"+callJoins+" WHERE k.id=?", id)
+	tx, e := a.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	defer rows.Close()
+	defer tx.Rollback()
+	var epoch int64
+	if e = tx.QueryRowContext(r.Context(), "SELECT epoch FROM sync_clock WHERE id=1").Scan(&epoch); e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	rows, e := tx.QueryContext(r.Context(), "SELECT "+callColumns+" FROM calls k"+callJoins+" WHERE k.id=?", id)
+	if e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
 	cs, e := scanCalls(rows)
+	rows.Close()
 	if e != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -167,7 +178,11 @@ func (a *app) callDetail(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "not_found")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"call": cs[0]})
+	if e = tx.Commit(); e != nil {
+		fail(w, 503, "database_unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"call": cs[0], "epoch": epoch})
 }
 
 // GET /api/calls/sync mirrors /sync: ascending commit order for clients that keep a local

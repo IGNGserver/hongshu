@@ -19,6 +19,17 @@ import org.robolectric.annotation.Config as RobolectricConfig
 @RobolectricConfig(sdk = [35], application = Application::class)
 class OtpNotificationManagerTest {
 
+    private fun seedOtpIntent(app: Application, id: Long, code: String, epoch: Long = 0) {
+        Store(app).use { store ->
+            store.rememberEpoch(epoch)
+            store.writableDatabase.execSQL(
+                "INSERT OR REPLACE INTO otp_intents " +
+                    "(message_id,otp,expires_at,sender,contact,epoch,shown) VALUES (?,?,?,?,?,?,1)",
+                arrayOf<Any>(id, code, System.currentTimeMillis() + 60_000, "10086", "", epoch),
+            )
+        }
+    }
+
     @Test
     fun showOtpNotificationBuildsOngoingNotificationWithActions() {
         val app = ApplicationProvider.getApplicationContext<Application>()
@@ -64,6 +75,7 @@ class OtpNotificationManagerTest {
     fun receiverCopiesOtpToClipboardAndCancelsNotification() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         channels(app)
+        seedOtpIntent(app, 999, "5201314")
 
         val notificationId = OtpNotificationManager.NOTIFICATION_ID
         val tag = OtpNotificationManager.notificationTag(app, 999)
@@ -149,6 +161,8 @@ class OtpNotificationManagerTest {
         val app = ApplicationProvider.getApplicationContext<Application>()
         shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         channels(app)
+        seedOtpIntent(app, 1, "code-1")
+        seedOtpIntent(app, 2, "code-2")
         val manager = app.getSystemService(NotificationManager::class.java)
         val shadow = shadowOf(manager)
         for (id in 1..3) manager.notify(id, NotificationCompat.Builder(app, "connection")

@@ -89,3 +89,22 @@ func TestRedisInvalidURLDoesNotLeak(t *testing.T) {
 		t.Fatal("Redis error leaked the URL")
 	}
 }
+
+func TestRedisDefaultNamespaceSeparatesDatabasesAndSharesDeployment(t *testing.T) {
+	a := defaultRedisPrefix("hongshu", "db-one.example:3306", "")
+	b := defaultRedisPrefix("hongshu", "db-two.example:3306", "")
+	if a == b {
+		t.Fatal("independent same-name databases share a Redis namespace")
+	}
+	if got := defaultRedisPrefix("hongshu", "DB-ONE.EXAMPLE:3306", ""); got != a {
+		t.Fatal("database address normalization changed replica affinity")
+	}
+	one := defaultRedisPrefix("hongshu", "db-one.example:3306", "production")
+	two := defaultRedisPrefix("hongshu", "replica-proxy:3306", "production")
+	if one != two {
+		t.Fatal("explicit deployment replicas do not share a namespace")
+	}
+	if other := defaultRedisPrefix("hongshu", "db-one.example:3306", "staging"); other == one {
+		t.Fatal("explicit deployment IDs are not isolated")
+	}
+}

@@ -134,7 +134,7 @@ else
     fi
   done
   staging="$image:staging-${RELEASE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-  docker buildx build --push -t "$staging" --metadata-file "$state/image.json" .
+  docker buildx build --push --platform "${HONGSHU_PLATFORMS:-linux/amd64,linux/arm64}" -t "$staging" --metadata-file "$state/image.json" .
   built_digest=$(jq -er '."containerimage.digest"' "$state/image.json")
   [[ "$built_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
   digest=$built_digest
@@ -170,7 +170,22 @@ for tag in "$VERSION" "$TAG"; do
   fi
   test "$(inspect "$image:$tag")" = "$digest"
 done
+latest_before=''
+if [[ "$IS_PRERELEASE" == false ]]; then
+  if gh release view --json tagName --jq '.tagName' > "$state/latest-before" 2>"$state/latest-error"; then
+    latest_before=$(cat "$state/latest-before")
+  else
+    grep -Eqi 'release not found|HTTP 404|no releases' "$state/latest-error" || {
+      echo 'Latest release lookup unavailable; refusing to infer latest tag state' >&2
+      exit 1
+    }
+  fi
+fi
 gh release edit "$TAG" --draft=false
 if [[ "$IS_PRERELEASE" == false ]]; then
-  docker buildx imagetools create --prefer-index=false -t "$image:latest" "$image@$digest"
+  if [[ -z "$latest_before" ]] || bash scripts/compare-semver.sh "$VERSION" "$latest_before"; then
+    docker buildx imagetools create --prefer-index=false -t "$image:latest" "$image@$digest"
+  else
+    echo "Keeping latest at newer/equal release $latest_before; candidate is $VERSION"
+  fi
 fi
