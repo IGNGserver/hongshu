@@ -390,5 +390,43 @@ exit 2
                 self.assertNotIn(path,ignored)
 
 
+    def test_deployment_archive_sources_exist_in_the_repository(self):
+        """A renamed script must fail here, not during a release."""
+        workflow = (ROOT/'.github/workflows/release.yml').read_text()
+        stage = workflow.split('deployment_stage', 1)[1]
+        copied = set()
+        for line in stage.splitlines():
+            line = line.strip()
+            if not line.startswith('cp '):
+                continue
+            for token in line.split()[1:]:
+                token = token.strip('"\'')
+                if not token or token.startswith('-') or '$' in token:
+                    continue
+                if '/' not in token and '.' not in token:
+                    continue
+                copied.add(token)
+        self.assertGreaterEqual(len(copied), 10, copied)
+        for path in sorted(copied):
+            with self.subTest(path=path):
+                self.assertTrue((ROOT/path).is_file(), f'release archive copies missing {path}')
+
+    def test_current_version_has_release_notes_ready(self):
+        """release.yml runs `test -s docs/releases/${TAG}.md` before publishing."""
+        version = (ROOT/'VERSION').read_text().strip()
+        notes = ROOT/'docs/releases'/f'v{version}.md'
+        self.assertTrue(notes.is_file(), f'missing release notes for {version}')
+        self.assertGreater(len(notes.read_text().strip()), 0)
+
+    def test_archive_manifest_matches_documented_deployment_files(self):
+        deployment = (ROOT/'docs/DEPLOYMENT.md').read_text()
+        for name in ('compose.yml', 'compose.external.yml', 'compose.external-backup.yml',
+                     '.env.example', 'VERSION'):
+            with self.subTest(name=name):
+                self.assertTrue((ROOT/name).is_file())
+        self.assertIn('compose.external-backup.yml', deployment)
+        self.assertIn('scripts/backup-healthcheck.sh', deployment)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -92,7 +92,7 @@
 | O1 | 外部 MySQL 使用镜像内迁移或随包交付迁移 | 完成 | `docs/DATABASE.md` 改为容器内 `/app/migrations` 执行，不再绑定源码树 |
 | O2 | 备份启动仅依赖 DB，hub 停止仍可备份 | 完成 | `compose.yml` backup 仅 `depends_on db: service_healthy`；`scripts/test-operations.py` |
 | O3 | 备份超时、last-success、超龄健康和保留策略 | 完成 | `backup.sh` 单轮 deadline、`gzip -t`、原子重命名、随机名保留；`backup-healthcheck.sh` 以 interval+timeout+grace 判超龄 |
-| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 部分 | 已用真实 MySQL 8.4.5 完成迁移至 015、`scripts/backup.sh` 一致性备份（gzip 校验、原子 last-success、健康检查通过）与恢复到全新库（18 表、15 条迁移全 `dirty=0`）。仍缺容器镜像/最终归档的 Compose 启动与升级演练（本机无 Docker daemon） |
+| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 部分 | 已用真实 MySQL 8.4.5 完成迁移至 015、`scripts/backup.sh` 一致性备份（gzip 校验、原子 last-success、健康检查通过）与恢复到全新库（18 表、15 条迁移全 `dirty=0`）。另新增 3 项运维用例：release.yml 归档中每个 `cp` 源必须存在（脚本改名会在 PR 阶段失败而非发布时）、当前 VERSION 必须有非空 release notes、归档清单与 DEPLOYMENT.md 引用的文件一致。仍缺容器镜像/最终归档的 Compose 启动与升级演练（本机无 Docker daemon） |
 | O5 | main/PR/Release 检查对称且不可绕过 | 完成 | CI 去掉 push 跳过、扩大 paths；`release.yml` 要求 tag 提交在 `main` 上且 7 个 required check 为 success |
 | O6 | 基础镜像/Actions/部署 digest 与依赖/secret 扫描 | 完成 | Dockerfile 三段按 digest；MySQL 多架构 digest；全部 Action 固定 40 位 SHA（本次修正 `gradle/actions` 与 `update-feed.yml`）；Gitleaks/依赖审查/Trivy fail-closed |
 | O7 | 初始化 0600 临时文件、原子发布与可恢复失败 | 完成 | `init-deployment.sh` 同盘 `mktemp`+`umask 077`，pull/VAPID/配置校验通过后 `mv -n` 发布 |

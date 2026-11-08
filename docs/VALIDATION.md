@@ -1159,3 +1159,15 @@ Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADL
 | `TestOpsNeverLeaksContentCredentialsOrEndpoints` | 载荷不含短信正文、发件人、接收号码、设备 token、VAPID 公私钥或 origin；不含 body/sender/token/endpoint/secret/password 字段名 |
 
 真实 MySQL 8.4.5 + `-race` 全量通过（74.1s）。`/healthz` 保持原有脱敏字段不变，未认证探针语义未改。
+
+## 部署归档合同（O4 的归档部分）
+
+新增 3 项运维用例，把发布时才暴露的失败提前到 PR 阶段：
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_deployment_archive_sources_exist_in_the_repository` | 从 `release.yml` 解析每个 `cp` 的源路径（至少 10 个），逐个要求仓库内存在；脚本改名前就会被拦下 |
+| `test_current_version_has_release_notes_ready` | `docs/releases/v$(cat VERSION).md` 存在且非空，对应 `release.yml` 发布前的 `test -s` |
+| `test_archive_manifest_matches_documented_deployment_files` | compose/external/external-backup/.env.example/VERSION 均存在，且 DEPLOYMENT.md 引用了独立备份单元与 `scripts/backup-healthcheck.sh` |
+
+`scripts/test-operations.py` 由 18 项增至 21 项，全部通过（6.6s）。仍未执行镜像/最终归档的 Compose 启动与升级演练。

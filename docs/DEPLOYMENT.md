@@ -149,7 +149,7 @@ Web Push 需要 HTTPS、浏览器支持、用户授权，以及服务器能访�
 backup 服务每天一次一致性 mysqldump，文件在 `runtime-data/backups/`。每轮默认最多运行 3600 秒
 （`BACKUP_TIMEOUT`），失败/超时会原子更新 `last-failure` 并保留 `.partial` 供隔离排查；只有 dump、压缩、
 `gzip -t` 和原子改名全部成功才更新 `last-success`。容器 healthcheck 按
-`BACKUP_INTERVAL + BACKUP_TIMEOUT + BACKUP_HEALTH_GRACE` 判断成功时间是否超龄，不能只看进程仍在循环。
+`BACKUP_INTERVAL + BACKUP_TIMEOUT + BACKUP_HEALTH_GRACE` 判断成功时间是否超龄，不能只看进程仍在循环。判断逻辑在随包交付的 `scripts/backup-healthcheck.sh`，可在宿主手动执行排障；`scripts/backup-healthcheck.sh` 只读 `last-success`，不会触发新的备份。
 默认保留 30 天且最多 60 个成功 dump（`BACKUP_RETENTION_DAYS` / `BACKUP_MAX_FILES`），只清理本服务
 命名空间内的普通文件；应按实际库大小和异地副本容量设置预算。日志由 Compose 限制为 3 × 10 MiB。
 同时备份 `.env`（含 VAPID 私钥）至加密的异地存储；短信 dump 和身份 token_hash 仍属敏感数据。
