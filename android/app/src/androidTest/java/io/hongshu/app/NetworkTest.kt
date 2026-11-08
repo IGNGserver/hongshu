@@ -262,6 +262,10 @@ class NetworkTest {
                         .put("receiver", "+1234567890").put("sender", "10086").put("body", "synthetic")
                         .put("timestamp", 1L)), 1)
                     Hub { _, _ -> 200 to JSONObject().put("device", JSONObject()) }.use { hub ->
+                        // Switching from HTTPS to this plain-HTTP hub needs the same explicit
+                        // authorisation a user gives; otherwise the call is refused before
+                        // the malformed response is ever parsed.
+                        config.rememberCleartextOrigin(hub.url)
                         assertThrows(Exception::class.java) { runBlocking { login(hub.url, "synthetic password", "new phone") } }
                     }
                     assertEquals("https://old.example", config.url)
@@ -275,6 +279,7 @@ class NetworkTest {
                     Hub { _, _ -> 200 to JSONObject().put("token", "b".repeat(64)).put("device",
                         JSONObject().put("id", "new-device").put("name", "new phone")
                             .put("created_at", 10L).put("notify", false)) }.use { hub ->
+                        config.rememberCleartextOrigin(hub.url)
                         runBlocking { login(hub.url, "synthetic password", "new phone") }
                         assertEquals(hub.url, Config(context).url)
                     }

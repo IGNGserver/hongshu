@@ -1,6 +1,6 @@
 module github.com/IGNGserver/hongshu/server
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
@@ -8,7 +8,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/redis/go-redis/v9 v9.7.3
-	golang.org/x/crypto v0.31.0
+	golang.org/x/crypto v0.55.0
 )
 
 require (
@@ -16,7 +16,7 @@ require (
 	github.com/alicebob/gopher-json v0.0.0-20200520072559-a9ecdc9d1d3a // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
