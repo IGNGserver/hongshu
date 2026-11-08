@@ -67,5 +67,14 @@ for workflow in (root / '.github/workflows').glob('*.yml'):
         raise SystemExit(f'unlocked Playwright installation in {workflow}')
 PY
 
+# Keep helper scripts syntactically valid even though most need external services to run.
+python3 - <<'PYCOMPILE'
+import pathlib, sys
+for path in sorted(pathlib.Path('scripts').glob('*.py')):
+    source = path.read_text()
+    compile(source, str(path), 'exec')
+print('scripts compile')
+PYCOMPILE
+
 echo "repository verification passed: version $version"
 python3 scripts/test-operations.py

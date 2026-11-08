@@ -1171,3 +1171,35 @@ Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADL
 | `test_archive_manifest_matches_documented_deployment_files` | compose/external/external-backup/.env.example/VERSION 均存在，且 DEPLOYMENT.md 引用了独立备份单元与 `scripts/backup-healthcheck.sh` |
 
 `scripts/test-operations.py` 由 18 项增至 21 项，全部通过（6.6s）。仍未执行镜像/最终归档的 Compose 启动与升级演练。
+
+## N/N-1 版本偏斜探针（O12）
+
+`scripts/protocol-compat.py` 用真实二进制和真实 MySQL 跑同一组请求：上一版发布（`v0.2.0-alpha.22`，
+commit `6ac6f1f`）与当前构建各占一个临时库与端口。
+
+```
+python3 scripts/protocol-compat.py \
+  --old hongshu-alpha22 --new hongshu-new \
+  --old-src <alpha.22 checkout> --new-src <current checkout> \
+  --mysql-bin <mysql client>
+```
+
+| 契约 | 旧 hub（alpha.22） | 当前 hub | 结论 |
+| --- | --- | --- | --- |
+| login / me / PATCH devices / PUT sims / 上传 / sync / offset 会话 / 两种标读 / read-state / healthz | 200，必备字段齐全 | 200，必备字段齐全 | 旧客户端请求形状在新 hub 上全部仍可用 |
+| `next_cursor/more/head/epoch`（keyset） | 不返回 | 返回 | 属新增能力；Web 依 `conversation_cursor` 能力回退 `offset`，Android 不调用该接口 |
+| `offset` 与 `cursor` 同时出现 | 接受 | 400 `invalid_page` | 新客户端不会同时发送；旧 hub 行为被记录而非当成缺陷 |
+| `/api/ops` | 404 | 200（需认证） | 新增运维面，客户端不得依赖 |
+
+实测输出：
+
+```
+note: alpha N-1 predates keyset paging (missing ['next_cursor', 'more', 'head', 'epoch']); clients must fall back to offset
+note: alpha N-1 accepts offset together with cursor; new clients never send both
+note: /healthz adds ['database', 'redis'] over the previous release
+note: /api/ops is additive; the previous release does not serve it
+protocol compatibility probe passed: legacy request shapes and required fields hold on both hubs
+```
+
+`verify-repository.sh` 新增 `compile()` 检查，保证 `scripts/*.py` 语法不会在无人运行时腐坏。仍未覆盖：旧 APK × 新 hub
+的设备级联调（无真机）、真实 Push 与外部 AI。
