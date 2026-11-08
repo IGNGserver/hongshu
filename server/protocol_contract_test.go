@@ -170,16 +170,29 @@ func TestSharedErrorCodeContractMatchesHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Runtime-assembled AI codes are documented as patterns; keep both sides in sync.
-	source, err := os.ReadFile("analysis.go")
+	// Scan the whole package rather than one file so moving code cannot silently
+	// disable this check.
+	var source []byte
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, file := range files {
+		if len(file) > 8 && file[len(file)-8:] == "_test.go" {
+			continue
+		}
+		body, readErr := os.ReadFile(file)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		source = append(source, body...)
 	}
 	if len(contract.Dynamic.Patterns) == 0 {
 		t.Fatal("contract must document the runtime-assembled AI codes")
 	}
 	for _, pattern := range []string{`"ai_http_%d"`, `"ai_http_%d_unknown"`} {
 		if !bytes.Contains(source, []byte(pattern)) {
-			t.Fatalf("analysis.go no longer assembles %s; update the contract", pattern)
+			t.Fatalf("the hub no longer assembles %s; update the contract", pattern)
 		}
 	}
 }

@@ -114,7 +114,7 @@
 |---|---|---|---|
 | R1 | Store 按事务所有权拆分 | 未实施 | 需先稳定 A2/A3/A4 语义再搬迁；属独立、无行为变化的大改动，本轮不做 |
 | R2 | Web 会话状态机拆模块 | 未实施 | 同上；需统一 request context 后进行 |
-| R3 | AI 按边界拆分 provider/policy/queue/lease | 未实施 | S2/S8 的错误分类与调度返回类型已先行完成，为拆分铺路 |
+| R3 | AI 按边界拆分 provider/policy/queue/lease | 完成 | `analysis.go` 1522 行拆为四个同包文件（纯搬迁，无行为改动）：`analysis.go` 517 行（类型、共享 SQL、HTTP 处理器）、`analysis_provider.go` 578 行（密钥封存、endpoint 白名单、SSRF 安全客户端缓存、脱敏、请求/响应解析与错误分类）、`analysis_queue.go` 288 行（revision、入队、候选、租约与 durable claim）、`analysis_worker.go` 177 行（调度循环、结果落库重试、历史回填）。每个文件头部写明边界与相邻职责。顺带修掉一处测试缺陷：错误码合同测试原先把 `analysis.go` 文件名写死，搬迁后会误报；已改为扫描整个包 |
 | R4 | Compose 页面与同步流程降耦合 | 未实施 | 需 ViewModel/state holder 抽取与设备回归 |
 | R5 | 统一跨端请求/错误语义 | 部分 | 已完成：共享错误码合同 + 两个上传 surface 的 ACK 词表由三端强制校验（见 O12）；各端重试策略已按错误类别区分（Go 用 Retry-After 与永久 4xx 分类，Android 用持久化退避，Web 用 cursor_reset 恢复与 401 退出）。未做：把 409/epoch reset、分析 revision 的重试策略也纳入同一份机器可校验的 fixture |
 | R6 | 性能先测量再派生化 | 完成 | 新增 `server/bench_test.go`（真实 MySQL，10 万条短信/200 会话/2 万 Push 积压）：历史页 112.9ms→0.58ms、补拉页 114.8ms→1.29ms，根因是优化器运行期改选 hash join 全表扫描（plain `EXPLAIN` 显示的是好计划，`EXPLAIN ANALYZE` 才暴露），改为先按索引物化一页再 join；会话摘要 467µs、未读冷 49ms/热 40µs、Push 领取 30ms、上传批次 9.8ms 均记录在 `docs/LOADING_PERFORMANCE.md`。基于测量结论未引入派生计数表：未读已有缓存+singleflight，仅变更后首次付 49ms。未做：Web/Android 列表在真实数据下的渲染基准（需要设备与真实数据） |
