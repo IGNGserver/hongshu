@@ -1203,3 +1203,47 @@ protocol compatibility probe passed: legacy request shapes and required fields h
 
 `verify-repository.sh` 新增 `compile()` 检查，保证 `scripts/*.py` 语法不会在无人运行时腐坏。仍未覆盖：旧 APK × 新 hub
 的设备级联调（无真机）、真实 Push 与外部 AI。
+
+## 服务端查询基准与由此得到的优化（R6）
+
+`server/bench_test.go` 用真实 MySQL 8.4.5 与 10 万条短信 / 200 会话 / 2 万 Push 积压的夹具测量
+（`-benchtime 20x`，本机 i9-14900HX，空载，单机参考值）：
+
+```
+BenchmarkSnapshotUnreadCold-8        49043448 ns/op   100000 messages   (49.0 ms)
+BenchmarkSnapshotUnreadCached-8         40403 ns/op                     (40.4 µs)
+BenchmarkConversationPage-8            417705 ns/op                     (417.7 µs)
+BenchmarkConversationPageFiltered-8 144235037 ns/op                     (144.2 ms)
+BenchmarkHistoryPage-8              112936253 ns/op                     (112.9 ms)
+BenchmarkSyncPage-8                 114794030 ns/op                     (114.8 ms)
+BenchmarkClaimPushJobs-8             30437655 ns/op   20000 queued_jobs  (30.4 ms)
+BenchmarkUploadBatch-8                9786263 ns/op                     (9.8 ms)
+```
+
+历史页与补拉页的 113/115ms 不是索引缺失：plain `EXPLAIN` 显示 `key: timeline`、`rows: 50`，但
+`EXPLAIN ANALYZE` 显示运行期实际选成了 `Table scan on m` + `Sort`（10 万行，119ms）。原因是
+`LEFT JOIN contacts` / `LEFT JOIN message_analysis` 让优化器改用 hash join，ORDER BY 无法再借用索引。
+
+修法：无搜索/分组过滤时，先用索引物化一页，再对这几行做 join：
+
+```sql
+SELECT <messageColumns>
+FROM (SELECT <基础列> FROM messages m WHERE … ORDER BY m.timestamp DESC, m.id DESC LIMIT ?) m
+LEFT JOIN contacts c ON c.phone=m.sender
+LEFT JOIN message_analysis x ON x.message_id=m.id
+JOIN ai_settings ai ON ai.id=1
+ORDER BY m.timestamp DESC, m.id DESC
+```
+
+带 `q` 或 `group` 的过滤仍走原 join-then-filter 路径（这些查询本来就要全表过滤，不能先截断）。
+
+复测：
+
+```
+BenchmarkHistoryPage-8   580682 ns/op    (0.58 ms，约 195×)
+BenchmarkSyncPage-8     1286491 ns/op    (1.29 ms，约 89×)
+BenchmarkConversationPage-8  467291 ns/op (未见回退)
+```
+
+真实 MySQL + `-race` 全量（含全部历史页/同步页/搜索/分页断言）通过（65.6s）。基准夹具不进入常规
+`go test`（只在 `-bench` 时运行），无 `TEST_MYSQL_DSN` 时跳过。
