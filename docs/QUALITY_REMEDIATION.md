@@ -92,7 +92,7 @@
 | O1 | 外部 MySQL 使用镜像内迁移或随包交付迁移 | 完成 | `docs/DATABASE.md` 改为容器内 `/app/migrations` 执行，不再绑定源码树 |
 | O2 | 备份启动仅依赖 DB，hub 停止仍可备份 | 完成 | `compose.yml` backup 仅 `depends_on db: service_healthy`；`scripts/test-operations.py` |
 | O3 | 备份超时、last-success、超龄健康和保留策略 | 完成 | `backup.sh` 单轮 deadline、`gzip -t`、原子重命名、随机名保留；`backup-healthcheck.sh` 以 interval+timeout+grace 判超龄 |
-| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 部分 | 已用真实 MySQL 8.4.5 完成迁移至 015、`scripts/backup.sh` 一致性备份（gzip 校验、原子 last-success、健康检查通过）与恢复到全新库（18 表、15 条迁移全 `dirty=0`）。另新增 3 项运维用例：release.yml 归档中每个 `cp` 源必须存在（脚本改名会在 PR 阶段失败而非发布时）、当前 VERSION 必须有非空 release notes、归档清单与 DEPLOYMENT.md 引用的文件一致。仍缺容器镜像/最终归档的 Compose 启动与升级演练（本机无 Docker daemon） |
+| O4 | 最终归档/镜像 Compose、迁移、备份、恢复与升级 smoke | 部分（环境受限） | 已用真实 MySQL 8.4.5 完成迁移至 015、一致性备份（gzip 校验、原子 last-success、健康检查）与恢复到全新库（18 表、15 条迁移 `dirty=0`）；另有 3 项运维用例把归档步骤的失败提前到 PR 阶段。镜像构建与 Compose 启动/升级演练未执行：本机无 Docker daemon |
 | O5 | main/PR/Release 检查对称且不可绕过 | 完成 | CI 去掉 push 跳过、扩大 paths；`release.yml` 要求 tag 提交在 `main` 上且 7 个 required check 为 success |
 | O6 | 基础镜像/Actions/部署 digest 与依赖/secret 扫描 | 完成 | Dockerfile 三段按 digest；MySQL 多架构 digest；全部 Action 固定 40 位 SHA（本次修正 `gradle/actions` 与 `update-feed.yml`）；Gitleaks/依赖审查/Trivy fail-closed |
 | O7 | 初始化 0600 临时文件、原子发布与可恢复失败 | 完成 | `init-deployment.sh` 同盘 `mktemp`+`umask 077`，pull/VAPID/配置校验通过后 `mv -n` 发布 |
@@ -106,16 +106,16 @@
 | O15 | 下载入口使用版本匹配文档 | 完成 | 部署链接指向 `blob/v0.2.0-alpha.23/docs/DEPLOYMENT.md`；`check-site.py` 同时拒绝 `blob/main` 漂移链接 |
 | O16 | 官网澄清收发同步、通话查看和不代发 | 完成 | 首页明确收发短信与通话记录为查看、无彩信/RCS、不代发短信或拨号 |
 | O17 | 运维测试消除隐式宿主 jq 依赖 | 完成 | `test-operations.py` 用内嵌 Python 模拟 `gh`/`docker`/`jq`，18 项在无宿主 jq 环境通过 |
-| O18 | 依赖维护、当前验证矩阵与历史归档 | 部分 | 验证矩阵已写入本文件与 `docs/VALIDATION.md`；依赖自动升级与历史归档仍有待梳理 |
+| O18 | 依赖维护、当前验证矩阵与历史归档 | 部分 | 已完成：本文件给出逐项状态与证据，`docs/VALIDATION.md` 保留完整历史（含失败与修复过程，不回溯改写），验证矩阵覆盖 Go/Web/Android/运维/官网/CI 定义六类；`verify-repository.sh` 强制 Action 40 位 SHA、基础镜像 digest、Playwright manifest/lock 一致与 `scripts/*.py` 可编译。未做：自动依赖升级（Dependabot/Renovate）属于仓库策略选择，需要你决定是否启用及范围，我不擅自开启外部 bot；历史归档的物理拆分也未做，`VALIDATION.md` 仍为单文件 |
 
 ### 结构性重构（R1–R7）
 
 | 编号 | 目标 | 状态 | 说明 |
 |---|---|---|---|
-| R1 | Store 按事务所有权拆分 | 部分 | 拆分前必需的部分已完成：`docs/ANDROID_STORE_TRANSACTIONS.md` 记录 20 张表的领域归属、7 组必须同事务的写入对与 4 条锁顺序规则；`StoreTableOwnershipTest` 用真实打开数据库后读 `sqlite_master` 的方式校验清单——新增表未登记、登记了不存在的表、或某领域没有任何表都会失败。该测试当场抓到 `calls`/`call_outbox`/`call_ledger` 三张定义在 `CallLog.kt`/`CallView.kt`、容易被漏掉的表。仓储拆分本身未实施：验收依赖真机回归，本机无设备 |
-| R2 | Web 会话状态机拆模块 | 未实施 | 同上；需统一 request context 后进行 |
+| R1 | Store 按事务所有权拆分 | 未实施（环境受限） | 前置产物已完成：`docs/ANDROID_STORE_TRANSACTIONS.md` 记录 20 张表归属、7 组必须同事务的写入对、4 条锁顺序规则；`StoreTableOwnershipTest` 用真实打开数据库读 `sqlite_master` 的方式校验清单，首次运行即抓到定义在 `CallLog.kt`/`CallView.kt` 的 `calls`/`call_outbox`/`call_ledger` 三张易漏表。拆分本身未做：验收依赖真机（锁屏/Doze 下的采集与上传），本机无设备 |
+| R2 | Web 会话状态机拆模块 | 未实施（环境受限） | 需要真实浏览器双标签交互与旧 SW 升级回归，本机无浏览器自动化运行环境（Playwright 已锁版本但未安装浏览器）；未用单测通过冒充该回归 |
 | R3 | AI 按边界拆分 provider/policy/queue/lease | 完成 | `analysis.go` 1522 行拆为四个同包文件（纯搬迁，无行为改动）：`analysis.go` 517 行（类型、共享 SQL、HTTP 处理器）、`analysis_provider.go` 578 行（密钥封存、endpoint 白名单、SSRF 安全客户端缓存、脱敏、请求/响应解析与错误分类）、`analysis_queue.go` 288 行（revision、入队、候选、租约与 durable claim）、`analysis_worker.go` 177 行（调度循环、结果落库重试、历史回填）。每个文件头部写明边界与相邻职责。顺带修掉一处测试缺陷：错误码合同测试原先把 `analysis.go` 文件名写死，搬迁后会误报；已改为扫描整个包 |
-| R4 | Compose 页面与同步流程降耦合 | 未实施 | 需 ViewModel/state holder 抽取与设备回归 |
+| R4 | Compose 页面与同步流程降耦合 | 未实施（环境受限） | 需要设备上的界面与后台同步回归；本机仅能编译与跑 JVM 单测，不足以确认搬迁未破坏交互 |
 | R5 | 统一跨端请求/错误语义 | 完成 | 共享合同新增 `retry_policy`，把 49 个错误码划分到 retry / reauthorize / resync / permanent 四类并**要求每个码恰好归一类**：Go 测试在新增码未归类、重复归类或归类了不存在的码时直接失败，避免客户端各自猜测“要不要重试”。分类驱动了一处真实修复：`cursor_reset`、`read_state_changed`、`analysis_cursor_changed`、`invalid_cursor`、`invalid_revision` 此前在 Android 与 Web 上都会退化成裸错误码，现按 resync 语义补成可操作文案，并由两端测试断言 resync+reauthorize 全类不得出现通用兜底。Go 侧重试策略本身为既有实现（Retry-After、永久 4xx、未知 400 熔断、durable lease） |
 | R6 | 性能先测量再派生化 | 完成 | 新增 `server/bench_test.go`（真实 MySQL，10 万条短信/200 会话/2 万 Push 积压）：历史页 112.9ms→0.58ms、补拉页 114.8ms→1.29ms，根因是优化器运行期改选 hash join 全表扫描（plain `EXPLAIN` 显示的是好计划，`EXPLAIN ANALYZE` 才暴露），改为先按索引物化一页再 join；会话摘要 467µs、未读冷 49ms/热 40µs、Push 领取 30ms、上传批次 9.8ms 均记录在 `docs/LOADING_PERFORMANCE.md`。基于测量结论未引入派生计数表：未读已有缓存+singleflight，仅变更后首次付 49ms。未做：Web/Android 列表在真实数据下的渲染基准（需要设备与真实数据） |
 | R7 | 运行可观测性统一 | 完成 | 新增认证端点 `GET /api/ops`（`server/ops.go`）：扁平输出 version/uptime、DB 连接池与延迟、`schema.version/dirty`、Push 计数与 `last_loop/last_success/backlog`、AI `finish_failures/last_success/last_loop/queued`、`workers.running/exited`、`realtime.subscribers`、`redis.enabled`；无法测量的 backlog/queued 返回 `null` 而非 0。`TestOpsNeverLeaksContentCredentialsOrEndpoints` 断言载荷不含短信正文、发件人、token、Push endpoint、VAPID 密钥与 origin，并禁止 body/sender/token/endpoint/secret/password 字段名出现；`TestOpsRequiresAuthentication` 断言未认证与伪造 token 均为 401。备份 last-success 仍由 `backup-healthcheck.sh` 在备份单元内判定（中枢容器不挂载备份卷）。未提供 Prometheus exposition，属于可选扩展 |
@@ -148,3 +148,14 @@
 2. `.github/workflows/ci.yml` 的 `gradle/actions/wrapper-validation` 40 位值在上游不是解引用后的 commit（`git/commits` 404），流水线会在该步骤失败；已改为 `v4.4.4` 的 commit `748248d`。
 3. `androidTest/NetworkTest.kt` 在 `saveConnection`/`login` 改为 suspend 后未同步，导致 `:app:compileDebugAndroidTestKotlin` 失败；已按调用点包裹 `runBlocking`，未改动生产语义。
 4. `RealtimeResourceTest`/`NetworkCancellationTest` 首版在 `runBlocking` 单线程上阻塞等待，协程无法启动；改为 IO 调度执行真实调用后通过（属测试夹具缺陷，非生产缺陷）。
+
+## 环境受限汇总
+
+以下工作已拆到"没有对应环境也能完成"的最小单位；剩余部分需要真实环境，本轮不执行，也不用替代物宣称完成。
+
+| 缺失环境 | 被阻塞的工作 | 已完成的替代性前置工作 | 解锁方式 |
+| --- | --- | --- | --- |
+| 真机（Android） | R1 仓储拆分、R4 Compose 降耦合、锁屏/Doze/双卡/系统扣留短信、真实通知吸收与 OTP 计时 | 事务所有权清单 + `StoreTableOwnershipTest`、359 项 JVM 单测、lint、Debug APK 与设备测试 APK | 连接一台可授权设备并跑 instrumentation + 手工锁屏验收 |
+| 真实浏览器 | R2 Web 拆模块、双标签登录/退出、旧 SW 升级、滚动焦点、真实通知点击 | 读源码级回归（123 项 Node 测试）、DOM-free 逻辑测试、生产构建校验 | `npx playwright install` 后运行 `scripts/browser-smoke.cjs` 与本地联系人 smoke |
+| Docker daemon | O4 镜像构建、Compose 启动/迁移/备份/恢复/升级演练、多架构镜像 | 真实 MySQL 上的迁移+备份+恢复演练、21 项运维用例、归档源文件存在性检查 | 具备 Docker 的宿主机执行 `docker compose` 全流程 |
+| 真实 Push 服务 / 外部 AI 端点 | 端到端投递与真实模型分类 | 合成传输下的豁免/重试/永久 4xx/熔断用例 | 配置真实 VAPID 与 AI 端点并观察 `/api/ops` |
