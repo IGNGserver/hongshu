@@ -57,20 +57,24 @@ class BackgroundTest {
                                 clients.remove(client)
                                 return@use
                             }
-                            fun line(): String {
+                            // A client may disappear before finishing a request line or a
+                            // header. Returning null lets the fixture drop that connection
+                            // instead of throwing on a daemon thread, which would crash the
+                            // whole instrumented process.
+                            fun line(): String? {
                                 val bytes = java.io.ByteArrayOutputStream()
                                 while (true) {
                                     val b = input.read()
-                                    check(b >= 0)
+                                    if (b < 0) return null
                                     if (b == 10) return bytes.toString("UTF-8")
                                     if (b != 13) bytes.write(b)
                                 }
                             }
                             try {
-                                val path = line().split(" ")[1]
+                                val path = line()?.split(" ")?.getOrNull(1) ?: return@use
                                 val headers = mutableMapOf<String, String>()
                                 while (true) {
-                                    val header = line()
+                                    val header = line() ?: return@use
                                     if (header.isEmpty()) break
                                     headers[header.substringBefore(':').lowercase()] =
                                         header.substringAfter(':').trim()
