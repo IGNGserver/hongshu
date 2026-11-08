@@ -100,7 +100,7 @@
 | O9 | stable latest 只允许 SemVer 前进 | 完成 | `compare-semver.sh` 仅当严格更新返回 0；`publish-release.sh` 据此推进 `latest` |
 | O10 | Playwright 统一 lockfile、npm ci 和 browser revision | 完成 | `web/package.json` 精确 `1.62.1` 与 lock 一致；CI/Release 使用 lockfile 安装；`verify-repository.sh` 拒绝临时 `npm install playwright` |
 | O11 | 嵌套 404 绝对资源路径与部署 URL 检查 | 完成 | `website/site/404.html` 使用 `/assets/...`；`check-site.py` 拒绝相对本地目标 |
-| O12 | 共享版本化协议 JSON 和 N/N-1 合同测试 | 未实施 | 三端仍各自持有实现与向量；未建立共享版本化 fixture，也未构建旧 APK×新 hub、新 APK×旧 hub 的真实版本偏斜矩阵 |
+| O12 | 共享版本化协议 JSON 和 N/N-1 合同测试 | 部分 | 已建立单一共享合同 `protocol/error-codes.v1.json`（版本 1）：Go 测试用 AST 从源码提取 `fail()` 与 AI 失败路径实际可返回的 49 个码并要求与 fixture 完全一致，另用正则校验上传/通话 ACK 的逐项错误码；Web 测试要求其错误文案表不得包含中枢无法返回的码；Android 测试要求已处理的码都在合同内且仍保留专属文案，并锁定两个上传 surface 的 ACK 词表。仍缺：旧 APK×新 hub、新 APK×旧 hub 的真实版本偏斜构建与联调矩阵 |
 | O13 | 外部 MySQL 独立备份单元与恢复说明 | 完成 | `compose.external-backup.yml` 独立单元；`docs/DEPLOYMENT.md` 记录契约与恢复步骤 |
 | O14 | 官网就近披露可选 AI 正文外发 | 完成 | `website/site/index.html` 明示默认关闭与配置后正文发送给所选服务商 |
 | O15 | 下载入口使用版本匹配文档 | 完成 | 部署链接指向 `blob/v0.2.0-alpha.23/docs/DEPLOYMENT.md`；`check-site.py` 同时拒绝 `blob/main` 漂移链接 |

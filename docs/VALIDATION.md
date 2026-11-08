@@ -1090,11 +1090,11 @@ PR [#85](https://github.com/IGNGserver/hongshu/pull/85) 的
 | --- | --- | --- |
 | Go 格式 | `test -z "$(gofmt -l *.go cmd/vapid/*.go)"` | 通过 |
 | Go 测试（无外部库） | `go test -race -count=1 ./...`（Go 1.24.10 linux/amd64） | 通过，8.18s；真实 MySQL 用例按设计跳过 |
-| Go 测试（真实 MySQL 8.4.5） | 同上，另设 `TEST_MYSQL_DSN`/`MYSQL_BIN`/`MYSQLDUMP_BIN` | 通过，68.1s；含迁移、并发 Push/read、游标、索引执行计划与逻辑备份/恢复 |
+| Go 测试（真实 MySQL 8.4.5） | 同上，另设 `TEST_MYSQL_DSN`/`MYSQL_BIN`/`MYSQLDUMP_BIN` | 通过，96.8s；含迁移、并发 Push/read、游标、索引执行计划、逻辑备份/恢复与跨端错误码合同 |
 | Go 静态检查/构建 | `go vet ./...`、`go build -trimpath -o …/hongshu .` | 通过 |
-| Web 单测 | `npm test` | 120 项通过，0 失败，0 跳过，约 4.0s |
+| Web 单测 | `npm test` | 122 项通过，0 失败，0 跳过，约 4.1s |
 | Web 语法/构建 | `npm run check && npm run build` | 通过；生产资源校验并复制 |
-| Android 单测 | `:app:testDebugUnitTest` | 351 项，0 失败，20 项既有截图用例按条件跳过 |
+| Android 单测 | `:app:testDebugUnitTest` | 355 项，0 失败，20 项既有截图用例按条件跳过 |
 | Android lint | `:app:lintDebug` | 通过 |
 | Android 构建 | `:app:assembleDebug`、`:app:assembleDebugAndroidTest` | 通过（Debug APK 与设备测试 APK） |
 | 运维与仓库合同 | `bash scripts/verify-repository.sh` | 通过；`test-operations.py` 18 项 OK |
@@ -1130,3 +1130,19 @@ Android 环境：`LANG/LC_ALL=C.UTF-8`、`ANDROID_HOME=…/android-sdk`、`GRADL
 - **浏览器交互**：未在真实浏览器完成双标签登录/退出、旧 Service Worker 升级、滚动焦点保持与 OTP 计时验收。
 - **跨端版本偏斜**：未构建旧 APK×新 hub、新 APK×旧 hub 的真实矩阵（O12）。
 - **结构性重构**：R1–R7 按审查报告自身的建议保留为独立后续任务，未在本轮以机械拆文件方式处理。
+
+## 共享协议合同（O12 部分）
+
+`protocol/error-codes.v1.json` 是三端唯一的错误码真源，版本 1。三方校验：
+
+- Go：`TestSharedErrorCodeContractMatchesHub` 用 `go/parser` 提取所有 `fail(...)` 字面量码和
+  `aiHTTPFailure`/`aiErrorDescriptor` 的返回码，要求与 fixture **完全一致**；另用正则比对
+  `upload_batch.go`/`calls_batch.go` 的逐项 ACK 错误码（`invalid_message`、`invalid_call`、
+  `sim_not_confirmed`），并校验运行时拼装的 `ai_http_%d[_unknown]` 仍存在。
+- Web：`web/test/protocol-contract.test.js` 要求 `app.js` 错误文案表的每个键都是中枢可返回的码，
+  且 `cursor_reset` 等分支的文案与恢复逻辑仍在。
+- Android：`ProtocolContractTest` 要求合同版本、码唯一、每个码在多种 status 下都产生非空且无占位符的
+  文案；已处理的码必须仍在合同内并保留专属文案（不得退化成 `中枢返回错误`），并锁定两个上传 surface
+  的 ACK 词表。
+
+该合同只能防止词汇漂移，**不能**替代真实版本偏斜联调：仍未构建旧 APK×新 hub、新 APK×旧 hub 矩阵。

@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "description": "Hub error codes shared by the Go server, Web/PWA and Android clients. The server test derives the emitted set from source and requires an exact match, so a renamed or removed code fails the build instead of silently degrading every client to a generic message.",
+  "codes": [
+    "admin_required",
+    "ai_budget_or_rate_limit",
+    "ai_consent_or_config_required",
+    "ai_disabled",
+    "ai_message_rejected",
+    "ai_secret_required",
+    "analysis_cursor_changed",
+    "authentication_busy",
+    "cursor_reset",
+    "database_unavailable",
+    "epoch_changed",
+    "forbidden",
+    "invalid_ai_endpoint",
+    "invalid_ai_protocol",
+    "invalid_ai_settings",
+    "invalid_batch",
+    "invalid_call",
+    "invalid_category",
+    "invalid_contact",
+    "invalid_cursor",
+    "invalid_device",
+    "invalid_group",
+    "invalid_json",
+    "invalid_message_id",
+    "invalid_name",
+    "invalid_page",
+    "invalid_password",
+    "invalid_push_endpoint",
+    "invalid_push_key",
+    "invalid_revision",
+    "invalid_sender",
+    "invalid_sim",
+    "invalid_title",
+    "message_not_found",
+    "not_found",
+    "not_retryable",
+    "origin_denied",
+    "origin_required",
+    "push_delivery_failed",
+    "push_disabled",
+    "push_not_configured",
+    "push_not_subscribed",
+    "push_subscription_expired",
+    "rate_limited",
+    "read_state_changed",
+    "response_deadline_unavailable",
+    "subscription_in_use",
+    "unauthorized",
+    "upload_disabled"
+  ],
+  "dynamic_codes": {
+    "note": "AI provider HTTP status codes are assembled at runtime, so they are matched by pattern rather than listed.",
+    "patterns": [
+      "ai_http_[0-9]{3}",
+      "ai_http_[0-9]{3}_unknown"
+    ]
+  },
+  "ack_errors": {
+    "note": "Per-item upload results are returned inside a 200 acks[] entry, not as a top-level error body, so clients parse them separately.",
+    "messages": [
+      "invalid_message",
+      "sim_not_confirmed"
+    ],
+    "calls": [
+      "invalid_call",
+      "sim_not_confirmed"
+    ]
+  }
+}
