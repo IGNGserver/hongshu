@@ -112,7 +112,7 @@
 
 | 编号 | 目标 | 状态 | 说明 |
 |---|---|---|---|
-| R1 | Store 按事务所有权拆分 | 未实施 | 需先稳定 A2/A3/A4 语义再搬迁；属独立、无行为变化的大改动，本轮不做 |
+| R1 | Store 按事务所有权拆分 | 部分 | 拆分前必需的部分已完成：`docs/ANDROID_STORE_TRANSACTIONS.md` 记录 20 张表的领域归属、7 组必须同事务的写入对与 4 条锁顺序规则；`StoreTableOwnershipTest` 用真实打开数据库后读 `sqlite_master` 的方式校验清单——新增表未登记、登记了不存在的表、或某领域没有任何表都会失败。该测试当场抓到 `calls`/`call_outbox`/`call_ledger` 三张定义在 `CallLog.kt`/`CallView.kt`、容易被漏掉的表。仓储拆分本身未实施：验收依赖真机回归，本机无设备 |
 | R2 | Web 会话状态机拆模块 | 未实施 | 同上；需统一 request context 后进行 |
 | R3 | AI 按边界拆分 provider/policy/queue/lease | 完成 | `analysis.go` 1522 行拆为四个同包文件（纯搬迁，无行为改动）：`analysis.go` 517 行（类型、共享 SQL、HTTP 处理器）、`analysis_provider.go` 578 行（密钥封存、endpoint 白名单、SSRF 安全客户端缓存、脱敏、请求/响应解析与错误分类）、`analysis_queue.go` 288 行（revision、入队、候选、租约与 durable claim）、`analysis_worker.go` 177 行（调度循环、结果落库重试、历史回填）。每个文件头部写明边界与相邻职责。顺带修掉一处测试缺陷：错误码合同测试原先把 `analysis.go` 文件名写死，搬迁后会误报；已改为扫描整个包 |
 | R4 | Compose 页面与同步流程降耦合 | 未实施 | 需 ViewModel/state holder 抽取与设备回归 |

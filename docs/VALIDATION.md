@@ -1266,3 +1266,20 @@ BenchmarkConversationPage-8  467291 ns/op (未见回退)
 
 验证：真实 MySQL + `-race` 全量通过（75.2s）；Web 123 项通过（新增 1 项），`check`/`build` 通过；
 Android 356 项单测 0 失败（20 项截图按条件跳过）+ lint 通过。
+
+## Store 事务所有权清单（R1 前置）
+
+新增 `docs/ANDROID_STORE_TRANSACTIONS.md` 与 `StoreTableOwnershipTest`。测试真实打开 Store，
+从 `sqlite_master` 读出实际表集合，再与清单比对：
+
+| 断言 | 作用 |
+| --- | --- |
+| 每张表都有且只有一个所属领域 | 新增表却没决定归属会失败 |
+| 清单里没有已不存在的表 | 删除表后忘记更新会失败 |
+| 每个领域至少有一张表 | 防止拆出一个空仓储 |
+| `meta` 标记为共享且列出使用它的领域 | 防止拆分后把共享键值表交给单一仓储独占 |
+
+首次运行时测试立刻失败，报出 `calls`、`call_outbox`、`call_ledger` 三张未登记的表——它们定义在
+`CallLog.kt` 与 `CallView.kt` 而非 `Store.kt`，正是拆分时最容易漏掉的一类。补登通话领域后通过。
+
+这是 R1 的前置产物，不是 R1 本身：仓储拆分仍需真机回归验收。
