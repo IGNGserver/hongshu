@@ -1,96 +1,39 @@
-# 鸿枢 · Hongshu
+# 鸿枢 (Hongshu)
 
-面向多部 Android 手机用户的自部署短信互通平台：短信可靠上传到自己的 MySQL 中枢，长期保存，
-在所有授权 Android 和 Web/PWA 设备上查看。Android 原生客户端无需 Firebase/FCM；
-PWA 后台通知使用浏览器官方 Push 通道（iOS APNs、Android Chrome FCM）。
+<div align="center">
+  <p>跨设备、安全自部署的短信管理平台</p>
+  <p>
+    <a href="https://hongshu.igng.net/">官网</a> •
+    <a href="docs/DEPLOYMENT.md">快速上手</a> •
+    <a href="CONTRIBUTING.md">贡献</a>
+  </p>
+</div>
 
-当前预发布版本见根目录 `VERSION`。实际测试结果和未完成验收见 [验证记录](docs/VALIDATION.md)，不要将构建通过等同于真机兼容性认证。
+## 这不仅是短信备份
+手头的手机一多，散落在各个设备上的短信管起来就很麻烦。鸿枢能把所有手机收到的短信同步到你自己的中心存储，方便你在电脑、平板或其他手机上随时查看、搜索和整理。
 
-> 官网与下载入口：<https://hongshu.igng.net/>
+## 为什么选择鸿枢？
+*   **数据自己掌控**：所有短信都存在你自己的服务器上，隐私完全由你把控。
+*   **多设备无缝同步**：不管是 Android 原生客户端还是网页版，连上同一个中心端就能实时查阅。
+*   **简洁易用**：除了备份，还支持智能提取验证码、灵活筛选设备和全局快速搜索。
+*   **轻量绿色**：Android 端不依赖 Google 服务，耗电低，优先保障隐私。
 
-## 实现范围
+## 我该如何开始？
+鸿枢专为自部署用户设计。如果你有一点技术基础，按下面几步就能快速搭好：
 
-- **Android**：Kotlin、Compose、Material 3 Expressive，会话、对话、搜索、SIM 筛选；
-  原生 SMS 广播、多段合并、双 SIM 映射、持久 outbox、失败重试、历史导入、展示中枢联系人名称。
-  可选使用本机通讯录姓名、照片与本地姓名搜索，联系人数据不上传或跨设备同步。
-  上传和通知独立开关；普通查看设备无需短信权限。
-- **中枢**：Go + MySQL，单一中枢密码（无用户名）、统一密钥认证、独立设备凭据、设备撤销；
-  事务幂等入库、提交确认、提交顺序游标、增量补齐、独立持久 Push 队列。
-- **Web/PWA**：桌面/手机自适应收件箱、分页历史、搜索、设备/SIM 筛选、设备管理、中枢设置、
-  WebSocket 实时提示、标准 Web Push + VAPID、可安装应用壳；iOS/iPadOS 16.4+ 需添加到主屏幕后才有后台通知，
-  Android Chrome 通知依赖系统权限与 FCM/Google Play 服务；不离线持久保存短信正文。
-  支持 Contact Picker 的安全浏览器可手动选择联系人，仅保存在当前浏览器，支持停用及清除。
-- **运维**：Docker Compose 中枢/数据库/每日一致性备份、审计迁移、HTTPS 反向代理和恢复指南。
+1.  **准备环境**：准备一台运行 Docker 的 Linux 服务器。
+2.  **获取部署脚本**：参考 [快速部署指南](docs/DEPLOYMENT.md)。
+3.  **安装客户端**：下载并安装 Android 应用，或者直接用浏览器访问网页端。
 
-短信不会自动清理；验证码/正文不会出现在默认通知中；来源手机不重复接收自己的消息通知。
-首版只收件/查看，不发送短信，不处理 MMS/RCS，不提供端到端加密。
-Android 系统对验证码、后台运行、强制停止和厂商省电的限制不能绕过。
+---
 
-## 部署
+### 功能特性一览
 
-需要 Docker/Compose 与本地 Linux 数据盘（MySQL 不使用 CIFS）。中枢镜像发布在 GitHub Container Registry（`ghcr.io/igngserver/hongshu`），部署须显式选择已发布固定版本；预发布没有 latest，无需基于 main 或源码本地构建。推荐 HTTPS 域名与反向代理；也可显式发布外部 HTTP 端口，但流量不加密。
+| 特性 | 手机 Android | 网页 PWA | 隐私特性 |
+| :--- | :---: | :---: | :--- |
+| **实时查看** | ✅ | ✅ | 自部署 |
+| **全局搜索** | ✅ | ✅ | 数据不离线 |
+| **验证码提取** | ✅ | ✅ | 无需 FCM |
+| **设备筛选** | ✅ | ✅ | 可选本地通讯录 |
 
-```bash
-HONGSHU_VERSION=0.2.0-alpha.23 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:you@example.com bash scripts/init-deployment.sh
-docker compose up -d
-curl --fail http://127.0.0.1:18473/healthz
-```
-
-完整说明：[部署、备份与恢复](docs/DEPLOYMENT.md)。初始化脚本会安全提示设置中枢密码（允许弱密码、不可为空）；Web 登录无需用户名。Android 与 Web 均直接使用统一中枢密码连接。
-已有共享 MySQL 时可用 `compose.external.yml` 只启动 hub，并设置 `HONGSHU_DATABASE_URL`；连接池、
-迁移账号、TLS、备份和可选 Redis 见[数据库与缓存部署](docs/DATABASE.md)。
-Android 构建/使用：[android/README.md](android/README.md)。GitHub Release 发布经过正式签名（非 debug）的 Android 安装包（`Hongshu-Android-<version>.apk`）和无源码部署文件包；中枢服务使用 GHCR 镜像，不提供独立 Linux 二进制资产。
-
-## 结构与协议
-
-| 目录 | 内容 |
-| --- | --- |
-| `android/` | Kotlin Compose 客户端、单元测试、Gradle wrapper |
-| `web/` | 原生模块 Web/PWA、Service Worker、测试、无第三方运行时依赖 |
-| `server/` | Go HTTP/WS/Push 中枢、MySQL 集成测试、VAPID 生成工具 |
-| `db/migrations/` | checksum/dirty 审计的 MySQL 迁移 |
-| `scripts/` | 仓库校验、部署初始化、一致性备份、图标生成 |
-| `docs/` | 架构、API、安全、兼容性、部署和验证 |
-
-- [架构与故障恢复语义](docs/ARCHITECTURE.md)
-- [API](docs/API.md)
-- [本机联系人与隐私边界](docs/LOCAL_CONTACTS.md)
-- [Android 兼容性调研](docs/ANDROID_COMPATIBILITY.md)
-- [验证记录](docs/VALIDATION.md)
-- [工作区规范](AGENTS.md) / [贡献指南](CONTRIBUTING.md)
-- [版本规则](docs/VERSIONING.md) / [发布边界](docs/RELEASE_POLICY.md)
-
-## 开发与验证
-
-主目录只是 Git 锚点，使用 `wt new 短信同步系统 <task-slug>` 建独立分支/worktree；
-不得直接开发 `main`、不得 `git pull`。提交与推送开发分支不等于获准合并或发布。
-
-设置 `GOCACHE/GOTMPDIR`、`GRADLE_USER_HOME`、`HONGSHU_BUILD_DIR`、`WEB_BUILD_DIR`
-到工作区外的共享缓存。Go 1.24+、Node 22+、JDK 17、Android SDK 35。
-
-```bash
-bash scripts/verify-repository.sh
-git diff --check
-cd server && go test -race ./... && go vet ./...
-# Set TEST_MYSQL_DSN to a disposable local MySQL instance for integration tests.
-# The tests create/drop ONLY their own random hongshu_it_* databases.
-go build -trimpath -o "$HONGSHU_BUILD_DIR/hongshu" .
-cd ../web && npm test && npm run check && npm run build
-cd ../android && ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-```
-
-CI 包含真实隔离 MySQL 服务、Go race/vet/build、Web test/check/build 和 Android test/lint/APK。
-真实 SIM、浏览器后台 Push、公网 HTTP/HTTPS 与备份恢复必须另外做环境验收；HTTP 下敏感数据不加密且 Web Push 不可用。
-
-## 安全与许可
-
-不要提交 `.env`、签名材料、数据库备份、真实短信或凭据；参见 [SECURITY.md](SECURITY.md)。
-源码按 [MIT License](LICENSE) 提供。SmsForwarder/SMSGate 仅作为兼容性研究参考，不包含其复制代码。
-## 可选短信整理
-
-验证码先由规则在入库时同步提取并提供卡片复制，因此收到后立即可见。AI 默认关闭，此时只有全部、验证码和其他短信；
-管理员主动开启后，历史与新增短信（包括验证码）进入持久队列，显示个人、通知、推广、垃圾及待分析。
-AI 以验证码作为独立类别复核分组并提取验证码文本；AI 完成前使用规则结果，失败或关闭时回退规则。
-所有短信仍保留原文，垃圾不自动删除。外部模型会收到正文；默认遮蔽链接、邮箱和非验证码短信的长数字，
-但为提取验证码会保留验证码短信中的数字。启用前请阅读
-[分组设计与隐私边界](docs/MESSAGE_GROUPING.md)和[部署配置](docs/DEPLOYMENT.md)。
+*如需了解详细的技术接口、开发规范和架构分析，请查看 [docs/](docs/) 文档目录。*
