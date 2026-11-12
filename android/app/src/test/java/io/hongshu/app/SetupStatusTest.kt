@@ -76,6 +76,15 @@ class SetupStatusTest {
     }
 
     @Test
+    fun deniedVendorAutostartPointsToBackgroundPage() {
+        val facts = healthy.copy(autoStartDenied = true)
+
+        assertEquals(StatusLevel.Attention to "自启动未允许", backgroundStatus(facts))
+        assertEquals(listOf("系统自启动未允许"), attentionItems(facts).map { it.title })
+        assertTrue(attentionItems(facts).all { it.page == SettingsPage.Background })
+    }
+
+    @Test
     fun keepAliveOffMeansPeriodicSyncOnly() {
         val facts = healthy.copy(keepAlive = false, realtimeRunning = false)
 

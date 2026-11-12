@@ -2,6 +2,9 @@ package io.hongshu.app
 
 internal const val STOP_REALTIME = "stop"
 
+// Sent by onTaskRemoved so the service can tell a task-removal revival from a sticky restart.
+internal const val REVIVE_REALTIME = "revive"
+
 internal enum class RealtimeStart {
     STOP,
     DISABLED,

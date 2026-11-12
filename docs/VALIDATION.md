@@ -1,3 +1,32 @@
+# 2026-11-12 任务移除后的自动恢复（Android）
+
+分支 `agent/keep-alive-revival`，基线 `origin/main` 提交 `29c2469`。删除“在最近任务中隐藏”
+开关，改为从最近任务划掉后由 `RealtimeService.onTaskRemoved` 请求系统恢复；恢复只启动
+前台服务，不创建 Activity，因此恢复后不在最近任务列表。新增电池优化直接请求、厂商自启动
+入口、启动失败有界重试和诊断字段。
+
+本机验证（ubuntu-dev，产物在 `/home/lvziw/.build/hongshu-keep-alive/`）：
+
+- `bash scripts/verify-repository.sh`：通过，21 项。
+- `git diff --check`：通过。
+- Android（Gradle 8.14.3，`ANDROID_HOME=/home/lvziw/Android/Sdk`）：
+  `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin`
+  通过；`BackgroundPolicyTest` 6 项、`SetupStatusTest` 10 项，0 失败；debug APK 生成。
+  `gradlew` 8.11.1 分发未缓存且下载超时，改用本机缓存的 Gradle 8.14.3 运行同一
+  `build.gradle.kts`；CI 仍使用仓库 wrapper。首次编译时 AGP 自动安装了 SDK Platform 35。
+- 未运行 instrumentation 设备测试（本机无模拟器/真机）；新增用例已编译通过。
+
+**真机边界**：需要在 Android 8/12/14/15 的小米/澎湃、OPPO/ColorOS、vivo/OriginOS、
+华为/荣耀及类原生设备上验收：
+
+1. 开启保持实时连接后，从最近任务划掉；
+2. 记录通知消失/恢复时间，确认恢复后最近任务没有鸿枢；
+3. 点通知/桌面图标打开，确认新建 Task 且连接不重复；
+4. 关闭电池优化、开启厂商自启动后重复；
+5. 设置里“强行停止”后确认无法自动恢复（预期）。
+
+模拟器、编译与单测不能替代上述真机验收；厂商自启动组件名随版本变化，页面已回退到应用详情。
+
 # 2026-10-26 后台短信实时执行与通知
 
 从 `1d1dec6` 开始，分支 `agent/background-realtime-delivery-resume`。初始验证时版本为

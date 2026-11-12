@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
+        clearLegacyTaskExclusion(this)
         // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
             HongshuTheme {
@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch { AppUpdates.get(this@MainActivity).check() }
-        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
+        clearLegacyTaskExclusion(this)
         SimMonitor.start(this)
         SmsInboxObserver.ensure(this)
         CallLogObserver.ensure(this)
@@ -91,7 +91,6 @@ class MainActivity : ComponentActivity() {
     }
 
     fun leaveForBackground() {
-        updateRecentTaskVisibility(this, Config(this).hideFromRecents)
         moveTaskToBack(true)
     }
 }

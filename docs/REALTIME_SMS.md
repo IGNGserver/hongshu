@@ -88,6 +88,28 @@ MMS/RCS 不在补漏范围；不能据空查询断言“没有短信”或“验
 参考：https://developer.android.com/reference/android/provider/Telephony.Sms.Intents#SMS_RECEIVED_ACTION
 及 https://developer.android.com/about/versions/15/behavior-changes-all#otp-redaction。
 
+### 任务移除后的自动恢复（2026-11-12）
+
+最近任务卡片属于 Task（Activity 栈），不属于前台服务。应用不再使用
+`ActivityManager.AppTask.setExcludeFromRecents`；从最近任务划掉后，Task 自然消失，
+而 `RealtimeService.onTaskRemoved` 会在服务仍存活时再次调用 `startForegroundService`。
+Android 12+ 把这视为前台服务发起的启动：AMS 保留启动请求，并在进程随后被杀时给 UID
+一个短暂的临时白名单，使重启后的 `startForeground()` 可以成功。恢复路径只启动 Service，
+不启动 Activity，所以恢复后最近任务中没有鸿枢；用户点通知或桌面图标才会新建 Task。
+
+- `onTaskRemoved` 只在 `keepAlive`、凭据和中枢地址都有效时请求恢复；用户主动“停止实时连接”
+  会先把 `keepAlive` 置为 false，因此不会被复活。
+- `startForeground()` 被系统拒绝时不再永久停止：按 1s/2s/4s 重试三次；仍失败则停止服务并
+  发一条普通通知“实时连接未恢复，点按打开鸿枢”，同时保留周期同步。
+- 电池优化“不受限制”是 Android 12+ 后台启动前台服务的官方豁免；设置页改为直接请求该
+  系统对话框。小米/澎湃 OS 的“自启动”是另一层厂商限制，页面显示可读取的实际状态并提供
+  入口；其他厂商按已知的自启动页面回退到应用详情。
+- 保持 API 34+ 的 `remoteMessaging` 前台服务类型，避免 Android 15 对 `dataSync` 的
+  24 小时内 6 小时限制，以及 `BOOT_COMPLETED` 启动 `dataSync` 的限制。
+- 被“强行停止”、部分 ROM 的一键清理或应用被禁用后无法自动恢复，必须手动打开一次。
+  这是系统设计，不是应用可绕过的；恢复时间也受 Doze/省电策略影响，不能承诺绝对即时。
+- 诊断信息新增“最近任务移除”和“最近后台恢复”两项，便于真机验收。
+
 ## 本机发出的短信
 
 系统不会把“已发送”广播给非默认短信应用，短信应用也不会为发出的短信发通知，所以**系统短信库是唯一来源**：

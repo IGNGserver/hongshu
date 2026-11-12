@@ -985,7 +985,12 @@ fun BackgroundPage(host: SettingsHost) {
     val f = host.facts
     val activity = host.activity
     val health by RuntimeHealth.connection.collectAsState()
-    var confirmHide by remember { mutableStateOf(false) }
+    val xiaomiAccess by
+        produceState<XiaomiSmsAccess?>(null, host.refresh) {
+            value =
+                if (isXiaomiDevice()) withContext(Dispatchers.IO) { xiaomiSmsAccess(activity) }
+                else null
+        }
 
     fun setRealtime(enabled: Boolean) {
         host.action {
@@ -1003,38 +1008,22 @@ fun BackgroundPage(host: SettingsHost) {
         }
     }
 
-    fun setHidden(hidden: Boolean) {
-        host.action {
-            withContext(Dispatchers.Main) {
-                check(updateRecentTaskVisibility(activity, hidden)) { "系统不支持修改当前任务显示状态" }
-                c.hideFromRecents = hidden
-            }
-            if (hidden) "已从最近任务中隐藏，可从桌面图标或通知重新打开" else "最近任务中已恢复显示"
+    val autoStartSummary =
+        when (val access = xiaomiAccess) {
+            null -> "请允许鸿枢自启动和后台运行"
+            else ->
+                if (access.autoStart == VendorPermission.ALLOWED)
+                    "已允许；划掉最近任务后系统允许鸿枢恢复"
+                else
+                    "未允许（${vendorPermissionLabel(access.autoStart)}）；划掉后系统可能不会恢复连接"
         }
-    }
-
-    if (confirmHide) {
-        AlertDialog(
-            onDismissRequest = { confirmHide = false },
-            title = { Text("在最近任务中隐藏？") },
-            text = {
-                Text(
-                    "隐藏后仍可从桌面图标或连接通知打开鸿枢。如果手机需要“任务加锁”防止被清理，请先在最近任务里加锁再隐藏。隐藏本身不会让应用更不容易被系统关闭。"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmHide = false
-                        setHidden(true)
-                    }
-                ) {
-                    Text("隐藏")
-                }
-            },
-            dismissButton = { TextButton(onClick = { confirmHide = false }) { Text("取消") } },
-        )
-    }
+    val autoStartStatus =
+        when (xiaomiAccess?.autoStart) {
+            VendorPermission.ALLOWED -> StatusLevel.Ok to "已允许"
+            VendorPermission.DENIED -> StatusLevel.Attention to "未允许"
+            VendorPermission.ASK -> StatusLevel.Attention to "每次询问"
+            else -> null
+        }
 
     SettingsScaffold(SettingsPage.Background.title, host.back, host.busy) {
         settingsItem("master") {
@@ -1042,7 +1031,7 @@ fun BackgroundPage(host: SettingsHost) {
                 title = "保持实时连接",
                 summary =
                     if (!f.connected) "需要先连接中枢"
-                    else "用一条常驻通知保持与中枢连接，新短信立即到达；关闭后仍会周期同步",
+                    else "用一条常驻通知保持与中枢连接；从最近任务划掉后会自动恢复，新短信仍立即到达",
                 checked = c.keepAlive,
                 enabled = f.connected && !host.busy,
                 onCheckedChange = { enabled ->
@@ -1097,7 +1086,7 @@ fun BackgroundPage(host: SettingsHost) {
                             title = "电池优化",
                             summary =
                                 if (f.batteryUnrestricted) "已允许鸿枢在后台运行"
-                                else "建议设为“不受限制”，避免连接被系统断开",
+                                else "建议设为“不受限制”，提高划掉后自动恢复的成功率",
                             icon = Icons.Default.BatteryChargingFull,
                             status =
                                 if (f.batteryUnrestricted) StatusLevel.Ok to "不受限制"
@@ -1105,47 +1094,45 @@ fun BackgroundPage(host: SettingsHost) {
                             onClick = {
                                 host.action {
                                     withContext(Dispatchers.Main) {
-                                        check(openBackgroundSettings(activity, battery = true)) {
+                                        check(requestBatteryExemption(activity)) {
                                             "无法打开系统设置"
                                         }
                                     }
-                                    "请在电池优化列表中允许鸿枢后台运行"
+                                    "请在系统对话框中允许鸿枢不受电池优化限制"
                                 }
                             },
                         )
                     }
                 )
                 add(
-                    SettingsRow("app-info") {
+                    SettingsRow("autostart") {
                         SettingsItem(
-                            title = "应用信息与后台权限",
-                            summary = "自启动、后台运行等厂商设置",
-                            icon = Icons.Default.Settings,
+                            title = "系统自启动与后台权限",
+                            summary = autoStartSummary,
+                            icon = Icons.Default.PowerSettingsNew,
+                            status = autoStartStatus,
                             showChevron = true,
                             onClick = {
                                 host.action {
-                                    withContext(Dispatchers.Main) {
-                                        check(openBackgroundSettings(activity, battery = false)) {
-                                            "无法打开系统设置"
-                                        }
-                                    }
-                                    "请按手机系统配置后台运行和自启动"
+                                    host.openSystem(
+                                        backgroundAccessIntents(activity.packageName),
+                                        "无法打开系统设置",
+                                    )
+                                    "请允许鸿枢自启动并允许后台运行"
                                 }
                             },
                         )
                     }
                 )
                 add(
-                    SettingsRow("hide") {
-                        SettingsSwitchItem(
-                            title = "在最近任务中隐藏",
-                            summary = "只影响最近任务列表，不影响后台连接",
-                            icon = Icons.Default.VisibilityOff,
-                            checked = c.hideFromRecents,
-                            enabled = !host.busy,
-                            onCheckedChange = { hidden ->
-                                if (hidden) confirmHide = true else setHidden(false)
-                            },
+                    SettingsRow("recents") {
+                        SettingsItem(
+                            title = "从最近任务划掉后",
+                            summary =
+                                if (c.keepAlive)
+                                    "实时连接会在后台自动恢复，不会重新打开界面；系统自启动和电池策略仍可能限制"
+                                else "开启“保持实时连接”后生效",
+                            icon = Icons.Default.RestartAlt,
                         )
                     }
                 )
@@ -1153,7 +1140,7 @@ fun BackgroundPage(host: SettingsHost) {
         )
         settingsItem("help") {
             ExpandableHelp(
-                "在首页返回只会退到后台，不会断开实时连接。被强制停止后需要重新打开应用。鸿枢无法检测厂商的“任务加锁”状态，请在系统中允许后台运行和自启动。"
+                "在首页返回只会退到后台，不会断开实时连接。从最近任务划掉后，鸿枢会尝试在后台恢复连接；被“强行停止”或部分系统的一键清理后，需要手动打开一次。鸿枢无法检测厂商的“任务加锁”状态。"
             )
         }
     }
