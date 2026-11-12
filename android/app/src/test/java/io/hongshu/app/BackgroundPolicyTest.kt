@@ -34,6 +34,14 @@ class BackgroundPolicyTest {
     }
 
     @Test
+    fun taskRemovalRevivalRequiresEnabledAndAuthorizedConfiguration() {
+        assertEquals(RealtimeStart.CONNECT, realtimeStart(REVIVE_REALTIME, true, true, true))
+        assertEquals(RealtimeStart.DISABLED, realtimeStart(REVIVE_REALTIME, false, true, true))
+        assertEquals(RealtimeStart.UNAUTHORIZED, realtimeStart(REVIVE_REALTIME, true, false, true))
+        assertEquals(RealtimeStart.UNAUTHORIZED, realtimeStart(REVIVE_REALTIME, true, true, false))
+    }
+
+    @Test
     fun stopAlwaysWinsEvenWithoutCredentials() {
         for (enabled in listOf(false, true)) for (authorized in listOf(false, true)) {
             assertEquals(

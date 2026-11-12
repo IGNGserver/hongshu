@@ -177,6 +177,45 @@ internal fun xiaomiAutoStartIntents(packageName: String): List<Intent> =
 internal fun appDetailsIntent(packageName: String): Intent =
     Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
 
+// Best-effort vendor background/autostart screens. Component names are undocumented and move
+// between releases, so every entry is optional and the list always ends at app details.
+internal fun backgroundAccessIntents(packageName: String): List<Intent> {
+    if (isXiaomiDevice()) return xiaomiAutoStartIntents(packageName)
+    fun component(pkg: String, cls: String): Intent =
+        Intent().setComponent(ComponentName(pkg, cls))
+    return listOf(
+        component(
+            "com.huawei.systemmanager",
+            "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+        ),
+        component(
+            "com.huawei.systemmanager",
+            "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
+        ),
+        component(
+            "com.coloros.safecenter",
+            "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+        ),
+        component(
+            "com.oppo.safe",
+            "com.oppo.safe.permission.startup.StartupAppListActivity",
+        ),
+        component(
+            "com.vivo.permissionmanager",
+            "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+        ),
+        component(
+            "com.iqoo.secure",
+            "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+        ),
+        component(
+            "com.meizu.safe",
+            "com.meizu.safe.permission.SmartBGActivity",
+        ),
+        appDetailsIntent(packageName),
+    )
+}
+
 internal fun startFirstAvailable(activity: Activity, intents: List<Intent>): Boolean =
     intents.any { intent ->
         runCatching {

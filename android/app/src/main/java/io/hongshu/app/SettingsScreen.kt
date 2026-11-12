@@ -791,6 +791,12 @@ private fun DiagnosticsPage(host: SettingsHost) {
     val background =
         listOf(
             "实时连接" to keepAliveStatus(activity, c, health),
+            "最近任务移除" to
+                if (c.lastTaskRemovedAt > 0) formatTimestamp(c.lastTaskRemovedAt) else "尚无记录",
+            "最近恢复请求" to
+                if (c.lastReviveAt > 0)
+                    "${formatTimestamp(c.lastReviveAt)} · ${c.lastReviveResult.ifEmpty { "已请求" }}"
+                else "尚无记录",
             "新短信通知" to notificationStatus(activity, c, health),
             "实时连接通知" to connectionNotificationStatus(activity),
         )

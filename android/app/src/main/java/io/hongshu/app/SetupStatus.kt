@@ -30,6 +30,7 @@ data class SetupFacts(
     val realtimeConnected: Boolean = false,
     val realtimeDetail: String = "",
     val batteryUnrestricted: Boolean = true,
+    val autoStartDenied: Boolean = false,
     val pending: PendingCounts = PendingCounts(),
 )
 
@@ -65,6 +66,7 @@ fun backgroundStatus(f: SetupFacts): Pair<StatusLevel, String> =
         !f.keepAlive -> StatusLevel.Off to "仅周期同步"
         !f.realtimeRunning -> StatusLevel.Attention to "未运行"
         !f.batteryUnrestricted -> StatusLevel.Attention to "受省电限制"
+        f.autoStartDenied -> StatusLevel.Attention to "自启动未允许"
         f.realtimeConnected -> StatusLevel.Ok to "实时连接中"
         else -> StatusLevel.Ok to "正在连接"
     }
@@ -115,6 +117,14 @@ fun attentionItems(f: SetupFacts): List<Attention> = buildList {
         )
     else if (f.keepAlive && !f.batteryUnrestricted)
         add(Attention("后台运行受省电限制", "建议允许鸿枢不受电池优化限制", SettingsPage.Background))
+    else if (f.keepAlive && f.autoStartDenied)
+        add(
+            Attention(
+                "系统自启动未允许",
+                "划掉最近任务后系统可能不会恢复实时连接",
+                SettingsPage.Background,
+            )
+        )
 }
 
 private const val SyncStaleMillis = 30 * 60 * 1000L
@@ -153,6 +163,9 @@ fun setupFacts(
         realtimeConnected = health.connected,
         realtimeDetail = health.detail,
         batteryUnrestricted = power.isIgnoringBatteryOptimizations(context.packageName),
+        autoStartDenied =
+            isXiaomiDevice() &&
+                checkXiaomiOp(context, XiaomiOps.AUTO_START) == VendorPermission.DENIED,
         pending = pending,
     )
 }

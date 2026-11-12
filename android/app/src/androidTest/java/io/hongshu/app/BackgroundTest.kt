@@ -202,24 +202,17 @@ class BackgroundTest {
     }
 
     @Test
-    fun taskExclusionIsReversibleAndPersistedWithoutEnablingService() =
+    fun legacyRecentsHideFlagIsClearedOnNextLaunch() =
         withConfig { context, config ->
-            assertFalse(config.hideFromRecents)
             assertFalse(config.restoreRealtimeOnBoot)
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
-                    val manager = activity.getSystemService(ActivityManager::class.java)
-                    fun excluded(): Boolean =
-                        manager.appTasks
-                            .first { recentTaskId(it.taskInfo) == activity.taskId }
-                            .taskInfo
-                            .baseIntent
-                            .flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS != 0
                     assertTrue(updateRecentTaskVisibility(activity, true))
-                    config.hideFromRecents = true
-                    assertTrue(excluded())
-                    assertTrue(Config(context).hideFromRecents)
-                    assertFalse(config.keepAlive)
+                    context
+                        .getSharedPreferences("hongshu", Context.MODE_PRIVATE)
+                        .edit()
+                        .putBoolean("hide_from_recents", true)
+                        .commit()
                 }
                 scenario.recreate()
                 scenario.onActivity { activity ->
@@ -227,16 +220,17 @@ class BackgroundTest {
                         activity.getSystemService(ActivityManager::class.java).appTasks.first {
                             recentTaskId(it.taskInfo) == activity.taskId
                         }
-                    assertTrue(
-                        task.taskInfo.baseIntent.flags and
-                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS != 0
-                    )
-                    assertTrue(updateRecentTaskVisibility(activity, false))
-                    config.hideFromRecents = false
                     assertEquals(
                         0,
-                        task.taskInfo.baseIntent.flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS,
+                        task.taskInfo.baseIntent.flags and
+                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS,
                     )
+                    assertFalse(
+                        context
+                            .getSharedPreferences("hongshu", Context.MODE_PRIVATE)
+                            .contains("hide_from_recents")
+                    )
+                    assertFalse(config.keepAlive)
                 }
             }
         }
@@ -268,7 +262,7 @@ class BackgroundTest {
         }
 
     @Test
-    fun hiddenBackgroundTaskKeepsSocketAndNotificationThenStopIsPersistent() =
+    fun taskRemovalKeepsSocketAndNotificationThenStopIsPersistent() =
         withConfig { context, config ->
             if (Build.VERSION.SDK_INT >= 33) {
                 InstrumentationRegistry.getInstrumentation()
@@ -288,7 +282,6 @@ class BackgroundTest {
                 config.rememberCleartextOrigin(hub.url)
                 config.token = "s".repeat(64)
                 config.keepAlive = true
-                config.hideFromRecents = true
                 ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                     awaitState { RuntimeHealth.connection.value.connected }
                     val count = hub.connections.get()
@@ -336,6 +329,40 @@ class BackgroundTest {
                             .activeNotifications
                             .none { it.id == 1 }
                     }
+                    // An explicit stop must survive task removal too.
+                    val revived = config.lastReviveAt
+                    scenario.onActivity { it.finishAndRemoveTask() }
+                    Thread.sleep(500)
+                    assertEquals(revived, config.lastReviveAt)
+                }
+            }
+        }
+
+    @Test
+    fun taskRemovalRequestsRealtimeRevivalWithoutCreatingANewTask() =
+        withConfig { context, config ->
+            if (Build.VERSION.SDK_INT >= 33) {
+                InstrumentationRegistry.getInstrumentation()
+                    .uiAutomation
+                    .executeShellCommand(
+                        "pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS"
+                    )
+                    .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
+            }
+            Hub().use { hub ->
+                config.url = hub.url
+                config.rememberCleartextOrigin(hub.url)
+                config.token = "s".repeat(64)
+                config.keepAlive = true
+                ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                    awaitState { RuntimeHealth.connection.value.connected }
+                    val before = config.lastReviveAt
+                    scenario.onActivity { it.finishAndRemoveTask() }
+                    awaitState { config.lastTaskRemovedAt > 0 }
+                    awaitState { config.lastReviveAt > before }
+                    assertTrue(RuntimeHealth.connection.value.running)
+                    val manager = context.getSystemService(ActivityManager::class.java)
+                    awaitState { manager.appTasks.isEmpty() }
                 }
             }
         }

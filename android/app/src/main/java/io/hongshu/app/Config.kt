@@ -361,10 +361,23 @@ class Config(context: Context) {
             prefs.edit().putBoolean("live_otp_island", value).commit()
         }
 
-    var hideFromRecents: Boolean
-        get() = prefs.getBoolean("hide_from_recents", false)
+    // Diagnostics only. commit() because onTaskRemoved may be followed immediately by a kill.
+    var lastTaskRemovedAt: Long
+        get() = prefs.getLong("last_task_removed_at", 0)
         set(value) {
-            prefs.edit().putBoolean("hide_from_recents", value).commit()
+            prefs.edit().putLong("last_task_removed_at", value).commit()
+        }
+
+    var lastReviveAt: Long
+        get() = prefs.getLong("last_revive_at", 0)
+        set(value) {
+            prefs.edit().putLong("last_revive_at", value).commit()
+        }
+
+    var lastReviveResult: String
+        get() = prefs.getString("last_revive_result", "")!!
+        set(value) {
+            prefs.edit().putString("last_revive_result", value).commit()
         }
 
     var restoreRealtimeOnBoot: Boolean

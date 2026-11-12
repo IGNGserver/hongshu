@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import java.util.concurrent.TimeUnit
@@ -24,6 +25,9 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+
+private const val MAX_FOREGROUND_ATTEMPTS = 3
+private const val RECOVERY_NOTIFICATION_ID = 4
 
 // OkHttp normalizes ws/wss to http/https in Request.url, including default ports.
 internal fun realtimeRequestMatches(request: Request, url: String, token: String): Boolean =
@@ -46,6 +50,8 @@ class RealtimeService : Service() {
     private var watchingNetwork = false
     private var delivery: RealtimeDeliveryRunner? = null
     private var transportHealth = ConnectionHealth()
+    private var foregroundAttempts = 0
+    private var foregroundRetry: Job? = null
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
@@ -180,6 +186,8 @@ class RealtimeService : Service() {
     private fun stopConnection(detail: String) {
         reportHealth(ConnectionHealth(detail = detail))
         destroyed = true
+        foregroundRetry?.cancel()
+        foregroundRetry = null
         stopDelivery()
         generation++
         socket?.cancel()
@@ -203,14 +211,17 @@ class RealtimeService : Service() {
         ) {
             RealtimeStart.STOP -> {
                 config.keepAlive = false
+                clearRecoveryNotice()
                 stopConnection("实时连接已主动停止；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.DISABLED -> {
+                clearRecoveryNotice()
                 stopConnection("实时连接已关闭；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.UNAUTHORIZED -> {
+                clearRecoveryNotice()
                 stopConnection("凭据不可用，请重新连接中枢")
                 return START_NOT_STICKY
             }
@@ -221,26 +232,140 @@ class RealtimeService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        foregroundRetry?.cancel()
+        foregroundRetry = null
+        foregroundAttempts = 0
         try {
-            if (!foreground) {
-                channels(this)
-                ServiceCompat.startForeground(
-                    this,
-                    1,
-                    notification("正在连接中枢"),
-                    realtimeServiceType(),
-                )
-                foreground = true
-                reportHealth(ConnectionHealth(running = true, detail = "正在连接中枢"))
-                watchNetwork()
-                startDelivery()
-            }
+            promoteToForeground()
             if (connection?.isActive != true) connection = scope.launch { connectLoop() }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (
+                Build.VERSION.SDK_INT >= 31 &&
+                    e is android.app.ForegroundServiceStartNotAllowedException
+            ) {
+                retryForeground()
+                return START_STICKY
+            }
             stopConnection("系统不允许运行实时服务；周期同步仍启用")
             return START_NOT_STICKY
         }
         return START_STICKY
+    }
+
+    private fun promoteToForeground() {
+        if (foreground) return
+        channels(this)
+        ServiceCompat.startForeground(
+            this,
+            1,
+            notification("正在连接中枢"),
+            realtimeServiceType(),
+        )
+        foreground = true
+        foregroundAttempts = 0
+        clearRecoveryNotice()
+        val config = Config(this)
+        if (config.lastTaskRemovedAt > 0 && config.lastTaskRemovedAt >= config.lastReviveAt) {
+            config.lastReviveAt = System.currentTimeMillis()
+            config.lastReviveResult = "已恢复实时连接"
+        }
+        reportHealth(ConnectionHealth(running = true, detail = "正在连接中枢"))
+        watchNetwork()
+        startDelivery()
+    }
+
+    // Android 12+ can deny the first startForeground() after a process kill. Keep the service
+    // start request alive briefly instead of permanently giving up; the platform's own 30s
+    // allowlist usually makes one of these attempts succeed.
+    private fun retryForeground() {
+        if (foregroundAttempts >= MAX_FOREGROUND_ATTEMPTS) {
+            Config(this).lastReviveResult = "系统拒绝后台恢复"
+            notifyRecoveryNeeded()
+            stopConnection("系统不允许在后台恢复实时连接；周期同步仍启用")
+            return
+        }
+        val delayMillis = 1000L shl foregroundAttempts
+        foregroundAttempts++
+        reportHealth(ConnectionHealth(detail = "系统暂不允许后台恢复，等待重试"))
+        Config(this).lastReviveResult = "等待系统允许恢复"
+        foregroundRetry?.cancel()
+        foregroundRetry =
+            scope.launch {
+                delay(delayMillis)
+                if (destroyed) return@launch
+                try {
+                    promoteToForeground()
+                    if (connection?.isActive != true) connection = scope.launch { connectLoop() }
+                } catch (e: Exception) {
+                    if (
+                        Build.VERSION.SDK_INT >= 31 &&
+                            e is android.app.ForegroundServiceStartNotAllowedException
+                    ) {
+                        retryForeground()
+                    } else {
+                        stopConnection("系统不允许运行实时服务；周期同步仍启用")
+                    }
+                }
+            }
+    }
+
+    private fun clearRecoveryNotice() {
+        runCatching { NotificationManagerCompat.from(this).cancel(RECOVERY_NOTIFICATION_ID) }
+    }
+
+    private fun notifyRecoveryNeeded() {
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ) != PackageManager.PERMISSION_GRANTED
+        )
+            return
+        val open =
+            PendingIntent.getActivity(
+                this,
+                2,
+                mainActivityIntent(this),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        val notice =
+            NotificationCompat.Builder(this, "connection")
+                .setSmallIcon(R.drawable.ic_hongshu)
+                .setContentTitle("鸿枢实时连接未恢复")
+                .setContentText("点按打开鸿枢恢复实时连接；周期同步仍在工作")
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .build()
+        runCatching { NotificationManagerCompat.from(this).notify(RECOVERY_NOTIFICATION_ID, notice) }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (destroyed) return
+        val config = Config(this)
+        if (
+            realtimeStart(
+                REVIVE_REALTIME,
+                config.keepAlive,
+                config.token.isNotEmpty(),
+                config.url.isNotEmpty(),
+            ) != RealtimeStart.CONNECT
+        )
+            return
+        val now = System.currentTimeMillis()
+        config.lastTaskRemovedAt = now
+        // The service is still a non-short foreground service here, so Android 12+ allows this
+        // background start. AMS keeps the request and allowlists the UID for the next
+        // startForeground() if the process is killed right after this callback.
+        if (startRealtimeService(this, REVIVE_REALTIME)) {
+            config.lastReviveAt = now
+            config.lastReviveResult = "已请求系统恢复"
+        } else {
+            config.lastReviveResult = "恢复请求被系统拒绝"
+            if (!foreground) notifyRecoveryNeeded()
+        }
     }
 
     private suspend fun connectLoop() {
@@ -385,6 +510,8 @@ class RealtimeService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        foregroundRetry?.cancel()
+        foregroundRetry = null
         stopDelivery()
         generation++
         socket?.cancel()
