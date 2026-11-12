@@ -2,6 +2,7 @@ name: Hongshu validation
 
 on:
   push:
+    branches: [main]
     paths: ['.dockerignore', 'Dockerfile', 'server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', 'docs/**', 'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'LICENSE', '.github/workflows/ci.yml', '.github/workflows/release.yml', '.github/workflows/website.yml', 'compose.yml', 'compose.external.yml', 'compose.external-backup.yml', '.env.example', 'VERSION']
   pull_request:
     paths: ['.dockerignore', 'Dockerfile', 'server/**', 'web/**', 'android/**', 'db/**', 'scripts/**', 'website/**', 'docs/**', 'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'LICENSE', '.github/workflows/ci.yml', '.github/workflows/release.yml', '.github/workflows/website.yml', 'compose.yml', 'compose.external.yml', 'compose.external-backup.yml', '.env.example', 'VERSION']
