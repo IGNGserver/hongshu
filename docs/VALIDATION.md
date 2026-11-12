@@ -1,3 +1,10 @@
+# 2026-11-12 发布 v0.2.0-alpha.25
+
+- PR [#106](https://github.com/IGNGserver/hongshu/pull/106) 已 squash 合并到 `main`，合并提交 `eda40956e04e305ea96d743e6f2c8cb1730af144`。
+- 已推送 tag `v0.2.0-alpha.25`，并发布 Pre-release：[v0.2.0-alpha.25](https://github.com/IGNGserver/hongshu/releases/tag/v0.2.0-alpha.25)。资产为 `Hongshu-Android-0.2.0-alpha.25.apk` 与 `hongshu-v0.2.0-alpha.25-deployment.tar.gz`，中枢镜像 `ghcr.io/igngserver/hongshu:0.2.0-alpha.25`。
+- 首次 release workflow（run 43242931616）在 tag/commit 校验阶段失败：tag push 同时触发了 `Hongshu validation`（run 43242931132），release 读取到的同名检查仍在 `in_progress`。等待该 CI 完成后，用 `workflow_dispatch` 指定既有 tag 重跑（run 43244746213），全部步骤成功。
+- 修复：`ci.yml` 的 `push` 增加 `branches: [main]`，tag push 不再触发验证；release 仍校验 main 上的合并提交检查。发布资产与正文未改写。
+
 # 2026-11-12 任务移除后的自动恢复（Android）
 
 分支 `agent/keep-alive-revival`，基线 `origin/main` 提交 `29c2469`。删除“在最近任务中隐藏”
