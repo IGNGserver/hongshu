@@ -329,8 +329,46 @@ class BackgroundTest {
                             .activeNotifications
                             .none { it.id == 1 }
                     }
-                    // An explicit stop must survive task removal too.
+                }
+            }
+        }
+
+    @Test
+    fun explicitStopDisablesTaskRemovalRevive() =
+        withConfig { context, config ->
+            if (Build.VERSION.SDK_INT >= 33) {
+                InstrumentationRegistry.getInstrumentation()
+                    .uiAutomation
+                    .executeShellCommand(
+                        "pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS"
+                    )
+                    .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
+            }
+            Hub().use { hub ->
+                config.url = hub.url
+                config.rememberCleartextOrigin(hub.url)
+                config.token = "s".repeat(64)
+                config.keepAlive = true
+                ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                    awaitState {
+                        RuntimeHealth.connection.value.connected &&
+                            context
+                                .getSystemService(NotificationManager::class.java)
+                                .activeNotifications
+                                .any { it.id == 1 }
+                    }
                     val revived = config.lastReviveAt
+                    val stop =
+                        context
+                            .getSystemService(NotificationManager::class.java)
+                            .activeNotifications
+                            .first { it.id == 1 }
+                            .notification
+                            .actions
+                            .first()
+                            .actionIntent
+                    stop.send()
+                    awaitState { !RuntimeHealth.connection.value.running && !config.keepAlive }
                     scenario.onActivity { it.finishAndRemoveTask() }
                     Thread.sleep(500)
                     assertEquals(revived, config.lastReviveAt)
