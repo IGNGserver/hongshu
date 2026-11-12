@@ -253,12 +253,18 @@ class RealtimeService : Service() {
     }
 
     private fun promoteToForeground() {
-        if (foreground) return
+        val alreadyForeground = foreground
         channels(this)
+        // Call startForeground even when already foreground: a startForegroundService() on a
+        // running service sets fgRequired again, and only this call clears its 30s deadline.
+        val detail =
+            if (alreadyForeground)
+                RuntimeHealth.connection.value.detail.ifEmpty { "正在连接中枢" }
+            else "正在连接中枢"
         ServiceCompat.startForeground(
             this,
             1,
-            notification("正在连接中枢"),
+            notification(detail),
             realtimeServiceType(),
         )
         foreground = true
@@ -269,9 +275,11 @@ class RealtimeService : Service() {
             config.lastReviveAt = System.currentTimeMillis()
             config.lastReviveResult = "已恢复实时连接"
         }
-        reportHealth(ConnectionHealth(running = true, detail = "正在连接中枢"))
-        watchNetwork()
-        startDelivery()
+        if (!alreadyForeground) {
+            reportHealth(ConnectionHealth(running = true, detail = "正在连接中枢"))
+            watchNetwork()
+            startDelivery()
+        }
     }
 
     // Android 12+ can deny the first startForeground() after a process kill. Keep the service
