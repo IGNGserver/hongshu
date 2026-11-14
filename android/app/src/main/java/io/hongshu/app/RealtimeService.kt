@@ -198,6 +198,19 @@ class RealtimeService : Service() {
         stopSelf()
     }
 
+    private fun satisfyForegroundStartBeforeStop() {
+        channels(this)
+        runCatching {
+            ServiceCompat.startForeground(
+                this,
+                1,
+                notification("正在停止实时连接"),
+                realtimeServiceType(),
+            )
+            foreground = true
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -213,16 +226,19 @@ class RealtimeService : Service() {
             RealtimeStart.STOP -> {
                 config.keepAlive = false
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("实时连接已主动停止；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.DISABLED -> {
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("实时连接已关闭；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.UNAUTHORIZED -> {
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("凭据不可用，请重新连接中枢")
                 return START_NOT_STICKY
             }
@@ -230,6 +246,9 @@ class RealtimeService : Service() {
         }
         if (destroyed) {
             // A start queued during shutdown must not leave a non-foreground service alive.
+            satisfyForegroundStartBeforeStop()
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foreground = false
             stopSelf(startId)
             return START_NOT_STICKY
         }
