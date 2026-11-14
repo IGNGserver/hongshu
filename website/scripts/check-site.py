@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static checks for the Hongshu first-page site; no third-party dependencies."""
+"""Static checks for the Hongshu official website; no third-party dependencies."""
 from __future__ import annotations
 
 import re
@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parent.parent / "site"
 ALLOWED_HOSTS = {"github.com", "hongshu.igng.net"}
 MAX_FILE = 200 * 1024
 MAX_TOTAL = 500 * 1024
+
+IMPORT_RE = re.compile(r"""(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]""")
+UNMASKED_CN_PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 
 errors: list[str] = []
 
@@ -26,6 +29,7 @@ class Page(HTMLParser):
         self.title = False
         self.h1 = 0
         self.inline_script = False
+        self.inline_style = False
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -41,6 +45,8 @@ class Page(HTMLParser):
             self.meta[a["name"]] = a.get("content", "")
         if tag == "script" and not a.get("src"):
             self.inline_script = True
+        if tag == "style" or "style" in a:
+            self.inline_style = True
         for key in ("href", "src"):
             if a.get(key):
                 self.refs.append((key, a[key]))
@@ -68,7 +74,9 @@ def check_html(path: Path) -> None:
     if page.h1 != 1:
         errors.append(f"{rel}: expected exactly one <h1>, found {page.h1}")
     if page.inline_script:
-        errors.append(f"{rel}: inline script is not allowed (CSP script-src 'none')")
+        errors.append(f"{rel}: inline script is not allowed (CSP script-src 'self')")
+    if page.inline_style:
+        errors.append(f"{rel}: inline style is not allowed (CSP style-src 'self')")
     for _, ref in page.refs:
         if ref.startswith("#"):
             if len(ref) > 1 and ref[1:] not in page.ids:
@@ -90,6 +98,48 @@ def check_html(path: Path) -> None:
             errors.append(f"{rel}: missing local target {ref}")
 
 
+def check_js(path: Path) -> None:
+    rel = path.relative_to(ROOT)
+    text = path.read_text(encoding="utf-8")
+    for spec in IMPORT_RE.findall(text):
+        parsed = urlparse(spec)
+        if parsed.scheme in ("http", "https"):
+            errors.append(f"{rel}: external module import not allowed: {spec}")
+            continue
+        target = local_target(path, spec)
+        if not target.is_file():
+            errors.append(f"{rel}: missing module import target {spec}")
+
+
+def check_headers(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if "Content-Security-Policy:" not in text:
+        errors.append("_headers: missing Content-Security-Policy")
+        return
+    for required in (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+    ):
+        if required not in text:
+            errors.append(f"_headers: CSP missing directive {required}")
+    for forbidden in ("'unsafe-inline'", "'unsafe-eval'"):
+        if forbidden in text:
+            errors.append(f"_headers: CSP must not use {forbidden}")
+
+
+def check_privacy_masking(path: Path) -> None:
+    if path.suffix not in {".html", ".js", ".css", ".svg", ".xml", ".txt"}:
+        return
+    rel = path.relative_to(ROOT)
+    text = path.read_text(encoding="utf-8")
+    matches = UNMASKED_CN_PHONE_RE.findall(text)
+    if matches:
+        errors.append(f"{rel}: unmasked 11-digit mobile number detected: {matches[0]}")
+
+
 def main() -> int:
     if not ROOT.is_dir():
         print(f"site directory missing: {ROOT}", file=sys.stderr)
@@ -103,11 +153,16 @@ def main() -> int:
             errors.append(f"{path.relative_to(ROOT)}: {size // 1024} KB exceeds {MAX_FILE // 1024} KB")
         if path.suffix == ".html":
             check_html(path)
+        elif path.suffix == ".js":
+            check_js(path)
+        check_privacy_masking(path)
     if total > MAX_TOTAL:
         errors.append(f"site total {total // 1024} KB exceeds {MAX_TOTAL // 1024} KB")
     for required in ("index.html", "404.html", "_headers", "robots.txt", "sitemap.xml"):
         if not (ROOT / required).is_file():
             errors.append(f"missing {required}")
+    if (ROOT / "_headers").is_file():
+        check_headers(ROOT / "_headers")
     index_text = (ROOT / "index.html").read_text(encoding="utf-8")
     version = (ROOT.parent.parent / "VERSION").read_text(encoding="utf-8").strip()
     versioned_deployment = (

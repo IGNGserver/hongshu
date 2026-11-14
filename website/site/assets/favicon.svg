@@ -1,6 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="16" fill="#0b0f14"/>
-  <circle cx="32" cy="32" r="19" fill="none" stroke="#e8b45a" stroke-width="3"/>
-  <path d="M32 13v38M13 32h38" stroke="#6ee7d8" stroke-width="3" stroke-linecap="round" opacity=".55"/>
-  <circle cx="32" cy="32" r="5" fill="#e8b45a"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="鸿枢 Hongshu">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8f7f3"/>
+      <stop offset="0.55" stop-color="#ebeef5"/>
+      <stop offset="1" stop-color="#dde4f0"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#b8c4d8"/>
+    </linearGradient>
+    <linearGradient id="arcBlue" x1="12" y1="16" x2="50" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4e82c8"/>
+      <stop offset="1" stop-color="#194d9c"/>
+    </linearGradient>
+    <radialGradient id="core" cx="42%" cy="36%" r="62%">
+      <stop offset="0" stop-color="#fff4db"/>
+      <stop offset="0.48" stop-color="#d9aa63"/>
+      <stop offset="1" stop-color="#9c6e2f"/>
+    </radialGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#bg)" stroke="url(#rim)" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="20" fill="none" stroke="#9ab0cf" stroke-width="1.2" stroke-dasharray="2.5 3.5" opacity="0.7"/>
+  <path d="M15 21C22 21 25.5 26.5 32 32M15 43C22 43 25.5 37.5 32 32M49 32H32" fill="none" stroke="url(#arcBlue)" stroke-width="3.2" stroke-linecap="round"/>
+  <circle cx="15" cy="21" r="3.2" fill="#2c63b0"/>
+  <circle cx="15" cy="43" r="3.2" fill="#4f7fb8"/>
+  <rect x="46" y="27.5" width="7" height="9" rx="2.2" fill="#1d4f99"/>
+  <circle cx="32" cy="32" r="7.2" fill="url(#core)"/>
+  <circle cx="32" cy="32" r="10.4" fill="none" stroke="#d3a35c" stroke-width="1.2" opacity="0.55"/>
 </svg>

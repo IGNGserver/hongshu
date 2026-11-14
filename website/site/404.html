@@ -1,21 +1,35 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>页面不存在 · 鸿枢 Hongshu</title>
-  <meta name="description" content="这个页面不存在。回到鸿枢官网首页。">
+  <title>页面不存在 · 鸿枢（Hongshu）</title>
+  <meta name="description" content="访问的页面不存在，返回鸿枢（Hongshu）产品官网首页。">
   <meta name="robots" content="noindex">
-  <meta name="theme-color" content="#0b0f14">
+  <meta name="theme-color" content="#f5f4ef">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-  <main class="notfound">
-    <p class="eyebrow">404 · 未找到</p>
-    <h1>这条短信没有送到。</h1>
-    <p class="lead">页面可能已被移动或删除。</p>
-    <a class="button button--primary" href="/">回到首页</a>
+  <div class="topbar-wrap">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="鸿枢（Hongshu）首页">
+        <img src="/assets/favicon.svg" alt="" width="30" height="30">
+        <span>鸿枢<span class="brand__en">Hongshu</span></span>
+      </a>
+      <div class="topbar__actions">
+        <a class="btn btn--sm" href="/">返回首页</a>
+      </div>
+    </header>
+  </div>
+
+  <main class="notfound-shell">
+    <section class="notfound-card">
+      <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>404 · 路径未找到</p>
+      <h1>这条消息没有对应的收件地址。</h1>
+      <p>你访问的链接可能已被移动或移除。你可以返回鸿枢官网首页，了解跨设备短信同步架构、交互演示与当前版本的自部署文档。</p>
+      <a class="btn btn--primary" href="/">回到鸿枢首页</a>
+    </section>
   </main>
 </body>
 </html>
