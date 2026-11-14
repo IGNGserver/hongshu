@@ -1,15 +1,15 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>鸿枢 Hongshu · 自部署的跨设备短信同步平台</title>
-  <meta name="description" content="鸿枢把你自己的短信可靠上传到自己的 MySQL 中枢，在所有授权 Android 与 Web/PWA 设备上查看。">
-  <meta name="theme-color" content="#0b0f14">
+  <title>鸿枢（Hongshu）· 自部署的跨设备短信同步平台</title>
+  <meta name="description" content="鸿枢把多台手机的短信与只读通话记录可靠汇聚到你自己的 MySQL 私有中枢，在授权 Android 与桌面 Web/PWA 设备上实时查看、筛选与提取验证码。">
+  <meta name="theme-color" content="#f5f4ef">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="canonical" href="https://hongshu.igng.net/">
-  <meta property="og:title" content="鸿枢 Hongshu">
-  <meta property="og:description" content="自部署的跨设备短信同步平台：短信可靠上传到自己的 MySQL 中枢。">
+  <meta property="og:title" content="鸿枢（Hongshu）· 自部署的跨设备短信同步平台">
+  <meta property="og:description" content="多台手机的短信安静归入你自己的 MySQL 中枢，在授权 Android 与桌面 Web/PWA 设备上从容查看。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://hongshu.igng.net/">
   <link rel="stylesheet" href="/assets/style.css">
@@ -17,77 +17,428 @@
 <body>
   <a class="skip" href="#main">跳到正文</a>
 
-  <header class="header">
-    <a class="brand" href="/" aria-label="鸿枢首页">
-      <img src="/assets/favicon.svg" alt="" width="28" height="28">
-      <span>鸿枢 <small>Hongshu</small></span>
-    </a>
-    <nav aria-label="页面导航">
-      <a href="#boundaries">边界</a>
-      <a href="#start">开始</a>
-      <a href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
-    </nav>
-  </header>
+  <div class="topbar-wrap">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="鸿枢（Hongshu）首页">
+        <img src="/assets/favicon.svg" alt="" width="30" height="30">
+        <span>鸿枢<span class="brand__en">Hongshu</span></span>
+      </a>
+
+      <nav class="topbar__nav" aria-label="页面导航">
+        <a href="#choreography">跨端流转</a>
+        <a href="#workbench">交互演示</a>
+        <a href="#craft">工程细节</a>
+        <a href="#boundaries">隐私与边界</a>
+        <a href="#start">自部署与获取</a>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="切换站点明暗主题">
+          <span class="theme-toggle__dot" aria-hidden="true"></span>
+          <span class="theme-toggle__label">暖白晨雾</span>
+        </button>
+        <a class="btn btn--primary btn--sm" href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
+      </div>
+    </header>
+  </div>
 
   <main id="main">
-    <section class="hero">
-      <div class="hero__copy">
-        <p class="eyebrow">HONGSHU · 自部署短信中枢</p>
-        <h1>短信留在<br>自己的中枢里。</h1>
-        <p class="lead">把手机短信可靠地上传到自己的 MySQL 中枢，长期保存，在所有授权 Android 与 Web/PWA 设备上查看。</p>
-        <div class="actions">
-          <a class="button button--primary" href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
-          <a class="button" href="https://github.com/IGNGserver/hongshu">查看源代码</a>
+    <!-- Hero + Scroll-Choreographed 3D WebGL Studio Stage -->
+    <section class="studio-journey" aria-label="跨设备短信归集总览">
+      <div class="hero-block">
+        <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>HONGSHU · 私有短信中枢</p>
+        <h1>多台手机的短信，<br>安静归入自己的中枢。</h1>
+        <p class="lead">
+          手头有多部主力机、双卡备用机或工作号？鸿枢（Hongshu）把散落在各台手机上的收发短信与只读通话记录，沿加密链路汇聚到你自托管的 Go + MySQL 中枢——无需 Google 服务，不经第三方云端，在桌面 Web/PWA 与授权 Android 设备上随时查阅、筛选与复制验证码。
+        </p>
+
+        <div class="hero-actions">
+          <a class="btn btn--primary" href="https://github.com/IGNGserver/hongshu/releases">获取预发布版本</a>
+          <button class="btn" id="hero-simulate-btn" type="button">模拟新短信汇入 ✦</button>
+          <a class="btn" href="#workbench">体验交互工作台</a>
         </div>
-        <p class="status"><span></span>首版官网 · 内容持续完善</p>
+
+        <div class="hero-device-bar">
+          <div class="hero-device-bar__label">
+            <span>点击设备向 3D 私有中枢发射一条虚构测试短信</span>
+            <span>全部演示数据均为虚构</span>
+          </div>
+          <div class="hero-device-bar__pills">
+            <button class="device-trigger is-active" type="button" data-hero-phone="0">
+              <span class="device-trigger__led" aria-hidden="true"></span>Pixel 9 · 主力卡 0412
+            </button>
+            <button class="device-trigger" type="button" data-hero-phone="1">
+              <span class="device-trigger__led" aria-hidden="true"></span>Xiaomi 14 · 双卡 9105
+            </button>
+            <button class="device-trigger" type="button" data-hero-phone="2">
+              <span class="device-trigger__led" aria-hidden="true"></span>Galaxy S24 · 工作卡 5520
+            </button>
+          </div>
+        </div>
+
+        <p class="prerelease-pill">
+          <strong id="hub-version-tag">v0.2.0-alpha.26</strong>
+          <span>当前处于预发布迭代阶段 · MIT 开源许可</span>
+        </p>
       </div>
 
-      <div class="signal" aria-hidden="true">
-        <div class="signal__rings"></div>
-        <div class="signal__core"></div>
-        <span class="signal__label">PRIVATE RELAY</span>
+      <!-- Sticky 3D WebGL Hardware & Light-Path Stage -->
+      <div class="journey-stage">
+        <div class="stage-frame" id="stage-viewport">
+          <div class="stage-topbar">
+            <span class="stage-topbar__title">
+              <span class="stage-topbar__led" aria-hidden="true"></span>
+              3D 跨设备私有归集视图 · 随滚动切换镜头
+            </span>
+            <div class="stage-tabs" role="tablist" aria-label="3D 镜头阶段">
+              <button class="stage-tab is-active" type="button" role="tab" aria-selected="true" data-stage-tab="0">01 手机采集</button>
+              <button class="stage-tab" type="button" role="tab" aria-selected="false" data-stage-tab="1">02 私有中枢</button>
+              <button class="stage-tab" type="button" role="tab" aria-selected="false" data-stage-tab="2">03 桌面查阅</button>
+            </div>
+          </div>
+
+          <div class="stage-canvas-wrap">
+            <canvas id="studio-canvas" aria-label="展示三部 Android 手机将虚构短信沿柔和光线汇入自部署 MySQL 私有中枢并同步至桌面 Web/PWA 收件箱的 3D 场景"></canvas>
+          </div>
+
+          <div class="stage-progress" aria-hidden="true">
+            <div class="stage-progress__fill" id="stage-progress-fill"></div>
+          </div>
+
+          <div class="stage-telemetry" aria-live="polite">
+            <span id="stage-telemetry-text">私有中枢就绪 · 3 台授权手机在线汇聚</span>
+            <code id="stage-telemetry-seq">#1041</code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scroll-Linked Narrative Stages -->
+      <div class="choreo-list" id="choreography">
+        <article class="stage-card is-active" data-stage-card="0">
+          <div class="stage-card__step">STAGE 01 · 手机端可靠采集</div>
+          <h3>多卡手机各自安静采集，断网与切卡不丢信。</h3>
+          <p>
+            开启实时同步仅需授予 <code>RECEIVE_SMS</code> 权限，不依赖 Google Play 服务（FCM），无需设为默认短信应用，也不申请无障碍权限。广播捕获后先写入本机 SQLite 恢复表与 <code>outbox</code> 持久队列，经服务端明确确认后才消费。
+          </p>
+          <ul class="stage-card__list">
+            <li>按系统 SIM 订阅 ID 精确绑定接收号码，换卡槽绝不把新卡短信错记到旧号码</li>
+            <li>针对 HyperOS 等系统提供可选通知信号协同补读，自动匹配并吸收重复副本</li>
+            <li>“补齐历史短信”（<code>READ_SMS</code>）与“同步通话记录”（<code>READ_CALL_LOG</code>）均独立开关授权</li>
+          </ul>
+        </article>
+
+        <article class="stage-card" data-stage-card="1">
+          <div class="stage-card__step">STAGE 02 · 汇入私有 MySQL 中枢</div>
+          <h3>直连你自己的基础设施，顺序可证、备份一致。</h3>
+          <p>
+            多台手机捕获的消息直接提交至你部署在家庭服务器、NAS 本地盘或私有云上的 Go + MySQL 8.0+ 中枢。服务端锁定单例 <code>sync_clock</code> 分配严格提交顺序，并以 <code>SHA-256</code> 指纹幂等去重，既消除同源重试又不误合并不同手机收到的相同通知。
+          </p>
+          <ul class="stage-card__list">
+            <li>单一中枢密码（Argon2id 内存校验）配合每设备独立 256-bit Bearer 凭据，支持随时单设备撤权</li>
+            <li>入库事务内同步执行版本化规则验证码提取，无需外发即可识别 4–8 位验证码与明示有效期</li>
+            <li><code>sync_clock.epoch</code> 守护一致性逻辑备份与灾难恢复，回档后客户端自动对齐新代次</li>
+          </ul>
+        </article>
+
+        <article class="stage-card" data-stage-card="2">
+          <div class="stage-card__step">STAGE 03 · 桌面与多端即时查阅</div>
+          <h3>镜头转向桌面：同一条消息，在所有授权端从容就位。</h3>
+          <p>
+            WebSocket 与 Service Worker 仅传递无正文的轻量变更提示，桌面浏览器、平板独立 PWA 窗口与其他仅查看手机随即增量拉取最新会话。无论备用机留在书房充电还是静音放在包里，验证码与重要通知都能在手边设备一眼读取。
+          </p>
+          <ul class="stage-card__list">
+            <li>Material 3 Expressive 视觉体系：Android 原生 Compose 客户端与零框架 Web/PWA 共享一致体验</li>
+            <li>Android 16+ 支持跨设备新验证码状态栏实时胶囊（仅其他设备同步消息触发，不干扰本机弹窗）</li>
+            <li>查看端可选本机通讯录姓名与头像装饰，数据仅留当前设备本地，绝不写入中枢</li>
+          </ul>
+        </article>
       </div>
     </section>
 
-    <section class="section" id="boundaries">
-      <p class="eyebrow">01 · 边界</p>
-      <h2>能做什么，不能做什么。</h2>
-      <div class="grid">
-        <article class="card">
-          <h3>收发记录与通话查看</h3>
-          <p>同步本机已收到和已发送的短信记录，以及通话记录，供授权 Android 与 Web/PWA 设备查看。鸿枢不处理 MMS/RCS，不通过运营商代发短信，也不代替你拨打电话。</p>
+    <!-- Interactive Dual-Client Live Sync Workbench -->
+    <section class="section" id="workbench" data-reveal>
+      <div class="section-head">
+        <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>INTERACTIVE WORKBENCH · 真实界面交互演示</p>
+        <h2>亲手试一试：跨设备筛选、搜索与验证码提取。</h2>
+        <p class="lead">
+          左侧模拟你抽屉或手边的 Android 采集手机，右侧还原鸿枢桌面 Web/PWA 双栏收件箱。你可以现场触发虚构验证码同步、按采集设备或 SIM 号码过滤、搜索关键词，或切换“本机联系人装饰”与“可选 AI 分组”观察真实交互边界。
+        </p>
+      </div>
+
+      <div class="workbench-grid">
+        <!-- Left: Android Capture & Cross-Device OTP Capsule Controller -->
+        <aside class="android-sim" aria-label="Android 采集端模拟器">
+          <div class="android-sim__tabs" role="tablist" aria-label="选择模拟采集手机">
+            <button class="android-sim__tab" type="button" role="tab" aria-selected="false" data-wb-phone="0">Pixel 9</button>
+            <button class="android-sim__tab is-active" type="button" role="tab" aria-selected="true" data-wb-phone="1">Xiaomi 14</button>
+            <button class="android-sim__tab" type="button" role="tab" aria-selected="false" data-wb-phone="2">Galaxy S24</button>
+          </div>
+
+          <div class="phone-hardware">
+            <div class="phone-hardware__head">
+              <div>
+                <strong id="wb-phone-name">Xiaomi 14 · 备用机</strong>
+                <span id="wb-phone-model">HyperOS · 通知协同采集</span>
+              </div>
+              <span id="wb-phone-status">书房充电常驻</span>
+            </div>
+
+            <div class="sim-pills" id="wb-phone-sims">
+              <span class="sim-pill">SIM 1 · 186****9105</span>
+              <span class="sim-pill">SIM 2 · 177****7731</span>
+            </div>
+
+            <div class="phone-hardware__preview">
+              <strong id="wb-phone-preview-sender">青鸟驿站 · 186****9105</strong>
+              <p id="wb-phone-preview-body">【青鸟驿站】您的包裹已到澄园北门服务站，请凭取件码 4-2-1086 在 21:00 前取件。</p>
+            </div>
+
+            <div class="phone-outbox-bar" id="wb-phone-outbox">outbox 0 待传 · 已确认 #1041</div>
+          </div>
+
+          <div class="sim-triggers">
+            <button class="sim-trigger-btn sim-trigger-btn--primary" id="wb-send-otp" type="button">
+              <span>从该手机同步一条虚构验证码</span>
+              <span>发送 →</span>
+            </button>
+            <button class="sim-trigger-btn" id="wb-send-notice" type="button">
+              <span>模拟驿站取件通知到达</span>
+              <span>投递 →</span>
+            </button>
+            <button class="sim-trigger-btn" id="wb-send-call" type="button">
+              <span>同步一条只读来电记录</span>
+              <span>记录 →</span>
+            </button>
+          </div>
+
+          <div class="sync-bridge" aria-live="polite">
+            <div class="sync-bridge__packet" id="wb-bridge-packet" aria-hidden="true"></div>
+            <span>私有中枢 <code>127.0.0.1:18473</code></span>
+            <code id="wb-hub-seq">sync_clock #1041</code>
+          </div>
+
+          <div class="otp-live-capsule" id="wb-otp-capsule">
+            <div>
+              <span class="otp-live-capsule__tag">跨设备验证码实时胶囊</span>
+              <strong class="otp-live-capsule__code" id="wb-capsule-code">684219</strong>
+              <span class="otp-live-capsule__meta" id="wb-capsule-meta">来自其他设备 (Pixel 9 · 主力机) · 星云通行证</span>
+            </div>
+            <button class="otp-live-capsule__btn" id="wb-capsule-copy" type="button">一键复制</button>
+          </div>
+        </aside>
+
+        <!-- Right: Authentic Hongshu Web/PWA Two-Pane Client Sandbox -->
+        <div class="pwa-shell" id="wb-pwa-shell" role="region" aria-label="鸿枢桌面 Web/PWA 收件箱交互演示">
+          <div class="pwa-topbar">
+            <div class="pwa-topbar__left">
+              <span class="pwa-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <strong>鸿枢 · 短信中枢</strong>
+              <div class="pwa-view-switch" role="tablist" aria-label="演示视图类型">
+                <button class="pwa-view-tab is-active" type="button" role="tab" aria-selected="true" data-wb-view="sms">短信</button>
+                <button class="pwa-view-tab" type="button" role="tab" aria-selected="false" data-wb-view="calls">通话记录</button>
+              </div>
+            </div>
+
+            <div class="pwa-topbar__right">
+              <button class="mini-switch is-on" id="wb-toggle-contacts" type="button" role="switch" aria-checked="true">
+                <span class="mini-switch__Dot" aria-hidden="true"></span>本机联系人装饰
+              </button>
+              <button class="mini-switch" id="wb-toggle-ai" type="button" role="switch" aria-checked="false">
+                <span class="mini-switch__Dot" aria-hidden="true"></span>可选 AI 分组
+              </button>
+              <button class="wb-icon-pill" id="wb-mark-read" type="button">全部标为已读</button>
+            </div>
+          </div>
+
+          <p class="ai-inline-note" id="wb-ai-inline-note" hidden>
+            演示提示：AI 默认关闭；真实部署中开启可选 AI 后，短信正文会发送给你选择的服务商（默认遮蔽链接与邮箱，启用前请审查其隐私政策与留存设置）。
+          </p>
+
+          <div class="pwa-controls">
+            <div class="pwa-search-row">
+              <div class="pwa-search-box">
+                <span aria-hidden="true">⌕</span>
+                <input id="wb-search-input" type="search" placeholder="搜索短信正文、脱敏号码、验证码或本地联系人…" aria-label="搜索演示短信">
+                <button class="pwa-search-clear" id="wb-search-clear" type="button" hidden>清除</button>
+              </div>
+              <div class="pwa-quick-tags" aria-label="快捷搜索示例">
+                <button class="pwa-quick-tag" type="button" data-wb-quick="验证码">搜“验证码”</button>
+                <button class="pwa-quick-tag" type="button" data-wb-quick="取件码">搜“取件码”</button>
+                <button class="pwa-quick-tag" type="button" data-wb-quick="林知夏">搜本地联系人“林知夏”</button>
+                <button class="pwa-quick-tag" type="button" data-wb-quick="__reset__">重置筛选</button>
+              </div>
+            </div>
+
+            <div class="pwa-filter-rows">
+              <div class="chip-strip" id="wb-device-chips" aria-label="按采集设备筛选"></div>
+              <div class="chip-strip" id="wb-sim-chips" aria-label="按接收号码筛选"></div>
+              <div class="chip-strip" id="wb-group-chips" aria-label="按短信分组筛选"></div>
+            </div>
+          </div>
+
+          <div class="pwa-panes">
+            <div class="wb-list" id="wb-list" aria-label="演示会话列表"></div>
+            <article class="wb-detail" id="wb-detail" aria-live="polite" aria-label="演示会话详情"></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Engineering Details & Communication Experience -->
+    <section class="section" id="craft" data-reveal>
+      <div class="section-head">
+        <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>CRAFT &amp; RELIABILITY · 为长期自部署打磨</p>
+        <h2>克制而周密的通信工程细节。</h2>
+        <p class="lead">
+          通信工具的价值在于日常无感与关键时刻可靠。鸿枢在采集账本、分页游标、离线壳更新与跨端交互上都采用可审计的确定性设计。
+        </p>
+      </div>
+
+      <div class="craft-grid">
+        <article class="craft-card">
+          <div class="craft-card__icon" aria-hidden="true">01</div>
+          <h3>零 GMS 依赖与低功耗驻留</h3>
+          <p>
+            Android 客户端完全不依赖 Google Play 服务。支持 WorkManager 网络约束指数退避同步，以及可选的 Android 14+ <code>remoteMessaging</code> 实时前台服务，状态栏如实区分连接握手与实际同步健康。
+          </p>
+          <div class="craft-card__meta">Kotlin · Jetpack Compose · Material 3 Expressive</div>
         </article>
-        <article class="card">
-          <h3>自己的基础设施</h3>
-          <p>Go + MySQL + Docker Compose。中枢镜像发布在 <code>ghcr.io/igngserver/hongshu</code>，部署与备份由你自己掌握。</p>
+
+        <article class="craft-card">
+          <div class="craft-card__icon" aria-hidden="true">02</div>
+          <h3>原生零框架 Web/PWA 客户端</h3>
+          <p>
+            内置 Web 端可添加到桌面或 iOS/iPadOS 16.4+ 主屏幕运行，支持 VAPID 标准 Web Push、应用角标未读数同步与通知一键聚焦对话；短信正文与验证码仅驻留内存，绝不写入浏览器 <code>localStorage</code> 或 Cache Storage。
+          </p>
+          <div class="craft-card__meta">Service Worker 原子壳租约 · head/epoch 游标分页</div>
         </article>
-        <article class="card">
-          <h3>隐私边界</h3>
-          <p>不提供端到端加密；站点与示例不展示真实短信内容、手机号或其他个人数据。</p>
-        </article>
-        <article class="card">
-          <h3>可选 AI 的数据边界</h3>
-          <p>默认不启用 AI。若你在中枢配置可选 AI 分析，短信正文会发送给你选择的服务商；请先审查其隐私政策、服务地域与数据留存设置。</p>
+
+        <article class="craft-card">
+          <div class="craft-card__icon" aria-hidden="true">03</div>
+          <h3>本机通讯录零上传显示层</h3>
+          <p>
+            Android 通过 <code>PhoneLookup</code> 完整号码比对，Web/PWA 通过浏览器 <code>Contact Picker API</code> 将所选联系人保存在独立本地库中。姓名与头像只装饰当前查看设备界面，绝不上传至中枢或跨设备同步。
+          </p>
+          <div class="craft-card__meta">本地姓名检索 · 原始会话键与上传指纹零改动</div>
         </article>
       </div>
     </section>
 
-    <section class="section section--start" id="start">
-      <p class="eyebrow">02 · 开始</p>
-      <h2>先读文档，再部署。</h2>
-      <p class="lead">产品仍在预发布阶段。请只从 GitHub Releases 下载已发布的 Android 安装包，并打开同一 Release tag 下的部署文档，不要混用 main 分支说明。</p>
-      <div class="links">
-        <a href="https://github.com/IGNGserver/hongshu/releases">版本发布 <span>↗</span></a>
-        <!-- Keep this tag synchronized with the repository VERSION file. -->
-        <a href="https://github.com/IGNGserver/hongshu/blob/v0.2.0-alpha.26/docs/DEPLOYMENT.md">当前版本部署、备份与恢复 <span>↗</span></a>
-        <a href="https://github.com/IGNGserver/hongshu">产品仓库 <span>↗</span></a>
+    <!-- Honest Capability & Privacy Boundaries -->
+    <section class="section" id="boundaries" data-reveal>
+      <div class="section-head">
+        <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>BOUNDARIES · 透明功能与隐私边界</p>
+        <h2>能做什么，不能做什么。</h2>
+        <p class="lead">
+          自托管软件建立在诚实说明之上。在部署鸿枢前，请清楚了解以下产品能力边界与安全前提。
+        </p>
+      </div>
+
+      <div class="boundary-layout">
+        <article class="boundary-card">
+          <span class="boundary-card__badge">明确边界 · 只读归集</span>
+          <h3>收发记录与通话记录只读查看</h3>
+          <p>
+            同步手机本机已收到与已发送的短信记录，以及可选开启的系统通话记录，供所有已授权 Android 与 Web/PWA 设备检索查看。鸿枢不处理彩信（MMS）或富媒体消息（RCS），<strong>不通过运营商代发短信</strong>，也不代替你拨打电话或触发跨端来电振铃。
+          </p>
+        </article>
+
+        <article class="boundary-card">
+          <span class="boundary-card__badge">基础设施 · 自主掌控</span>
+          <h3>自己的服务器与 MySQL 8.0+</h3>
+          <p>
+            由单二进制 Go 服务与 MySQL 8.0+（<code>utf8mb4_bin</code>）构成，官方容器镜像发布于 <code>ghcr.io/igngserver/hongshu</code>（支持 <code>linux/amd64</code> 与 <code>linux/arm64</code>）。全部消息、设备凭据哈希与逻辑备份均保存在你自己的本地磁盘上。
+          </p>
+        </article>
+
+        <article class="boundary-card boundary-card--warn">
+          <span class="boundary-card__badge">安全前提 · 非端到端加密</span>
+          <h3>传输与静态存储保护责任</h3>
+          <p>
+            首版<strong>不提供端到端加密（E2EE）</strong>：中枢数据库与逻辑备份持有完整短信明文，以便服务端执行全文搜索与规则提取。公网访问请务必配置 HTTPS 反向代理或 VPN；Android 客户端默认拒绝明文 HTTP，仅允许对受控局域网源逐项显式授权。本官网与所有示例均不展示任何真实短信、真实手机号或个人数据。
+          </p>
+        </article>
+
+        <article class="boundary-card boundary-card--warn">
+          <span class="boundary-card__badge">默认关闭 · 可选外部模型</span>
+          <h3>可选 AI 分组的数据流向</h3>
+          <p>
+            鸿枢默认不启用 AI，日常验证码提取完全由本地版本化规则完成。仅当管理员在中枢设置里主动配置并开启可选 AI 分析时，<strong>短信正文会发送给你选择的服务商</strong>（如 OpenAI、Anthropic、Gemini 或白名单自建模型）；启用前请务必审查所选服务商的隐私政策、服务地域与数据留存设置。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Self-Hosting Deployment & Version-Pinned Releases -->
+    <section class="section" id="start" data-reveal>
+      <div class="section-head">
+        <p class="eyebrow"><span class="eyebrow__dot" aria-hidden="true"></span>SELF-HOSTING · 先读对应版本文档，再部署</p>
+        <h2>在自己的 Linux 主机上三步启动。</h2>
+        <p class="lead">
+          鸿枢当前仍处于预发布阶段（<code>v0.2.0-alpha.26</code>）。请仅从 GitHub Releases 获取已发布的安装包与容器标签，并严格对照<strong>同一 Release 标签下</strong>的部署与恢复文档操作，避免混用开发分支说明。
+        </p>
+      </div>
+
+      <div class="deploy-grid">
+        <div class="terminal-panel">
+          <div class="terminal-panel__head">
+            <div class="deploy-tabs" id="deploy-tablist" role="tablist" aria-label="部署模式配置示例"></div>
+            <button class="terminal-copy" id="deploy-copy-btn" type="button">复制命令</button>
+          </div>
+          <p class="terminal-caption" id="deploy-caption">推荐单机部署：默认仅绑定本机 127.0.0.1:18473，配合反向代理提供 HTTPS。</p>
+          <pre class="terminal-code"><code id="deploy-code">HONGSHU_VERSION=0.2.0-alpha.26 PUBLIC_URL=https://sms.example.com VAPID_SUBJECT=mailto:ops@example.com bash scripts/init-deployment.sh
+docker compose up -d
+curl --fail http://127.0.0.1:18473/healthz</code></pre>
+        </div>
+
+        <div class="download-stack">
+          <a class="download-card" href="https://github.com/IGNGserver/hongshu/releases">
+            <div>
+              <strong>GitHub Releases 版本发布</strong>
+              <span>下载 <code>Hongshu-Android-&lt;version&gt;.apk</code> 安装包并核对 SHA-256 校验值与镜像标签</span>
+            </div>
+            <span class="download-card__arrow" aria-hidden="true">↗</span>
+          </a>
+
+          <!-- Keep this tag synchronized with the repository VERSION file (verified by check-site.py). -->
+          <a class="download-card" href="https://github.com/IGNGserver/hongshu/blob/v0.2.0-alpha.26/docs/DEPLOYMENT.md">
+            <div>
+              <strong>当前版本部署、备份与恢复指南（v0.2.0-alpha.26）</strong>
+              <span>包含初始化脚本、外部 MySQL、Nginx 反代限流、Web Push 检查与 epoch 恢复流程</span>
+            </div>
+            <span class="download-card__arrow" aria-hidden="true">↗</span>
+          </a>
+
+          <a class="download-card" href="https://github.com/IGNGserver/hongshu/blob/v0.2.0-alpha.26/docs/ARCHITECTURE.md">
+            <div>
+              <strong>系统架构与实测验证边界</strong>
+              <span>查阅采集账本、同步协议、安全模型与预发布兼容性说明</span>
+            </div>
+            <span class="download-card__arrow" aria-hidden="true">↗</span>
+          </a>
+
+          <a class="download-card" href="https://github.com/IGNGserver/hongshu">
+            <div>
+              <strong>IGNGserver / hongshu 源代码仓库</strong>
+              <span>审阅 Go 中枢、Web/PWA 与 Kotlin Compose Android 客户端完整源码</span>
+            </div>
+            <span class="download-card__arrow" aria-hidden="true">↗</span>
+          </a>
+        </div>
       </div>
     </section>
   </main>
 
   <footer class="footer">
-    <span>鸿枢（Hongshu）· MIT</span>
-    <span>由 IGNGserver 维护 · 官网首版</span>
+    <span>鸿枢（Hongshu）· 自部署跨设备短信同步平台 · MIT License</span>
+    <div class="footer__links">
+      <a href="https://github.com/IGNGserver/hongshu/releases">版本发布</a>
+      <a href="https://github.com/IGNGserver/hongshu/blob/v0.2.0-alpha.26/docs/DEPLOYMENT.md">部署文档</a>
+      <a href="https://github.com/IGNGserver/hongshu">GitHub 仓库</a>
+    </div>
   </footer>
+
+  <div class="site-toast" id="site-toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/assets/app.js"></script>
 </body>
 </html>
