@@ -91,13 +91,14 @@ class RealtimeService : Service() {
                 mainActivityIntent(this),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-        return NotificationCompat.Builder(this, "connection")
+        return NotificationCompat.Builder(this, "connection_silent")
             .setSmallIcon(R.drawable.ic_hongshu)
             .setContentTitle("鸿枢实时同步")
             .setContentText(detail)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setNumber(0)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .addAction(0, "停止实时连接", stop)
             .build()
@@ -197,6 +198,19 @@ class RealtimeService : Service() {
         stopSelf()
     }
 
+    private fun satisfyForegroundStartBeforeStop() {
+        channels(this)
+        runCatching {
+            ServiceCompat.startForeground(
+                this,
+                1,
+                notification("正在停止实时连接"),
+                realtimeServiceType(),
+            )
+            foreground = true
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -212,16 +226,19 @@ class RealtimeService : Service() {
             RealtimeStart.STOP -> {
                 config.keepAlive = false
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("实时连接已主动停止；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.DISABLED -> {
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("实时连接已关闭；周期同步仍启用")
                 return START_NOT_STICKY
             }
             RealtimeStart.UNAUTHORIZED -> {
                 clearRecoveryNotice()
+                satisfyForegroundStartBeforeStop()
                 stopConnection("凭据不可用，请重新连接中枢")
                 return START_NOT_STICKY
             }
@@ -229,6 +246,9 @@ class RealtimeService : Service() {
         }
         if (destroyed) {
             // A start queued during shutdown must not leave a non-foreground service alive.
+            satisfyForegroundStartBeforeStop()
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foreground = false
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -338,7 +358,7 @@ class RealtimeService : Service() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
         val notice =
-            NotificationCompat.Builder(this, "connection")
+            NotificationCompat.Builder(this, "connection_silent")
                 .setSmallIcon(R.drawable.ic_hongshu)
                 .setContentTitle("鸿枢实时连接未恢复")
                 .setContentText("点按打开鸿枢恢复实时连接；周期同步仍在工作")

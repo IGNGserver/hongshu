@@ -46,6 +46,7 @@ type app struct {
 	wsCheckInterval        time.Duration
 	unreadMu               sync.Mutex
 	unreadSnapshot         unreadSnapshot
+	deviceUnread           map[string]unreadSnapshot
 	unreadFlights          map[string]*unreadCall
 	unreadQueries          atomic.Int64
 	metadataMu             sync.Mutex

@@ -11,39 +11,72 @@ self.addEventListener("push", (e) => {
   const body = notificationText(payload.body, "有新短信，打开应用查看", 200);
   const tag = notificationText(payload.tag, "hongshu-new", 100);
   const url = notificationPath(payload.url);
-  const notify = self.registration.showNotification(title, {
+  const otp = typeof payload.otp === "string" && payload.otp.trim() ? notificationText(payload.otp, "", 32) : "";
+  const sender = typeof payload.sender === "string" && payload.sender.trim() ? notificationText(payload.sender, "", 120) : "";
+  const messageId = typeof payload.message_id === "number" && Number.isInteger(payload.message_id) && payload.message_id > 0 ? payload.message_id : 0;
+  const isTest = tag === "hongshu-test";
+  const options = {
     body,
     tag,
     icon: "/icon-192.png",
     badge: "/icon-192.png",
-    data: { url },
-  });
+    renotify: Boolean(payload.renotify),
+    data: { url, sender, otp, messageId, body },
+  };
+  if (otp) {
+    options.actions = [{ action: "copy", title: `复制 ${otp}` }];
+  }
+  const notify = self.registration.showNotification(title, options);
   // Push is an independent change hint when an open page's socket has gone stale.
   // Never fetch or persist SMS content in the service worker.
-  const refresh = tag === "hongshu-new" ? self.clients
+  const refresh = !isTest ? self.clients
     .matchAll({ type: "window", includeUncontrolled: true })
     .then(clients => {
       for (const client of clients) {
         try { client.postMessage({ type: "MESSAGES_CHANGED" }); } catch { /* closed client */ }
       }
     }).catch(() => {}) : Promise.resolve();
-  e.waitUntil(Promise.all([notify, refresh]));
+  const badge = typeof payload.unread_count === "number"
+    ? Promise.resolve(
+        payload.unread_count > 0
+          ? self.navigator?.setAppBadge?.(payload.unread_count)
+          : self.navigator?.clearAppBadge?.()
+      ).catch(() => {})
+    : Promise.resolve();
+  e.waitUntil(Promise.all([notify, refresh, badge]));
 });
 self.addEventListener("notificationclick", (e) => {
+  const data = e.notification.data || {};
+  const action = e.action || "";
   e.notification.close();
-  let target = notificationPath(e.notification.data?.url);
+  let candidate;
   try {
-    const candidate = new URL(target, self.location.origin);
-    if (candidate.origin !== self.location.origin) target = "/";
-    else target = candidate.pathname + candidate.search + candidate.hash;
-  } catch { target = "/"; }
+    candidate = new URL(notificationPath(data.url), self.location.origin);
+    if (candidate.origin !== self.location.origin) candidate = new URL("/", self.location.origin);
+  } catch {
+    candidate = new URL("/", self.location.origin);
+  }
+  const target = candidate.pathname + candidate.search + candidate.hash;
   e.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const client of windows) {
       try {
-        if (new URL(client.url).origin !== self.location.origin) continue;
-        const navigated = await client.navigate(new URL(target, self.location.origin).href);
-        await (navigated || client).focus?.();
+        const clientUrl = new URL(client.url);
+        if (clientUrl.origin !== self.location.origin) continue;
+        let active = client;
+        if (clientUrl.pathname + clientUrl.search !== candidate.pathname + candidate.search && typeof client.navigate === "function") {
+          active = (await client.navigate(candidate.href)) || client;
+        }
+        active.postMessage?.({
+          type: "NOTIFICATION_OPEN",
+          url: target,
+          action,
+          otp: typeof data.otp === "string" ? data.otp : "",
+          sender: typeof data.sender === "string" ? data.sender : "",
+          messageId: typeof data.messageId === "number" ? data.messageId : 0,
+          body: typeof data.body === "string" ? data.body : (e.notification.body || ""),
+        });
+        await active.focus?.();
         return;
       } catch { /* try another existing window before opening a new one */ }
     }

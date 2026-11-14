@@ -63,6 +63,7 @@ class OtpNotificationManagerTest {
         assertTrue("Notification must be ongoing", (notification.flags and Notification.FLAG_ONGOING_EVENT) != 0)
         assertTrue("Should request promoted ongoing in extras", extras.getBoolean("android.requestPromotedOngoing"))
         assertEquals("849201", extras.getCharSequence("android.shortCriticalText")?.toString())
+        assertTrue("Should attach HyperOS focus param", extras.getString("miui.focus.param")?.contains("849201") == true)
 
         // Action checks
         assertEquals(2, notification.actions?.size ?: 0)
@@ -165,13 +166,18 @@ class OtpNotificationManagerTest {
         seedOtpIntent(app, 2, "code-2")
         val manager = app.getSystemService(NotificationManager::class.java)
         val shadow = shadowOf(manager)
-        for (id in 1..3) manager.notify(id, NotificationCompat.Builder(app, "connection")
+        for (id in 1..3) manager.notify(id, NotificationCompat.Builder(app, "connection_silent")
             .setSmallIcon(R.drawable.ic_hongshu).setContentTitle("base-$id").build())
         val ids = listOf(1L, 2L, 3L, 4294967296L) // 1 and 2^32 used to fold to the same ID.
         for (id in ids) assertTrue(OtpNotificationManager.showOtpNotification(app, id, "code-$id", "10086"))
         val notifications = ids.map { shadow.getNotification(OtpNotificationManager.notificationTag(app, it), 1) }
         assertEquals(ids.size, notifications.map { it.actions[0].actionIntent }.toSet().size)
         notifications[1].actions[0].actionIntent.send()
+        val copyIntent = shadowOf(app).nextStartedActivity
+        assertNotNull(copyIntent)
+        assertEquals(OtpCopyActivity::class.java.name, copyIntent.component?.className)
+        val controller = org.robolectric.Robolectric.buildActivity(OtpCopyActivity::class.java, copyIntent).create().start().resume()
+        controller.get().onWindowFocusChanged(true)
         shadowOf(android.os.Looper.getMainLooper()).idle()
         assertNull(shadow.getNotification(OtpNotificationManager.notificationTag(app, 2), 1))
         assertEquals("code-2", app.getSystemService(ClipboardManager::class.java).primaryClip!!.getItemAt(0).text.toString())

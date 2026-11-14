@@ -730,3 +730,31 @@ func TestAIClientCacheAndUnknown400Circuit(t *testing.T) {
 		t.Fatal("generation change retained the old failure count")
 	}
 }
+
+func TestClassifierRecoversRedactedKeywordlessOTP(t *testing.T) {
+	var sentBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || len(in.Messages) != 2 {
+			t.Error("payload")
+			return
+		}
+		sentBody = in.Messages[1].Content
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"category":"otp","otp":"[CODE_1]"}`}}}})
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	t.Setenv("HONGSHU_AI_ALLOWED_HOSTS", u.Hostname())
+	s := AISettings{Endpoint: server.URL, Model: "synthetic", Timeout: 2, Redact: true}
+	got, otp, code, _ := classifySMS(context.Background(), s, "Account access token is 739204, support 13800138000", "")
+	if got != "otp" || otp != "739204" || code != "" {
+		t.Fatalf("got=%q otp=%q code=%q", got, otp, code)
+	}
+	if strings.Contains(sentBody, "739204") || strings.Contains(sentBody, "13800138000") || !strings.Contains(sentBody, "[CODE_1]") {
+		t.Fatalf("redacted placeholder payload mismatch: %q", sentBody)
+	}
+}

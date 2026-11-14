@@ -3,7 +3,13 @@ package io.hongshu.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal data class UploadAck(val key: String, val error: String, val fingerprint: String = "")
+internal data class UploadAck(
+    val key: String,
+    val error: String,
+    val fingerprint: String = "",
+    val id: Long = 0L,
+    val duplicate: Boolean = false,
+)
 
 // Validate the entire response before mutating the queue. Old hubs guarantee array order;
 // new hubs echo fingerprints, allowing safe correlation even if a proxy reorders ACKs.
@@ -33,7 +39,7 @@ internal fun uploadAcks(pending: List<Pair<String, SmsRecord>>, acks: JSONArray)
         check(ackId >= 0) { "上传确认 ID 无效" }
         check(duplicate is Boolean) { "上传确认重复标记无效" }
         check(if (error.isEmpty()) ackId > 0 else ackId == 0L && !duplicate) { "上传确认字段冲突" }
-        UploadAck(message.first, error, message.second.fingerprint())
+        UploadAck(message.first, error, message.second.fingerprint(), ackId, duplicate)
     }
 }
 

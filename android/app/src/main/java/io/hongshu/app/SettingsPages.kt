@@ -932,49 +932,92 @@ fun NotificationsPage(host: SettingsHost) {
         settingsGroup(
             "status",
             "状态",
-            listOf(
-                SettingsRow("notify") {
-                    SettingsItem(
-                        title = "通知接收",
-                        summary = notificationStatus(activity, c, health),
-                        icon = Icons.Default.Notifications,
-                        status = notificationsStatus(f),
+            buildList {
+                add(
+                    SettingsRow("notify") {
+                        SettingsItem(
+                            title = "通知接收",
+                            summary = notificationStatus(activity, c, health),
+                            icon = Icons.Default.Notifications,
+                            status = notificationsStatus(f),
+                        )
+                    }
+                )
+                if (c.notify && !c.keepAlive) {
+                    add(
+                        SettingsRow("realtime_warning") {
+                            SettingsItem(
+                                title = "后台实时推送未开启",
+                                summary = "请保持“实时后台连接”开启，否则离开应用后新短信和验证码通知将延迟",
+                                icon = Icons.Default.NotificationsActive,
+                            )
+                        }
                     )
-                },
-                SettingsRow("connection") {
-                    SettingsItem(
-                        title = "实时连接通知",
-                        summary = connectionNotificationStatus(activity),
-                        icon = Icons.Default.Bolt,
-                    )
-                },
-            ),
+                }
+                add(
+                    SettingsRow("connection") {
+                        SettingsItem(
+                            title = "实时连接通知",
+                            summary = connectionNotificationStatus(activity),
+                            icon = Icons.Default.Bolt,
+                        )
+                    }
+                )
+            },
         )
         settingsGroup(
             "system",
             null,
-            listOf(
-                SettingsRow("system") {
-                    SettingsItem(
-                        title = "系统通知设置",
-                        summary = "调整提示音、横幅和锁屏显示",
-                        icon = Icons.Default.Settings,
-                        showChevron = true,
-                        onClick = {
-                            host.action {
-                                host.openSystem(
-                                    listOf(
-                                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                            .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
-                                    ),
-                                    "无法打开通知设置",
-                                )
-                                "请在系统中调整鸿枢的通知"
-                            }
-                        },
+            buildList {
+                if (Build.VERSION.SDK_INT >= 36 && !OtpNotificationManager.canPostPromotedNotifications(activity)) {
+                    add(
+                        SettingsRow("promoted") {
+                            SettingsItem(
+                                title = "开启系统实时活动 / 灵动岛权限",
+                                summary = "前往系统设置允许鸿枢展示状态栏验证码胶囊",
+                                icon = Icons.Default.NotificationsActive,
+                                showChevron = true,
+                                onClick = {
+                                    host.action {
+                                        host.openSystem(
+                                            listOf(
+                                                Intent("android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS")
+                                                    .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName),
+                                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                                    .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName),
+                                            ),
+                                            "无法打开实时活动设置",
+                                        )
+                                        "请在系统中允许鸿枢展示实时更新"
+                                    }
+                                },
+                            )
+                        }
                     )
                 }
-            ),
+                add(
+                    SettingsRow("system") {
+                        SettingsItem(
+                            title = "系统通知设置",
+                            summary = "调整提示音、横幅和锁屏显示",
+                            icon = Icons.Default.Settings,
+                            showChevron = true,
+                            onClick = {
+                                host.action {
+                                    host.openSystem(
+                                        listOf(
+                                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                                .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                                        ),
+                                        "无法打开通知设置",
+                                    )
+                                    "请在系统中调整鸿枢的通知"
+                                }
+                            },
+                        )
+                    }
+                )
+            },
         )
     }
 }

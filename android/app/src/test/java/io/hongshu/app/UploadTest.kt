@@ -40,13 +40,13 @@ class UploadTest {
         val accepted = ack()
         val rejected = ack(0, error = "sim_not_confirmed")
         assertEquals(
-            listOf(UploadAck("a", "", message.fingerprint()), UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint())),
+            listOf(UploadAck("a", "", message.fingerprint(), 1L, false), UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint())),
             uploadAcks(pending, JSONArray().put(accepted).put(rejected)),
         )
         accepted.put("fingerprint", pending[0].second.fingerprint())
         rejected.put("fingerprint", pending[1].second.fingerprint())
         assertEquals(
-            listOf(UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint()), UploadAck("a", "", message.fingerprint())),
+            listOf(UploadAck("b", "sim_not_confirmed", pending[1].second.fingerprint()), UploadAck("a", "", message.fingerprint(), 1L, false)),
             uploadAcks(pending, JSONArray().put(rejected).put(accepted)),
         )
     }
@@ -248,4 +248,35 @@ class UploadTest {
             assertEquals(store.pendingCount(), store.pendingCounts().total)
             assertEquals(PendingCounts(2, 1, 1), store.pendingCounts())
         }
+
+    @Test
+    fun confirmedUploadAckMaterializesIntoInboxWithoutCountingAsSelfUnread() = store { context, store ->
+        val config = Config(context)
+        config.deviceId = "self-phone"
+        try {
+            val fresh = message.copy(timestamp = System.currentTimeMillis())
+            store.queue(fresh)
+            uploadPendingForTest(
+                Api(config),
+                store,
+                store.pending(false),
+                request = { batch ->
+                    JSONObject().put(
+                        "acks",
+                        JSONArray().put(
+                            ack(id = 42, fingerprint = batch.single().second.fingerprint())
+                        ),
+                    )
+                },
+            )
+            assertEquals(0, store.pendingCount())
+            val localThread = store.messages(sender = "10086")
+            assertEquals(listOf(42L), localThread.map { it.id })
+            assertEquals("self-phone", localThread.single().deviceId)
+            assertTrue(store.unreadCounts().isEmpty())
+            assertEquals(0, store.totalUnreadCount())
+        } finally {
+            context.getSharedPreferences("hongshu", Context.MODE_PRIVATE).edit().clear().commit()
+        }
+    }
 }

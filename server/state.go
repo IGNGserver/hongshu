@@ -101,8 +101,8 @@ func (a *app) wakeWork() {
 // notifyChange is the post-commit path: local subscribers, one state refresh, local worker
 // wakeups, and (when configured) a Redis event for other hub processes.
 func (a *app) notifyChange() {
-	a.broadcastChange()
 	a.requestStateRefresh()
+	a.broadcastChange()
 	a.wakeWork()
 	if a.redis != nil && a.redisEvents != nil {
 		select {
@@ -113,8 +113,8 @@ func (a *app) notifyChange() {
 }
 
 func (a *app) remoteChange() {
-	a.broadcastChange()
 	a.requestStateRefresh()
+	a.broadcastChange()
 	signalWork(a.pushWake)
 	a.wakeWork()
 }

@@ -217,7 +217,7 @@ WHERE c.id=1`, device(r).ID).Scan(&seq, &epoch, &title, &metadataRevision, &call
 		fail(w, 503, "database_unavailable")
 		return
 	}
-	unread, err := a.snapshotUnread(r.Context(), tx, epoch, unreadHead, watermark, readRevision)
+	unread, err := a.snapshotUnreadForDevice(r.Context(), tx, epoch, unreadHead, watermark, readRevision, unreadExcludeDevice(device(r)))
 	if err != nil {
 		fail(w, 503, "database_unavailable")
 		return

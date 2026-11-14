@@ -89,10 +89,19 @@ internal data class ConversationSnapshot(
     val messages: List<CachedMessage>,
 )
 
+internal data class UnreadNoticeItem(
+    val id: Long,
+    val sender: String,
+    val contact: String,
+    val body: String,
+    val timestamp: Long,
+)
+
 class Store(private val context: Context, databaseName: String = "hongshu.db") :
     SQLiteOpenHelper(context, databaseName, null, 18), Closeable {
     // SQLiteOpenHelper only implements AutoCloseable on API 29+; Kotlin use must work on 26–28 too.
     private val config = Config(context)
+    internal val appContext: Context get() = context.applicationContext
 
     companion object {
         val changes = MutableStateFlow(0L)
@@ -524,7 +533,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     // Read state revokes both pending and already shown intents; the caller cancels the
     // matching system notifications with the same identity tag.
-    private fun revokeOtpIntents(
+    internal fun revokeOtpIntents(
         db: SQLiteDatabase,
         sender: String?,
         boundary: Long,
@@ -557,7 +566,7 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         return revoked
     }
 
-    private fun cancelOtpNotifications(intents: List<OtpIntent>) {
+    internal fun cancelOtpNotifications(intents: List<OtpIntent>) {
         if (intents.isEmpty()) return
         val manager = context.getSystemService(android.app.NotificationManager::class.java)
         for (intent in intents)
@@ -699,14 +708,82 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             arrayOf<Any>(id, a.otp, a.expiresAt, a.category, if (a.manual) 1 else 0, a.state, a.error, a.revision))
     }
 
-    fun applyAnalysis(items: JSONArray, cursor: Long, pageEpoch: Long) {
+    fun applyAnalysis(items: JSONArray, cursor: Long, pageEpoch: Long, pairedAt: Long = 0) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             check(!epochReset(epochSeen(), epoch(), pageEpoch)) { "Analysis epoch changed" }
+            val self = config.deviceId
+            val intentEpoch =
+                db.rawQuery("SELECT value FROM meta WHERE key='epoch'", null).use {
+                    if (it.moveToFirst()) it.getLong(0) else 0L
+                }
+            val watermark =
+                db.rawQuery("SELECT value FROM meta WHERE key='global_watermark_id'", null).use {
+                    if (it.moveToFirst()) it.getLong(0) else 0L
+                }
+            val initialComplete =
+                db.rawQuery("SELECT value FROM meta WHERE key='initial_complete'", null).use {
+                    it.moveToFirst() && it.getLong(0) != 0L
+                }
+            val now = System.currentTimeMillis()
             for (i in 0 until items.length()) {
                 val item = items.getJSONObject(i)
-                saveAnalysis(db, item.getLong("id"), MessageAnalysis.from(item.getJSONObject("analysis")))
+                val id = item.getLong("id")
+                val next = MessageAnalysis.from(item.getJSONObject("analysis"))
+                val previousOtp =
+                    db.rawQuery("SELECT otp FROM message_analysis WHERE message_id=?", arrayOf(id.toString())).use { c ->
+                        if (c.moveToFirst()) c.getString(0) else ""
+                    }
+                saveAnalysis(db, id, next)
+                if (
+                    previousOtp.isEmpty() &&
+                        next.otp.isNotEmpty() &&
+                        config.notify &&
+                        config.liveOtpIsland &&
+                        OtpNotificationManager.otpNotificationsAvailable(context)
+                ) {
+                    db.rawQuery(
+                        """
+                        SELECT i.device,i.sender,i.contact,i.timestamp,i.historical,i.direction,
+                               COALESCE(cr.last_read_message_id,0)
+                        FROM inbox i
+                        LEFT JOIN conversation_reads cr ON cr.sender=i.sender
+                        WHERE i.id=?
+                        """.trimIndent(),
+                        arrayOf(id.toString()),
+                    ).use { c ->
+                        if (c.moveToFirst()) {
+                            val sourceDevice = c.getString(0)
+                            val sender = c.getString(1)
+                            val contact = c.getString(2)
+                            val timestamp = c.getLong(3)
+                            val historical = c.getInt(4) != 0
+                            val outgoing = c.getString(5) == "out"
+                            val readHead = c.getLong(6)
+                            val isUnread = id > watermark && id > readHead
+                            val expiresAt = otpNotificationExpiry(timestamp, next.expiresAt)
+                            if (
+                                !outgoing &&
+                                    isUnread &&
+                                    expiresAt > now &&
+                                    shouldNotify(
+                                        sourceDevice,
+                                        self,
+                                        historical,
+                                        initialComplete,
+                                        timestamp,
+                                        pairedAt,
+                                    )
+                            ) {
+                                db.execSQL(
+                                    "INSERT OR REPLACE INTO otp_intents (message_id,otp,expires_at,sender,contact,epoch,shown) VALUES (?,?,?,?,?,?,0)",
+                                    arrayOf(id, next.otp, expiresAt, sender, contact, intentEpoch),
+                                )
+                            }
+                        }
+                    }
+                }
             }
             db.execSQL("UPDATE meta SET value=? WHERE key='analysis_cursor'", arrayOf(cursor))
             db.setTransactionSuccessful()
@@ -752,7 +829,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             db.endTransaction()
         }
         cancelOtpNotifications(revoked)
-        if (changed) changes.value++
+        if (changed) {
+            changes.value++
+            runCatching { reconcileNotifications(context, this) }
+        }
         return changed
     }
 
@@ -795,6 +875,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     fun unreadCounts(): Map<String, Int> {
         val watermark = meta("global_watermark_id")
+        val selfDevice = config.deviceId
+        val args =
+            if (selfDevice.isNotEmpty()) arrayOf(watermark.toString(), selfDevice)
+            else arrayOf(watermark.toString())
+        val excludeSelf = if (selfDevice.isNotEmpty()) "AND i.device <> ?" else ""
         return readableDatabase.rawQuery(
             """
             SELECT i.sender, COUNT(*)
@@ -803,10 +888,11 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
             WHERE i.historical=0
               AND i.direction='in'
               AND i.id > ?
+              $excludeSelf
               AND i.id > COALESCE(cr.last_read_message_id, 0)
             GROUP BY i.sender
             """.trimIndent(),
-            arrayOf(watermark.toString())
+            args
         ).use { c ->
             buildMap {
                 while (c.moveToNext()) {
@@ -814,6 +900,56 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 }
             }
         }
+    }
+
+    fun totalUnreadCount(): Int = unreadCounts().values.sum()
+
+    internal fun unreadOrdinaryMessages(limit: Int = 5): Pair<Int, List<UnreadNoticeItem>> {
+        val watermark = meta("global_watermark_id")
+        val selfDevice = config.deviceId
+        val excludeSelf = if (selfDevice.isNotEmpty()) "AND i.device <> ?" else ""
+        val countArgs =
+            if (selfDevice.isNotEmpty()) arrayOf(watermark.toString(), selfDevice)
+            else arrayOf(watermark.toString())
+        val baseWhere =
+            """
+            FROM inbox i
+            LEFT JOIN conversation_reads cr ON cr.sender=i.sender
+            WHERE i.historical=0
+              AND i.direction='in'
+              AND i.id > ?
+              $excludeSelf
+              AND i.id > COALESCE(cr.last_read_message_id, 0)
+              AND NOT EXISTS (SELECT 1 FROM otp_intents o WHERE o.message_id=i.id)
+            """.trimIndent()
+        val total =
+            readableDatabase.rawQuery("SELECT COUNT(*) $baseWhere", countArgs).use { c ->
+                if (c.moveToFirst()) c.getInt(0) else 0
+            }
+        if (total <= 0 || limit <= 0) return total to emptyList()
+        val itemArgs =
+            if (selfDevice.isNotEmpty()) arrayOf(watermark.toString(), selfDevice, limit.toString())
+            else arrayOf(watermark.toString(), limit.toString())
+        val items =
+            readableDatabase.rawQuery(
+                "SELECT i.id,i.sender,i.contact,i.body,i.timestamp $baseWhere ORDER BY i.timestamp DESC,i.id DESC LIMIT ?",
+                itemArgs,
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            UnreadNoticeItem(
+                                c.getLong(0),
+                                c.getString(1),
+                                c.getString(2),
+                                c.getString(3),
+                                c.getLong(4),
+                            )
+                        )
+                    }
+                }
+            }
+        return total to items
     }
 
     fun resetAnalysis() {
@@ -2235,11 +2371,18 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 var storedFingerprint = ""
                 // Enrichment may race an HTTP request. Recheck the current wire identity
                 // before ACK can remove a newly colliding observation.
-                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub,direction,sent_fingerprint FROM outbox WHERE key=?", arrayOf(key)).use { c ->
+                val current = db.rawQuery("SELECT receiver,sender,body,timestamp,sub,direction,sent_fingerprint,historical FROM outbox WHERE key=?", arrayOf(key)).use { c ->
                     if (!c.moveToFirst()) null else {
                         storedFingerprint = c.getString(6)
-                        SmsRecord(c.getString(0).ifEmpty { resolver(c.getInt(4)) },
-                            c.getString(1), c.getString(2), c.getLong(3), c.getInt(4), outgoing = c.getString(5) == "out")
+                        SmsRecord(
+                            c.getString(0).ifEmpty { resolver(c.getInt(4)) },
+                            c.getString(1),
+                            c.getString(2),
+                            c.getLong(3),
+                            c.getInt(4),
+                            historical = c.getInt(7) != 0,
+                            outgoing = c.getString(5) == "out",
+                        )
                     }
                 } ?: continue
                 val expected = ack.fingerprint.ifEmpty { storedFingerprint.ifEmpty { current.fingerprint() } }
@@ -2248,11 +2391,49 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                     db.rawQuery("SELECT source FROM captures WHERE key=?", arrayOf(key)).use {
                         if (it.moveToFirst()) it.getString(0) else ""
                     }
-                if (current != null && confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
+                if (confirmedNumber(current.receiver) && prepareUpload(listOf(key to current), fromSync = true).isEmpty()) continue
                 val unpaired = db.rawQuery("SELECT 1 FROM outbox WHERE key=? AND $UNPAIRED_NOTIFICATION", arrayOf(key)).use { it.moveToFirst() }
                 if (db.delete("outbox", "key=? AND blocked<>'notification_collision' AND sent_fingerprint IN (?, '')", arrayOf(key, expected)) > 0) {
                     if (unpaired) notificationOnly++
-                    if (current != null && (source == "broadcast" || source == "provider"))
+                    if (ack.id > 0L) {
+                        val contactName = db.rawQuery("SELECT name FROM contact_snapshot WHERE phone=?", arrayOf(current.sender)).use { c ->
+                            if (c.moveToFirst()) c.getString(0) else ""
+                        }
+                        val cv = ContentValues().apply {
+                            put("id", ack.id)
+                            put("device", config.deviceId)
+                            put("receiver", current.receiver)
+                            put("sender", current.sender)
+                            put("body", current.body)
+                            put("timestamp", current.timestamp)
+                            put("contact", contactName)
+                            put("historical", if (current.historical) 1 else 0)
+                            put("direction", if (current.outgoing) "out" else "in")
+                        }
+                        val inserted = db.insertWithOnConflict("inbox", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+                        val otp = if (current.outgoing) "" else extractOtp(current.body).orEmpty()
+                        saveAnalysis(
+                            db,
+                            ack.id,
+                            MessageAnalysis(otp = otp, state = if (otp.isEmpty()) "pending" else "complete"),
+                        )
+                        db.execSQL(
+                            "INSERT OR REPLACE INTO local_conversation_heads SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM local_conversation_heads WHERE sender=? AND (timestamp>? OR (timestamp=? AND message_id>?)))",
+                            arrayOf(
+                                current.sender,
+                                ack.id,
+                                current.timestamp,
+                                current.sender,
+                                current.timestamp,
+                                current.timestamp,
+                                ack.id,
+                            ),
+                        )
+                        if (inserted != -1L) {
+                            db.execSQL("INSERT OR IGNORE INTO preview_messages VALUES (?)", arrayOf(ack.id))
+                        }
+                    }
+                    if (source == "broadcast" || source == "provider")
                         absorbed += absorbAuthoritativeDuplicate(
                             db,
                             key,
@@ -2427,6 +2608,10 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 db.rawQuery("SELECT value FROM meta WHERE key='epoch'", null).use {
                     if (it.moveToFirst()) it.getLong(0) else 0L
                 }
+            val watermark =
+                db.rawQuery("SELECT value FROM meta WHERE key='global_watermark_id'", null).use {
+                    if (it.moveToFirst()) it.getLong(0) else 0L
+                }
             var fresh = 0
             for (i in 0 until messages.length()) {
                 val m = messages.getJSONObject(i)
@@ -2473,6 +2658,14 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 )
                 // The user wrote it: never a notification or a verification code prompt.
                 if (outgoing) continue
+                val msgId = m.getLong("id")
+                val msgSender = m.getString("sender")
+                val readHead =
+                    db.rawQuery(
+                        "SELECT last_read_message_id FROM conversation_reads WHERE sender=?",
+                        arrayOf(msgSender),
+                    ).use { if (it.moveToFirst()) it.getLong(0) else 0L }
+                if (msgId <= watermark || msgId <= readHead) continue
                 if (!shouldNotify(
                         m.getString("device_id"),
                         self,

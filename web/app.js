@@ -323,7 +323,163 @@ const state = {
   callCursor: 0,
   callId: 0,
   callDetail: null,
+  otpBanner: null,
 };
+
+let otpBannerTimer = null;
+let wsOpenSyncTimer = null;
+const seenOtpBannerKeys = new Set();
+let pendingNotificationTarget = null;
+
+function parseNotificationHash(rawHash) {
+  const hash = typeof rawHash === "string" ? rawHash : "";
+  const fragment = hash.startsWith("#") ? hash.slice(1) : (hash.includes("#") ? hash.slice(hash.indexOf("#") + 1) : "");
+  if (!fragment) return null;
+  const params = new URLSearchParams(fragment);
+  const sender = (params.get("sender") || "").trim();
+  const otp = (params.get("otp") || "").trim().slice(0, 32);
+  const msgRaw = Number(params.get("msg") || 0);
+  const messageId = Number.isInteger(msgRaw) && msgRaw > 0 ? msgRaw : 0;
+  if (!sender && !otp && !messageId) return null;
+  return { sender, otp, messageId };
+}
+
+function consumeNotificationHash() {
+  if (typeof location === "undefined") return null;
+  const parsed = parseNotificationHash(location.hash);
+  if (parsed && typeof history !== "undefined" && typeof history.replaceState === "function") {
+    try {
+      history.replaceState(history.state, "", (location.pathname || "/") + (location.search || ""));
+    } catch { /* ignore history restrictions */ }
+  }
+  return parsed;
+}
+
+function dismissOtpBanner() {
+  if (otpBannerTimer !== null && typeof clearTimeout === "function") clearTimeout(otpBannerTimer);
+  otpBannerTimer = null;
+  state.otpBanner = null;
+  renderOtpBanner();
+}
+
+function setOtpBanner({ sender = "", otp = "", messageId = 0, body = "", force = false } = {}) {
+  const cleanOtp = typeof otp === "string" ? otp.trim().slice(0, 32) : "";
+  if (!cleanOtp) return;
+  const cleanSender = typeof sender === "string" ? sender.trim() : "";
+  const cleanMsgId = Number.isInteger(messageId) && messageId > 0 ? messageId : 0;
+  const key = `${cleanMsgId}:${cleanSender}:${cleanOtp}`;
+  if (!force && seenOtpBannerKeys.has(key)) return;
+  seenOtpBannerKeys.add(key);
+  if (seenOtpBannerKeys.size > 100) {
+    const first = seenOtpBannerKeys.values().next().value;
+    if (first !== undefined) seenOtpBannerKeys.delete(first);
+  }
+  state.otpBanner = {
+    sender: cleanSender,
+    otp: cleanOtp,
+    messageId: cleanMsgId,
+    body: typeof body === "string" ? body : "",
+    expiresAt: Date.now() + 60000,
+  };
+  if (otpBannerTimer !== null && typeof clearTimeout === "function") clearTimeout(otpBannerTimer);
+  if (typeof setTimeout === "function") {
+    const generation = state.generation;
+    otpBannerTimer = setTimeout(() => {
+      otpBannerTimer = null;
+      if (generation !== state.generation) return;
+      state.otpBanner = null;
+      renderOtpBanner();
+    }, 60000);
+  }
+  renderOtpBanner();
+}
+
+function renderOtpBanner() {
+  if (typeof document === "undefined") return;
+  const slot = $("#otp-banner-slot");
+  if (!slot) return;
+  slot.replaceChildren();
+  const bannerData = state.otpBanner;
+  if (!bannerData || !bannerData.otp || bannerData.expiresAt <= Date.now()) return;
+
+  const card = el("section", "otp-capsule-banner");
+  card.setAttribute("role", "region");
+  card.setAttribute("aria-label", "最新验证码");
+
+  const info = el("div", "otp-capsule-info");
+  const title = bannerData.sender
+    ? (displayContact(bannerData.sender, "") || bannerData.sender)
+    : "新验证码";
+  const metaRow = el("div", "otp-capsule-meta");
+  metaRow.append(el("span", "otp-capsule-badge", "验证码"), el("strong", "otp-capsule-sender", title));
+  info.append(metaRow, el("strong", "otp-capsule-code", bannerData.otp));
+
+  const actions = el("div", "otp-capsule-actions");
+  actions.append(button("复制验证码", async () => {
+    await copyText(bannerData.otp);
+    toast(`已复制验证码 ${bannerData.otp}`);
+    if (bannerData.sender) void clearDeliveredNotifications({ sender: bannerData.sender });
+    dismissOtpBanner();
+  }, "otp-capsule-copy"));
+
+  if (bannerData.sender && state.sender !== bannerData.sender) {
+    actions.append(button("查看", async () => {
+      await openNotificationTarget({ sender: bannerData.sender });
+    }, "text-button otp-capsule-open"));
+  }
+  actions.append(iconButton(ICONS.close, "关闭验证码提示", () => { dismissOtpBanner(); }, "otp-capsule-close"));
+
+  card.append(info, actions);
+  slot.append(card);
+}
+
+async function clearDeliveredNotifications({ sender = "", all = false } = {}) {
+  if (typeof navigator === "undefined" || !navigator.serviceWorker?.getRegistration) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg?.getNotifications) return;
+    const list = await reg.getNotifications();
+    for (const notice of list) {
+      const tag = notice.tag || "";
+      if (tag === "hongshu-test") continue;
+      if (all || (sender && (notice.data?.sender === sender || tag === "hongshu-new"))) {
+        notice.close?.();
+      }
+    }
+  } catch { /* ignore notification cleanup errors */ }
+}
+
+async function openNotificationTarget({ sender = "", otp = "", messageId = 0, body = "", action = "", fromClick = false } = {}) {
+  const cleanSender = typeof sender === "string" ? sender.trim() : "";
+  const cleanOtp = typeof otp === "string" ? otp.trim().slice(0, 32) : "";
+  if (cleanOtp) {
+    setOtpBanner({ sender: cleanSender, otp: cleanOtp, messageId, body, force: fromClick || Boolean(action) });
+  }
+  if (action === "copy" && cleanOtp) {
+    try {
+      await copyText(cleanOtp);
+      toast(`已复制验证码 ${cleanOtp}`);
+    } catch {
+      toast("请点击上方验证码胶囊一键复制");
+    }
+  }
+  if (!cleanSender) return;
+  if (!state.me || state.loggedOut) {
+    pendingNotificationTarget = { sender: cleanSender, otp: cleanOtp, messageId, body, action, fromClick };
+    return;
+  }
+  const switchingView = state.page !== "inbox" || state.view !== "sms";
+  state.page = "inbox";
+  state.view = "sms";
+  if (typeof document !== "undefined" && document.querySelector?.("#app")) {
+    if (state.sender !== cleanSender || switchingView) {
+      await openContactConversation(cleanSender);
+    }
+  } else {
+    state.sender = cleanSender;
+  }
+  void clearDeliveredNotifications({ sender: cleanSender });
+}
 
 const inboxQueryKey = () => JSON.stringify([state.group, state.q, state.sim, state.device]);
 const historyQueryKey = () => JSON.stringify([inboxQueryKey(), state.sender]);
@@ -947,6 +1103,10 @@ function shell() {
   const main = el("main", "main");
   main.append(progContainer);
 
+  const otpSlot = el("div");
+  otpSlot.id = "otp-banner-slot";
+  main.append(otpSlot);
+
   if (remoteHTTP()) {
     const banner = el("div", "security-banner");
     const bannerText = el("div", "security-banner-text");
@@ -965,6 +1125,7 @@ function shell() {
 
   if (state.page === "settings") settingsView();
   else inboxView();
+  renderOtpBanner();
   document.body.dataset.detail = String(state.page === "inbox" && Boolean(state.view === "calls" ? state.callId : state.sender));
 
   setStatus(
@@ -1004,6 +1165,7 @@ function inboxHeader({ markAll = true } = {}) {
       updateAppBadge(0);
       for (const c of state.conversations) c.unread_count = 0;
       renderConversations();
+      void clearDeliveredNotifications({ all: true });
       toast("已全部标记为已读");
     } catch (e) {
       toast(e.message);
@@ -1394,7 +1556,15 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
     const cursorMode = state.me?.features?.includes("conversation_cursor");
     const headIsFull = cursorMode ? Boolean(d.more) : head.length === CONVERSATION_PAGE;
     const firstCursor = cursorMode ? d.next_cursor || null : null;
+    let paintedArrivals = false;
     if (preserveHistory && revalidateConversations) {
+      if (headIsFull && state.conversations.length > CONVERSATION_PAGE) {
+        state.conversations = mergeConversationPages(head, state.conversations, true).slice(0, state.conversations.length);
+        state.conversationsLoaded = true;
+        renderGroupBar();
+        renderConversations({ arrivals });
+        paintedArrivals = true;
+      }
       let rows = head;
       let full = headIsFull;
       let nextCursor = firstCursor;
@@ -1426,7 +1596,7 @@ async function refreshInbox({ metadata = false, preserveHistory = false, revalid
     state.conversationsQuery = key;
     state.conversationsLoaded = true;
     renderGroupBar();
-    renderConversations({ arrivals });
+    renderConversations({ arrivals: arrivals && !paintedArrivals });
     loadingMark("content");
     // In low-speed mode the current thread goes before ancillary counts, too.
     if (!networkProfile.constrained) void refreshCounts(gen, key);
@@ -1655,7 +1825,29 @@ function renderConversations({ arrivals = false } = {}) {
       el("time", "", `${simLabel(m.receiver)} · ${formatRelativeTime(m.timestamp)}`),
     );
     const bottom = el("div", "preview-bottom");
-    if (m.analysis?.otp && !isOutgoing(m)) bottom.append(el("span", "otp-tag", "验证码"));
+    if (m.analysis?.otp && !isOutgoing(m)) {
+      const otpCode = m.analysis.otp;
+      const chip = el("span", "otp-tag otp-copy-chip", `验证码 ${otpCode}`);
+      chip.setAttribute("role", "button");
+      chip.tabIndex = 0;
+      chip.setAttribute("aria-label", `复制验证码 ${otpCode}`);
+      const copyOtp = (event) => {
+        event.stopPropagation();
+        event.preventDefault?.();
+        void copyText(otpCode)
+          .then(() => {
+            toast(`已复制验证码 ${otpCode}`);
+            if (m.sender) void clearDeliveredNotifications({ sender: m.sender });
+          })
+          .catch((error) => toast(error.message));
+      };
+      chip.addEventListener("pointerdown", (event) => event.stopPropagation());
+      chip.addEventListener("click", copyOtp);
+      chip.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") copyOtp(event);
+      });
+      bottom.append(chip);
+    }
     bottom.append(el("p", "", isOutgoing(m) ? `我：${m.body}` : m.body));
     if (m.unread_count > 0) {
       bottom.append(el("span", "unread-badge", m.unread_count > 99 ? "99+" : String(m.unread_count)));
@@ -1841,6 +2033,7 @@ async function markDisplayedRead(sender, message_id) {
   const generation = state.generation;
   try {
     await api("/messages/read", "POST", { sender, message_id });
+    void clearDeliveredNotifications({ sender });
     if (generation === state.generation && state.me) await catchUp();
   } catch (error) {
     if (generation === state.generation && state.me && error.name !== "AbortError") {
@@ -2955,7 +3148,7 @@ async function reloadMetadata({ force = false } = {}) {
   finally { if (metadataTask === task) metadataTask = null; }
 }
 
-function disconnect() {
+function disconnect({ clearBadge = true } = {}) {
   contactsReload++;
   browserContacts.reset();
   state.loggedOut = true;
@@ -2965,6 +3158,12 @@ function disconnect() {
   countsController?.abort();
   if (typeof clearTimeout === "function") clearTimeout(countsTimer); countsRequest++; countsRetry = 0; countsDirty = false; countsKey = "";
   clearOtpExpirations();
+  if (otpBannerTimer !== null && typeof clearTimeout === "function") clearTimeout(otpBannerTimer);
+  otpBannerTimer = null;
+  if (wsOpenSyncTimer !== null && typeof clearTimeout === "function") clearTimeout(wsOpenSyncTimer);
+  wsOpenSyncTimer = null;
+  state.otpBanner = null;
+  seenOtpBannerKeys.clear();
   if (typeof clearTimeout === "function") clearTimeout(wsReconnectTimer);
   wsReconnectTimer = null; wsRetry = 0;
   state.ws?.close();
@@ -3007,7 +3206,57 @@ function disconnect() {
   callsRequest++;
   callDetailRequest++;
   contactSearchRequest++;
-  updateAppBadge(0);
+  if (clearBadge) updateAppBadge(0);
+}
+
+function surfaceArrivedOtpAndFallbackNotice(previousCursor) {
+  if (!Array.isArray(state.conversations) || !state.conversations.length) return;
+  const freshIncoming = state.conversations.filter(
+    (c) => c && !isOutgoing(c) && (c.unread_count || 0) > 0 && (c.id || 0) > previousCursor,
+  );
+  if (!freshIncoming.length) return;
+
+  const latestOtp = freshIncoming.find((c) => c.analysis?.otp);
+  if (latestOtp) {
+    setOtpBanner({
+      sender: latestOtp.sender,
+      otp: latestOtp.analysis.otp,
+      messageId: latestOtp.id || 0,
+      body: latestOtp.body || "",
+    });
+  }
+
+  if (
+    typeof document !== "undefined" &&
+    document.visibilityState === "hidden" &&
+    state.me?.device?.notify &&
+    !state.me?.push_subscribed &&
+    typeof Notification === "function" &&
+    Notification.permission === "granted"
+  ) {
+    for (const item of freshIncoming.slice(0, 3)) {
+      const label = displayContact(item.sender, item.contact || "") || item.sender || "鸿枢";
+      const otp = item.analysis?.otp || "";
+      const title = otp ? `验证码 ${otp} · ${label}` : `${label} · 鸿枢`;
+      try {
+        const notice = new Notification(title, {
+          body: item.body || "有新短信，打开应用查看",
+          tag: otp ? `hongshu-otp-${item.id || item.sender}` : `hongshu-conv-${item.sender || item.id}`,
+          renotify: true,
+        });
+        notice.onclick = () => {
+          try { if (typeof window !== "undefined") window.focus?.(); } catch { /* ignore */ }
+          void openNotificationTarget({
+            sender: item.sender,
+            otp,
+            messageId: item.id || 0,
+            body: item.body || "",
+            fromClick: true,
+          });
+        };
+      } catch { /* browsers that require ServiceWorkerRegistration.showNotification skip */ }
+    }
+  }
 }
 
 export async function handlePushUpdate(event) {
@@ -3022,6 +3271,19 @@ export async function handlePushUpdate(event) {
       try { await browserPushEnabled(); }
       catch (error) { if (error.name !== "AbortError") toast("通知订阅恢复失败，请稍后重试"); }
     }
+    return;
+  }
+  if (event.data?.type === "NOTIFICATION_OPEN") {
+    const hashTarget = parseNotificationHash(event.data.url) || {};
+    await openNotificationTarget({
+      sender: event.data.sender || hashTarget.sender || "",
+      otp: event.data.otp || hashTarget.otp || "",
+      messageId: event.data.messageId || hashTarget.messageId || 0,
+      body: event.data.body || "",
+      action: event.data.action || "",
+      fromClick: true,
+    });
+    await catchUp();
     return;
   }
   if (event.data?.type !== "MESSAGES_CHANGED") return;
@@ -3048,6 +3310,7 @@ function realtime() {
   if (!state.me || state.loggedOut || navigator.onLine === false) { setStatus("离线，等待网络恢复", false); return; }
   if (state.ws && (state.ws.readyState === 0 || state.ws.readyState === 1)) return;
   if (wsReconnectTimer !== null) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (wsOpenSyncTimer !== null && typeof clearTimeout === "function") { clearTimeout(wsOpenSyncTimer); wsOpenSyncTimer = null; }
   const gen = state.generation;
   const ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/ws");
   state.ws = ws;
@@ -3055,10 +3318,25 @@ function realtime() {
     if (gen !== state.generation || !state.me) { ws.close(); return; }
     wsRetry = 0;
     setStatus("实时连接", true);
-    void catchUp().catch((e) => toast(e.message));
+    if (typeof setTimeout === "function") {
+      if (wsOpenSyncTimer !== null && typeof clearTimeout === "function") clearTimeout(wsOpenSyncTimer);
+      wsOpenSyncTimer = setTimeout(() => {
+        wsOpenSyncTimer = null;
+        if (gen === state.generation && state.me) void catchUp().catch((e) => toast(e.message));
+      }, 150);
+    } else {
+      void catchUp().catch((e) => toast(e.message));
+    }
   };
-  ws.onmessage = () => { if (gen === state.generation && state.me) void catchUp().catch((e) => toast(e.message)); };
+  ws.onmessage = () => {
+    if (wsOpenSyncTimer !== null && typeof clearTimeout === "function") {
+      clearTimeout(wsOpenSyncTimer);
+      wsOpenSyncTimer = null;
+    }
+    if (gen === state.generation && state.me) void catchUp().catch((e) => toast(e.message));
+  };
   ws.onclose = () => {
+    if (wsOpenSyncTimer !== null && typeof clearTimeout === "function") { clearTimeout(wsOpenSyncTimer); wsOpenSyncTimer = null; }
     if (state.ws === ws) state.ws = null;
     if (gen === state.generation && state.me) setStatus(navigator.onLine === false ? "离线，等待网络恢复" : "断线，等待补齐", false);
     scheduleRealtime(gen);
@@ -3090,6 +3368,7 @@ async function catchUp() {
     // Calls have their own commit clock; a restore resets both streams.
     state.callsDirty ||= (me.call_cursor ?? 0) !== state.callCursor || epochReset(state.epochSeen, state.epoch, me.epoch);
     state.callCursor = me.call_cursor ?? 0;
+    const previousCursor = epochReset(state.epochSeen, state.epoch, me.epoch) ? 0 : state.cursor;
     if (epochReset(state.epochSeen, state.epoch, me.epoch)) {
       state.calls = [];
       state.callsLoaded = state.callsHasMore = false;
@@ -3115,6 +3394,7 @@ async function catchUp() {
     if (typeof me.unread_count === "number") {
       state.unreadCount = me.unread_count;
       updateAppBadge(state.unreadCount);
+      if (state.unreadCount === 0) void clearDeliveredNotifications({ all: true });
     }
     const metadataNeeded = !metadataUpdatedAt || (me.metadata_revision != null ? me.metadata_revision !== metadataRevision : Date.now() - metadataUpdatedAt >= 60000);
     if (metadataNeeded) {
@@ -3144,11 +3424,13 @@ async function catchUp() {
     if (state.page === "inbox" && state.view !== "calls" && state.inboxDirty) {
       const metadataVersion = metadataChanges;
       state.readRetry = false;
-      const refreshed = await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: state.historyDirty, revalidateConversations: state.conversationsDirty, arrivals: state.arrivalsPending });
+      const hadArrivals = state.arrivalsPending;
+      const refreshed = await refreshInbox({ metadata: false, preserveHistory: true, revalidateHistory: state.historyDirty, revalidateConversations: state.conversationsDirty, arrivals: hadArrivals });
       if (generation === state.generation && refreshed !== false) {
         state.inboxDirty = metadataVersion !== metadataChanges;
         state.historyDirty = state.conversationsDirty = state.inboxDirty;
         state.arrivalsPending = false;
+        if (hadArrivals) surfaceArrivedOtpAndFallbackNotice(previousCursor);
       }
     }
     // A hidden WS refresh may have consumed all data changes without marking the
@@ -3165,7 +3447,8 @@ async function catchUp() {
 }
 
 async function start() {
-  disconnect();
+  disconnect({ clearBadge: false });
+  const initialTarget = consumeNotificationHash();
   const generation = state.generation;
   state.me = await api("/me");
   if (generation !== state.generation) return;
@@ -3184,6 +3467,11 @@ async function start() {
   loadingMark("authenticated");
   shell();
   loadingMark("shell");
+  const queuedTarget = pendingNotificationTarget || initialTarget;
+  pendingNotificationTarget = null;
+  if (queuedTarget) {
+    void openNotificationTarget({ ...queuedTarget, fromClick: true });
+  }
   void reloadLocalContacts().catch(error => toast(error.message));
   void reloadMetadata().then(() => {
     if (sessionGeneration !== state.generation || !state.me) return;
@@ -3265,6 +3553,20 @@ if (typeof document !== "undefined") {
       void catchUp().catch(() => {});
     }
   });
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted && state.me) {
+        realtime();
+        void catchUp().catch(() => {});
+      }
+    });
+    window.addEventListener("focus", () => {
+      if (state.me) {
+        realtime();
+        void catchUp().catch(() => {});
+      }
+    });
+  }
   start().catch(startupFailure);
 }
 

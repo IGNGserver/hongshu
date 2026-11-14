@@ -37,6 +37,16 @@ object OtpNotificationManager {
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
                     PackageManager.PERMISSION_GRANTED)
 
+    internal fun canPostPromotedNotifications(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < 36) return true
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return true
+        return runCatching {
+            NotificationManager::class.java
+                .getMethod("canPostPromotedNotifications")
+                .invoke(manager) as? Boolean ?: true
+        }.getOrDefault(true)
+    }
+
     /**
      * Builds and displays a promoted ongoing notification (or standard high-priority notification on Android <= 15)
      * for verification codes received from other devices.
@@ -62,14 +72,19 @@ object OtpNotificationManager {
         fun actionData(action: String) = android.net.Uri.Builder().scheme("hongshu")
             .authority("otp").appendPath(tag).appendPath(action).build()
 
-        val copyIntent = Intent(context, OtpNotificationReceiver::class.java).apply {
+        val copyIntent = Intent(context, OtpCopyActivity::class.java).apply {
             action = ACTION_COPY_OTP
             data = actionData("copy")
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+            )
             putExtra(EXTRA_OTP_CODE, otp)
             putExtra(EXTRA_NOTIFICATION_ID, notificationId)
             putExtra(EXTRA_NOTIFICATION_TAG, tag)
         }
-        val copyPending = PendingIntent.getBroadcast(
+        val copyPending = PendingIntent.getActivity(
             context,
             notificationId * 2 + 1,
             copyIntent,
@@ -89,7 +104,10 @@ object OtpNotificationManager {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val openIntent = mainActivityIntent(context).setData(actionData("open"))
+        val openIntent = mainActivityIntent(context).apply {
+            data = actionData("open")
+            putExtra(EXTRA_CONVERSATION_SENDER, sender)
+        }
         val openPending = PendingIntent.getActivity(
             context,
             notificationId * 2,
@@ -105,16 +123,22 @@ object OtpNotificationManager {
             .setSmallIcon(R.drawable.ic_hongshu)
             .setContentTitle("验证码：$otp")
             .setContentText(contentText)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("验证码 $otp · $contentText\n点击“复制”直接写入剪贴板")
+            )
             .setContentIntent(openPending)
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setTimeoutAfter(remaining.coerceAtMost(OTP_TIMEOUT_MILLIS))
             .addAction(R.drawable.ic_content_copy, "复制", copyPending)
             .addAction(R.drawable.ic_close, "关闭", dismissPending)
 
-        applyPromotedOngoing(builder, otp)
+        applyPromotedOngoing(builder, otp, sourceLabel)
 
         manager.notify(tag, notificationId, builder.build())
         return true
@@ -122,13 +146,59 @@ object OtpNotificationManager {
 
     /**
      * Applies Android 16+ (API 36+) promoted ongoing status (Live Updates / 灵动岛药丸)
-     * via reflection and metadata extras while maintaining backward compatibility with API <= 35.
+     * plus Xiaomi HyperOS Focus Notification capsule extras while staying compatible with API <= 35.
      */
-    internal fun applyPromotedOngoing(builder: NotificationCompat.Builder, shortText: String) {
-        // 1. Set the framework extras directly so system UI recognizes promoted ongoing status
+    internal fun applyPromotedOngoing(
+        builder: NotificationCompat.Builder,
+        shortText: String,
+        sourceLabel: String = "",
+    ) {
+        val focusTitle = if (sourceLabel.isNotEmpty()) "$sourceLabel · 验证码" else "鸿枢验证码"
+        val focusParam =
+            org.json.JSONObject()
+                .put("protocol", 1)
+                .put("enableFloat", true)
+                .put("updatable", true)
+                .put("ticker", "验证码 $shortText")
+                .put("tickerPic", "")
+                .put(
+                    "baseInfo",
+                    org.json.JSONObject()
+                        .put("type", 2)
+                        .put("title", shortText)
+                        .put("content", focusTitle)
+                        .put("showSmallIcon", true),
+                )
+                .put(
+                    "island",
+                    org.json.JSONObject()
+                        .put("islandProperty", 1)
+                        .put("islandOrder", true)
+                        .put("islandFirstFloat", true)
+                        .put("highlightColor", "#1B6EF3")
+                        .put(
+                            "smallIslandArea",
+                            org.json.JSONObject()
+                                .put("combinePicInfo", org.json.JSONObject().put("title", shortText)),
+                        )
+                        .put(
+                            "bigIslandArea",
+                            org.json.JSONObject()
+                                .put(
+                                    "textInfo",
+                                    org.json.JSONObject()
+                                        .put("title", "验证码 $shortText")
+                                        .put("content", focusTitle),
+                                ),
+                        ),
+                )
+                .toString()
+
+        // 1. Set framework promoted ongoing extras + HyperOS Focus Notification capsule JSON
         val extras = Bundle().apply {
             putBoolean("android.requestPromotedOngoing", true)
             putCharSequence("android.shortCriticalText", shortText)
+            putString("miui.focus.param", focusParam)
         }
         builder.addExtras(extras)
 

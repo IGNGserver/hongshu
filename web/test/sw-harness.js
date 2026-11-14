@@ -1,7 +1,7 @@
 import vm from "node:vm";
 
 export function workerRuntime(source, stores = new Map(), load = async () => ({ ok: true, value: "network", clone() { return this; } }), options = {}) {
-  const runtime = { handlers: {}, offline: false, skipped: false, fetches: 0, requests: [], notifications: [], opened: null };
+  const runtime = { handlers: {}, offline: false, skipped: false, fetches: 0, requests: [], notifications: [], opened: null, badge: undefined };
   const key = request => typeof request === "string" ? new URL(request, "https://example.test").pathname : new URL(request.url).pathname;
   const caches = {
     keys: async () => [...stores.keys()],
@@ -37,6 +37,7 @@ export function workerRuntime(source, stores = new Map(), load = async () => ({ 
       return load(key(request));
     },
     self: { location: { origin: "https://example.test" }, clients, registration,
+      navigator: { setAppBadge: async n => { runtime.badge = n; }, clearAppBadge: async () => { runtime.badge = 0; } },
       skipWaiting: () => { runtime.skipped = true; }, addEventListener: (name, handler) => { runtime.handlers[name] = handler; } },
   });
   vm.runInContext(source, ctx);
@@ -49,7 +50,7 @@ export function workerRuntime(source, stores = new Map(), load = async () => ({ 
   };
   runtime.push = data => runtime.dispatch("push", { data });
   runtime.subscriptionChange = event => runtime.dispatch("pushsubscriptionchange", event);
-  runtime.click = notification => runtime.dispatch("notificationclick", { notification });
+  runtime.click = (notification, action = "") => runtime.dispatch("notificationclick", { notification, action });
   runtime.request = async (path, method = "GET") => {
     let pending;
     const updates = [];
