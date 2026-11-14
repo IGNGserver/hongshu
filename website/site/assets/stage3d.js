@@ -118,8 +118,11 @@ function bezierTangent(p0, p1, p2, p3, t) {
 // Analytical CAD-grade filleted box with smooth C1 normals
 function createRoundedBox(w, h, d, radius, segs = 14) {
   const hx = w * 0.5, hy = h * 0.5, hz = d * 0.5;
-  const r = Math.min(radius, hx * 0.92, hy * 0.92, hz * 0.92);
-  const ix = hx - r, iy = hy - r, iz = hz - r;
+  // Clamp corner radius independently per axis so thin devices keep full face corner curvature
+  const rx = Math.min(radius, hx * 0.92);
+  const ry = Math.min(radius, hy * 0.92);
+  const rz = Math.min(radius, hz * 0.92);
+  const ix = hx - rx, iy = hy - ry, iz = hz - rz;
 
   // Cluster samples near [-1, 1] edges for crisp bevel highlights
   const steps = [];
@@ -156,16 +159,29 @@ function createRoundedBox(w, h, d, radius, segs = 14) {
         const cy = clamp(qy, -iy, iy);
         const cz = clamp(qz, -iz, iz);
 
-        let dx = qx - cx, dy = qy - cy, dz = qz - cz;
-        const len = Math.hypot(dx, dy, dz);
-        if (len > 1e-5) {
-          dx /= len; dy /= len; dz /= len;
+        const dx = qx - cx, dy = qy - cy, dz = qz - cz;
+        const sx = rx > 1e-5 ? dx / rx : 0;
+        const sy = ry > 1e-5 ? dy / ry : 0;
+        const sz = rz > 1e-5 ? dz / rz : 0;
+        const slen = Math.hypot(sx, sy, sz);
+
+        let ux, uy, uz;
+        if (slen > 1e-5) {
+          ux = sx / slen;
+          uy = sy / slen;
+          uz = sz / slen;
         } else {
-          dx = face.n[0]; dy = face.n[1]; dz = face.n[2];
+          ux = face.n[0];
+          uy = face.n[1];
+          uz = face.n[2];
         }
 
-        positions.push(cx + dx * r, cy + dy * r, cz + dz * r);
-        normals.push(dx, dy, dz);
+        positions.push(cx + ux * rx, cy + uy * ry, cz + uz * rz);
+        const nx = rx > 1e-5 ? ux / rx : face.n[0];
+        const ny = ry > 1e-5 ? uy / ry : face.n[1];
+        const nz = rz > 1e-5 ? uz / rz : face.n[2];
+        const nlen = Math.hypot(nx, ny, nz) || 1;
+        normals.push(nx / nlen, ny / nlen, nz / nlen);
         uvs.push((su + 1) * 0.5, (sv + 1) * 0.5);
       }
     }
@@ -288,7 +304,13 @@ uniform float uTime;
 uniform float uPulse;
 uniform float uPacketT;
 uniform float uDarkTheme;
+uniform vec3 uScreenShape; // (halfW, halfH, cornerRadius) for SDF rounded screen clipping
 uniform sampler2D uTex;
+
+float sdRoundedRect(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + vec2(r);
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
 
 void main() {
   if (uMode > 1.5) {
@@ -315,7 +337,7 @@ void main() {
                  + vec3(0.84, 0.65, 0.36) * ring * 0.85;
     float alpha = clamp(shadow * mix(0.68, 0.88, uDarkTheme) + ring * 0.42 + idleHalo * 0.32, 0.0, 0.72);
     vec3 finalFloor = mix(shadowCol, glowCol + shadowCol * 0.3, clamp((ring + idleHalo) * 1.6, 0.0, 1.0));
-    gl_FragColor = vec4(finalFloor, alpha);
+    gl_FragColor = vec4(finalFloor * alpha, alpha);
     return;
   }
 
@@ -331,8 +353,8 @@ void main() {
     vec3 col = mix(uBaseColor, uEmissive, wave * 0.42 + packet * 0.92);
     col += vec3(1.0, 0.96, 0.88) * packet * 0.75;
     float edgeFade = smoothstep(0.0, 0.09, t) * smoothstep(1.0, 0.91, t);
-    float alpha = (0.24 + wave * 0.16 + packet * 0.60) * edgeFade * rim * uOpacity;
-    gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.96));
+    float alpha = clamp((0.24 + wave * 0.16 + packet * 0.60) * edgeFade * rim * uOpacity, 0.0, 0.96);
+    gl_FragColor = vec4(col * alpha, alpha);
     return;
   }
 
@@ -386,7 +408,17 @@ void main() {
     color = texColor * 0.97 + vec3(glassSheen) + fresnel * 0.28;
   }
 
-  gl_FragColor = vec4(color, uOpacity);
+  float outAlpha = uOpacity;
+  if (uScreenShape.x > 0.0) {
+    vec2 sp = (vUv - 0.5) * (uScreenShape.xy * 2.0);
+    float d = sdRoundedRect(sp, uScreenShape.xy, uScreenShape.z);
+    float aa = clamp(uScreenShape.z * 0.06, 0.0025, 0.007);
+    float mask = smoothstep(aa, -aa, d);
+    if (mask < 0.01) discard;
+    outAlpha *= mask;
+  }
+
+  gl_FragColor = vec4(color * outAlpha, outAlpha);
 }
 `;
 
@@ -417,10 +449,9 @@ function paintPhoneScreen(canvas, spec, darkTheme) {
   const chipBg = darkTheme ? "#1b3a66" : "#d8e6fc";
   const chipInk = darkTheme ? "#cbe0ff" : "#0b3c8a";
 
-  // Screen background with rounded display corners
-  roundRect(ctx, 2, 2, W - 4, H - 4, 46);
+  // Solid full-bleed background so mipmaps/bilinear filtering near SDF rounded corners never sample black transparent texels
   ctx.fillStyle = bg;
-  ctx.fill();
+  ctx.fillRect(0, 0, W, H);
 
   // Status bar + punch-hole camera
   ctx.fillStyle = muted;
@@ -523,7 +554,7 @@ function paintPhoneScreen(canvas, spec, darkTheme) {
 
   ctx.fillStyle = "#2f9e5b";
   ctx.font = "600 14px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText(`● outbox → 中枢已确认 #${spec.seq}`, 36, 402);
+  ctx.fillText(`● 已同步至私有中枢 #${spec.seq}`, 36, 402);
 
   // Secondary conversation rows
   const subRows = spec.rows || [];
@@ -570,14 +601,13 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   const accent = darkTheme ? "#8ab8ff" : "#1e56b5";
   const otpBg = darkTheme ? "#173257" : "#e5effe";
 
-  roundRect(ctx, 0, 0, W, H, 22);
+  // Solid full-bleed background to prevent transparent corner texel bleeding
   ctx.fillStyle = shellBg;
-  ctx.fill();
+  ctx.fillRect(0, 0, W, H);
 
   // Top macOS/PWA window bar
   ctx.fillStyle = darkTheme ? "#171b24" : "#e3e8f1";
-  roundRect(ctx, 0, 0, W, 44, 22);
-  ctx.fill();
+  ctx.fillRect(0, 0, W, 44);
   ["#e56b65", "#e4b354", "#54b373"].forEach((c, i) => {
     ctx.beginPath();
     ctx.arc(26 + i * 20, 22, 6, 0, Math.PI * 2);
@@ -586,11 +616,13 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   });
   ctx.fillStyle = muted;
   ctx.font = "600 15px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("鸿枢 · 短信中枢 (Web / PWA · 自托管私有实例)", 96, 27);
+  ctx.fillText("鸿枢 · 跨设备短信收件箱", 96, 27);
 
   ctx.fillStyle = "#2f9e5b";
   ctx.font = "600 14px ui-monospace, 'SF Mono', monospace";
-  ctx.fillText(`● WS 在线 · sync_clock #${state.seq}`, W - 248, 27);
+  ctx.textAlign = "right";
+  ctx.fillText(`● 实时连接正常 · #${state.seq}`, W - 24, 27);
+  ctx.textAlign = "start";
 
   // Left Inbox Column (width 370)
   roundRect(ctx, 18, 56, 368, H - 74, 24);
@@ -603,10 +635,10 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   ctx.fill();
   ctx.fillStyle = muted;
   ctx.font = "500 15px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("⌕ 搜索短信、号码或中枢别名", 52, 102);
+  ctx.fillText("⌕ 搜索短信、发件人或验证码", 52, 102);
 
   // Filter chips
-  const chips = ["筛选 · 3 台手机", "全部短信 18", "验证码 4"];
+  const chips = ["3 台手机", "全部短信 18", "验证码 4"];
   let cx = 34;
   chips.forEach((ch, idx) => {
     const cw = idx === 0 ? 122 : 100;
@@ -667,7 +699,7 @@ function paintDesktopScreen(canvas, state, darkTheme) {
 
   const top = items[0] || {
     sender: "星云通行证",
-    sub: "1069070021 · 来自 3 台授权手机汇聚",
+    sub: "1069070021 · 来自 3 台常用手机",
     otp: "684219",
     body: "【星云通行证】您的登录验证码为 684219，5 分钟内有效。请勿向他人泄露验证码。",
     deviceBadge: "Xiaomi 14 · 186****9105",
@@ -679,7 +711,7 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   ctx.fillText(top.sender, dx + 32, 102);
   ctx.fillStyle = muted;
   ctx.font = "500 14px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText(`${top.deviceBadge} · 只读安全归档 · MySQL utf8mb4_bin`, dx + 32, 126);
+  ctx.fillText(`${top.deviceBadge} · 安全只读存档`, dx + 32, 126);
 
   ctx.strokeStyle = darkTheme ? "#283040" : "#e6ebf3";
   ctx.lineWidth = 1.5;
@@ -702,7 +734,7 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   ctx.fill();
   ctx.fillStyle = ink;
   ctx.font = "400 16px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("【系统通知】跨设备授权令牌校验正常，新消息到达将实时推送。", dx + 52, 250);
+  ctx.fillText("【系统提示】多台手机连接正常，新短信与验证码将自动汇总到这里。", dx + 52, 250);
   ctx.fillStyle = muted;
   ctx.font = "500 13px -apple-system, 'PingFang SC', sans-serif";
   ctx.fillText("11:20 · Pixel 9 主力机 · SIM1 138****0412", dx + 52, 278);
@@ -743,7 +775,7 @@ function paintDesktopScreen(canvas, state, darkTheme) {
   ctx.fillText(bodySlice, dx + 52, top.otp ? 468 : 390);
   ctx.fillStyle = muted;
   ctx.font = "500 13px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText(`刚刚 · 来自 ${top.deviceBadge} · SHA-256 指纹去重已确认`, dx + 52, top.otp ? 506 : 438);
+  ctx.fillText(`刚刚 · 来自 ${top.deviceBadge} · 已自动过滤重复`, dx + 52, top.otp ? 506 : 438);
 }
 
 // Hub Top Medallion Texture (512 x 512)
@@ -751,17 +783,17 @@ function paintHubMedallion(canvas, seq, darkTheme) {
   const ctx = canvas.getContext("2d");
   const S = canvas.width;
   ctx.clearRect(0, 0, S, S);
-  roundRect(ctx, 0, 0, S, S, 72);
-  ctx.fillStyle = darkTheme ? "#131822" : "#1c2432";
-  ctx.fill();
+  // Light theme uses warm porcelain to harmonize with hardware metal instead of dark patches behind foreground phones
+  ctx.fillStyle = darkTheme ? "#151b26" : "#f2f4f8";
+  ctx.fillRect(0, 0, S, S);
 
-  ctx.strokeStyle = "rgba(218, 173, 104, 0.52)";
+  ctx.strokeStyle = darkTheme ? "rgba(218, 173, 104, 0.55)" : "rgba(182, 134, 58, 0.50)";
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.arc(S * 0.5, S * 0.5, 168, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.strokeStyle = "rgba(122, 174, 248, 0.38)";
+  ctx.strokeStyle = darkTheme ? "rgba(122, 174, 248, 0.38)" : "rgba(43, 97, 179, 0.32)";
   ctx.setLineDash([8, 10]);
   ctx.beginPath();
   ctx.arc(S * 0.5, S * 0.5, 198, 0, Math.PI * 2);
@@ -769,42 +801,42 @@ function paintHubMedallion(canvas, seq, darkTheme) {
   ctx.setLineDash([]);
 
   const grad = ctx.createRadialGradient(S * 0.5, S * 0.5, 8, S * 0.5, S * 0.5, 68);
-  grad.addColorStop(0, "#fff3d6");
-  grad.addColorStop(0.55, "#d8a65c");
+  grad.addColorStop(0, darkTheme ? "#fff3d6" : "#fff7e2");
+  grad.addColorStop(0.55, darkTheme ? "#d8a65c" : "#dfaf64");
   grad.addColorStop(1, "rgba(180, 126, 52, 0)");
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(S * 0.5, S * 0.5, 68, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#f4f0e6";
+  ctx.fillStyle = darkTheme ? "#f4f0e6" : "#1c2536";
   ctx.textAlign = "center";
   ctx.font = "700 26px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("鸿枢 · PRIVATE HUB", S * 0.5, 134);
-  ctx.fillStyle = "#9fb4d4";
-  ctx.font = "600 20px ui-monospace, 'SF Mono', monospace";
-  ctx.fillText("Go + MySQL 8.4", S * 0.5, 386);
-  ctx.fillStyle = "#e7be7e";
-  ctx.fillText(`sync_clock #${seq}`, S * 0.5, 418);
+  ctx.fillText("鸿枢 · 私有中枢", S * 0.5, 134);
+  ctx.fillStyle = darkTheme ? "#9fb4d4" : "#4b5c78";
+  ctx.font = "600 19px -apple-system, 'PingFang SC', sans-serif";
+  ctx.fillText("你自己的电脑 / NAS", S * 0.5, 386);
+  ctx.fillStyle = darkTheme ? "#e7be7e" : "#9c6b21";
+  ctx.fillText(`已安全汇总 #${seq}`, S * 0.5, 418);
   ctx.textAlign = "start";
 }
 
 // Floating 3D Message Capsule Texture (256 x 128)
-function paintPacketCard(canvas, label, code) {
+function paintPacketCard(canvas, label, code, darkTheme = false) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-  roundRect(ctx, 3, 3, W - 6, H - 6, 26);
-  ctx.fillStyle = "#ffffff";
-  ctx.fill();
-  ctx.strokeStyle = "#3b73c9";
+  ctx.fillStyle = darkTheme ? "#1d2432" : "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  roundRect(ctx, 6, 6, W - 12, H - 12, 18);
+  ctx.strokeStyle = darkTheme ? "#6ea4f5" : "#3b73c9";
   ctx.lineWidth = 4;
   ctx.stroke();
 
-  ctx.fillStyle = "#1d52a8";
+  ctx.fillStyle = darkTheme ? "#9ec4ff" : "#1d52a8";
   ctx.font = "700 20px -apple-system, 'PingFang SC', sans-serif";
   ctx.fillText(label, 22, 46);
-  ctx.fillStyle = "#18202c";
+  ctx.fillStyle = darkTheme ? "#eef2fa" : "#18202c";
   ctx.font = "700 30px ui-monospace, 'SF Mono', monospace";
   ctx.fillText(code, 22, 92);
 }
@@ -879,7 +911,7 @@ export class HongshuStage3D {
         seq: 1041,
         flash: 0,
         rows: [
-          { initial: "林", title: "林知夏 (本机匹配)", body: "下午三点阳光会议室见", color: "#2f9e5b" },
+          { initial: "林", title: "林知夏 (通讯录)", body: "下午三点阳光会议室见", color: "#2f9e5b" },
           { initial: "银", title: "示例银行 95508", body: "储蓄账户自动扣款 18.00 元", color: "#d9883d" },
         ],
       },
@@ -907,14 +939,14 @@ export class HongshuStage3D {
         simLine: "139****5520",
         accent: "#8f6b39",
         activeChip: 1,
-        senderInitial: "研",
-        senderName: "内网研发网关",
+        senderInitial: "云",
+        senderName: "云端网盘",
         otp: "903-741",
         seq: 1036,
         flash: 0,
         rows: [
           { initial: "电", title: "通话记录 · 呼入", body: "园区物业前台 · 2 分 18 秒", color: "#5263b8" },
-          { initial: "周", title: "周予安", body: "海外卡动态码在桌面端直接复制到了", color: "#de5b54" },
+          { initial: "周", title: "周予安", body: "备用卡验证码在电脑上直接复制到了", color: "#de5b54" },
         ],
       },
     ];
@@ -942,12 +974,12 @@ export class HongshuStage3D {
           deviceBadge: "Xiaomi 14 · 9105",
         },
         {
-          sender: "内网研发网关",
-          initial: "研",
+          sender: "云端网盘",
+          initial: "云",
           color: "#8f6b39",
           otp: "903-741",
-          preview: "SSH 堡垒机二次验证",
-          body: "【内网研发网关】SSH 堡垒机二次验证动态码 903-741。",
+          preview: "新设备登录确认码",
+          body: "【云端网盘】您正在新电脑登录网盘，确认验证码 903-741。",
           deviceBadge: "Galaxy S24 · 5520",
         },
         {
@@ -955,8 +987,8 @@ export class HongshuStage3D {
           initial: "林",
           color: "#2f9e5b",
           otp: "",
-          preview: "我：收到，备份脚本跑完就过去",
-          body: "下午三点的建筑模型评审改到二楼阳光会议室啦。",
+          preview: "我：收到，下班前把资料发你",
+          body: "下午三点的沟通改到二楼阳光会议室啦。",
           deviceBadge: "Pixel 9 · 0412",
         },
       ],
@@ -989,7 +1021,7 @@ export class HongshuStage3D {
     const glOpts = {
       antialias: true,
       alpha: true,
-      premultipliedAlpha: false,
+      premultipliedAlpha: true,
       powerPreference: "high-performance",
     };
     const gl =
@@ -1029,20 +1061,21 @@ export class HongshuStage3D {
       uPulse: gl.getUniformLocation(this.program, "uPulse"),
       uPacketT: gl.getUniformLocation(this.program, "uPacketT"),
       uDarkTheme: gl.getUniformLocation(this.program, "uDarkTheme"),
+      uScreenShape: gl.getUniformLocation(this.program, "uScreenShape"),
       uTex: gl.getUniformLocation(this.program, "uTex"),
     };
 
-    // Build GPU Meshes
+    // Build GPU Meshes (beveled body radii matched concentrically to SDF screen cutouts)
     this.meshes = {
-      phoneBody: this.uploadMesh(createRoundedBox(0.76, 1.54, 0.085, 0.10, 12)),
+      phoneBody: this.uploadMesh(createRoundedBox(0.76, 1.54, 0.085, 0.11, 16)),
       phoneScreen: this.uploadMesh(createQuad(0.69, 1.44)),
-      hubChassis: this.uploadMesh(createRoundedBox(1.52, 0.30, 1.52, 0.14, 14)),
+      hubChassis: this.uploadMesh(createRoundedBox(1.52, 0.30, 1.52, 0.26, 16)),
       hubTopPlate: this.uploadMesh(createQuad(1.16, 1.16)),
-      deskBody: this.uploadMesh(createRoundedBox(3.76, 2.38, 0.10, 0.06, 12)),
+      deskBody: this.uploadMesh(createRoundedBox(3.76, 2.38, 0.10, 0.16, 16)),
       deskStandNeck: this.uploadMesh(createRoundedBox(0.38, 1.05, 0.08, 0.03, 8)),
       deskStandFoot: this.uploadMesh(createRoundedBox(1.06, 0.05, 0.68, 0.024, 8)),
       deskScreen: this.uploadMesh(createQuad(3.56, 2.20)),
-      packetCard: this.uploadMesh(createRoundedBox(0.54, 0.27, 0.026, 0.04, 8)),
+      packetCard: this.uploadMesh(createRoundedBox(0.54, 0.27, 0.026, 0.06, 10)),
       packetFace: this.uploadMesh(createQuad(0.50, 0.23)),
       floorQuad: this.uploadMesh(createQuad(8.8, 5.8)),
       phoneTubes: this.phonePaths.map((pts) =>
@@ -1169,7 +1202,7 @@ export class HongshuStage3D {
     paintHubMedallion(this.hubCanvas, this.seq, this.darkTheme);
     this.updateTexture(this.hubTexture, this.hubCanvas);
 
-    paintPacketCard(this.packetCanvas, this.packet.label, this.packet.code);
+    paintPacketCard(this.packetCanvas, this.packet.label, this.packet.code, this.darkTheme);
     this.updateTexture(this.packetTexture, this.packetCanvas);
   }
 
@@ -1207,7 +1240,7 @@ export class HongshuStage3D {
     spec.otp = otp;
     if (!otp) {
       spec.snippet1 = preview;
-      spec.snippet2 = "刚刚捕获 · 已写入本机 outbox";
+      spec.snippet2 = "刚刚收到 · 已加密送出";
     }
     spec.seq = this.seq;
     spec.flash = 1;
@@ -1217,7 +1250,7 @@ export class HongshuStage3D {
       phoneIndex: idx,
       progress: 0.001,
       active: true,
-      label: otp ? "验证码汇入" : "新消息汇入",
+      label: otp ? "验证码同步" : "新短信同步",
       code: otp || `#${this.seq}`,
       pendingDesktopItem: {
         sender,
@@ -1234,14 +1267,14 @@ export class HongshuStage3D {
     if (!this.fallback2d) {
       paintPhoneScreen(this.phoneCanvases[idx], spec, this.darkTheme);
       this.updateTexture(this.phoneTextures[idx], this.phoneCanvases[idx]);
-      paintPacketCard(this.packetCanvas, this.packet.label, this.packet.code);
+      paintPacketCard(this.packetCanvas, this.packet.label, this.packet.code, this.darkTheme);
       this.updateTexture(this.packetTexture, this.packetCanvas);
     }
 
     this.onTelemetry({
       phase: "capture",
       seq: this.seq,
-      text: `${spec.title}捕获新消息 → 正在汇入私有中枢…`,
+      text: `${spec.title}收到新消息 → 正在同步至私有中枢…`,
     });
 
     if (this.reducedMotion) {
@@ -1269,7 +1302,7 @@ export class HongshuStage3D {
       this.onTelemetry({
         phase: "synced",
         seq: this.seq,
-        text: `sync_clock #${this.seq} 已落库 · 桌面 Web/PWA 实时同步完成`,
+        text: `已保存 #${this.seq} · 电脑网页端实时同步完成`,
       });
     }
   }
@@ -1340,6 +1373,7 @@ export class HongshuStage3D {
     gl.uniform1f(L.uUseTex, uniforms.tex ? 1.0 : 0.0);
     gl.uniform1f(L.uMode, uniforms.mode ?? 0.0);
     gl.uniform1f(L.uPacketT, uniforms.packetT ?? -1.0);
+    gl.uniform3fv(L.uScreenShape, uniforms.screenShape || [0, 0, 0]);
 
     if (uniforms.tex) {
       gl.activeTexture(gl.TEXTURE0);
@@ -1395,7 +1429,7 @@ export class HongshuStage3D {
           const samples = [
             { sender: "星云通行证", otp: String(610200 + ((this.seq * 37) % 89000)), preview: "5 分钟内有效" },
             { sender: "青鸟驿站", otp: "", preview: `取件码 3-1-${2040 + (this.seq % 90)}` },
-            { sender: "内网研发网关", otp: `${400 + (this.seq % 500)}-${710 + (this.seq % 240)}`, preview: "堡垒机动态码" },
+            { sender: "云端网盘", otp: `${400 + (this.seq % 500)}-${710 + (this.seq % 240)}`, preview: "新设备登录确认码" },
           ];
           this.triggerMessagePacket({ phoneIndex: nextIdx, ...samples[nextIdx] });
         }
@@ -1441,7 +1475,7 @@ export class HongshuStage3D {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.locs.uViewProj, false, viewProj);
@@ -1471,6 +1505,7 @@ export class HongshuStage3D {
     this.drawMesh(this.meshes.hubTopPlate, {
       model: mat4Compose([hubPos[0], hubPos[1] + 0.153, hubPos[2]], [-Math.PI * 0.5, 0.24, 0]),
       tex: this.hubTexture,
+      screenShape: [0.58, 0.58, 0.10],
       metallic: 0.15,
       roughness: 0.2,
     });
@@ -1499,8 +1534,9 @@ export class HongshuStage3D {
       roughness: 0.22,
     });
     this.drawMesh(this.meshes.deskScreen, {
-      model: mat4Compose([deskCenter[0], deskCenter[1], deskCenter[2] + 0.053], [deskTilt, 0, 0]),
+      model: mat4Compose([deskCenter[0], deskCenter[1], deskCenter[2] + 0.052], [deskTilt, 0, 0]),
       tex: this.desktopTexture,
+      screenShape: [1.78, 1.10, 0.065],
       metallic: 0.08,
       roughness: 0.16,
     });
@@ -1537,13 +1573,14 @@ export class HongshuStage3D {
 
       // Offset screen slightly along phone's local +Z normal
       const screenOffset = [
-        pos[0] + bodyMat[8] * 0.045,
-        pos[1] + bodyMat[9] * 0.045,
-        pos[2] + bodyMat[10] * 0.045,
+        pos[0] + bodyMat[8] * 0.044,
+        pos[1] + bodyMat[9] * 0.044,
+        pos[2] + bodyMat[10] * 0.044,
       ];
       this.drawMesh(this.meshes.phoneScreen, {
         model: mat4Compose(screenOffset, rot),
         tex: this.phoneTextures[idx],
+        screenShape: [0.345, 0.72, 0.075],
         metallic: 0.06,
         roughness: 0.14,
       });
@@ -1595,8 +1632,9 @@ export class HongshuStage3D {
         roughness: 0.18,
       });
       this.drawMesh(this.meshes.packetFace, {
-        model: mat4Compose([cardPos[0], cardPos[1], cardPos[2] + 0.015 * scale], cardRot, [scale, scale, scale]),
+        model: mat4Compose([cardPos[0], cardPos[1], cardPos[2] + 0.0145 * scale], cardRot, [scale, scale, scale]),
         tex: this.packetTexture,
+        screenShape: [0.25, 0.115, 0.04],
         metallic: 0.05,
         roughness: 0.12,
       });
@@ -1641,8 +1679,8 @@ export class HongshuStage3D {
     ctx.fill();
     ctx.fillStyle = this.darkTheme ? "#edf1f8" : "#18202c";
     ctx.font = "600 18px -apple-system, 'PingFang SC', sans-serif";
-    ctx.fillText("鸿枢 Web / PWA 桌面收件箱", deskX - 118, deskY - 12);
+    ctx.fillText("鸿枢 · 跨设备短信收件箱", deskX - 118, deskY - 12);
     ctx.fillStyle = "#2f9e5b";
-    ctx.fillText(`sync_clock #${this.seq} · 实时已就绪`, deskX - 118, deskY + 22);
+    ctx.fillText(`已安全汇总 #${this.seq} · 实时就绪`, deskX - 118, deskY + 22);
   }
 }

@@ -465,7 +465,7 @@ function initWorkbench() {
       els.capsuleBox.hidden = !state.capsuleOtp.visible;
       if (els.capsuleCode) els.capsuleCode.textContent = state.capsuleOtp.code;
       if (els.capsuleMeta) {
-        els.capsuleMeta.textContent = `来自其他设备 (${state.capsuleOtp.fromDevice}) · ${state.capsuleOtp.sender}`;
+        els.capsuleMeta.textContent = `来自另一台手机 (${state.capsuleOtp.fromDevice}) · ${state.capsuleOtp.sender}`;
       }
     }
   }
@@ -557,8 +557,8 @@ function initWorkbench() {
       const empty = el("div", "wb-empty");
       empty.append(
         el("div", "wb-empty__badge", "信"),
-        el("strong", "", state.query ? "没有匹配的演示短信" : "当前筛选条件下暂无会话"),
-        el("p", "", "可点击上方“清空”或切换设备/号码筛选查看全部虚构同步记录。"),
+        el("strong", "", state.query ? "没有找到匹配的短信" : "当前筛选条件下暂无对话"),
+        el("p", "", "可点击上方“清空”或切换手机/号码筛选查看全部示例记录。"),
       );
       list.append(empty);
       return;
@@ -597,13 +597,13 @@ function initWorkbench() {
       if (c.analysis?.otp && c.direction !== "out") {
         const otpChip = el("button", "wb-otp-chip", `验证码 ${c.analysis.otp}`);
         otpChip.type = "button";
-        otpChip.setAttribute("aria-label", `复制虚构验证码 ${c.analysis.otp}`);
+        otpChip.setAttribute("aria-label", `复制示例验证码 ${c.analysis.otp}`);
         otpChip.onclick = (e) => {
           e.stopPropagation();
           springPop(otpChip, 1.08);
           void copySafeText(
             c.analysis.otp,
-            `已复制虚构验证码 ${c.analysis.otp} · 真实端支持 60 秒安全剪贴板清理`,
+            `已复制示例验证码 ${c.analysis.otp}（正式使用时 60 秒后可自动清空剪贴板）`,
           );
         };
         bottomRow.append(otpChip);
@@ -676,8 +676,8 @@ function initWorkbench() {
       const empty = el("div", "wb-empty");
       empty.append(
         el("div", "wb-empty__badge", "枢"),
-        el("strong", "", "选择一个会话查看详情"),
-        el("p", "", "支持跨多台授权手机与多张 SIM 卡聚合展示同一发件人的全部收发记录。"),
+        el("strong", "", "选择一条对话查看详情"),
+        el("p", "", "支持把多台手机、多张卡收到同一发件人的短信集中到一起查看。"),
       );
       detail.append(empty);
       return;
@@ -705,8 +705,8 @@ function initWorkbench() {
         "wb-detail__sub",
         [
           contactName ? state.selectedSender : "",
-          `来自 ${receivers.length || 1} 个接收号码`,
-          localNote || "只读安全归档",
+          `来自 ${receivers.length || 1} 个手机号码`,
+          localNote || "安全只读存档",
         ]
           .filter(Boolean)
           .join(" · "),
@@ -718,14 +718,14 @@ function initWorkbench() {
     copySenderBtn.type = "button";
     copySenderBtn.onclick = () => {
       springPop(copySenderBtn);
-      void copySafeText(state.selectedSender, `已复制虚构号码 ${state.selectedSender}`);
+      void copySafeText(state.selectedSender, `已复制示例号码 ${state.selectedSender}`);
     };
 
     head.append(backBtn, headInfo, copySenderBtn);
     detail.append(head);
 
     const stream = el("div", "wb-messages");
-    stream.append(el("div", "wb-date-chip", "今天 · 私有中枢加密会话"));
+    stream.append(el("div", "wb-date-chip", "今天 · 实时同步"));
 
     for (const msg of thread) {
       const outgoing = msg.direction === "out";
@@ -736,8 +736,8 @@ function initWorkbench() {
         const otpCard = el("div", "wb-otp-card");
         const otpHead = el("div", "wb-otp-card__head");
         otpHead.append(
-          el("span", "", "规则即时提取验证码"),
-          el("span", "wb-otp-card__ttl", `原文明示有效 ${msg.analysis.ttlMinutes || 5} 分钟`),
+          el("span", "", "自动识别验证码"),
+          el("span", "wb-otp-card__ttl", `短信内标明有效 ${msg.analysis.ttlMinutes || 5} 分钟`),
         );
         const otpRow = el("div", "wb-otp-card__row");
         const codeNode = el("strong", "wb-otp-card__code", msg.analysis.otp);
@@ -748,7 +748,7 @@ function initWorkbench() {
           copyBtn.textContent = "已复制 ✓";
           void copySafeText(
             msg.analysis.otp,
-            `已复制验证码 ${msg.analysis.otp} · 60 秒后仅在剪贴板未变时自动清理`,
+            `已复制验证码 ${msg.analysis.otp}（60 秒后若未复制新内容将自动清理）`,
           );
           window.setTimeout(() => {
             copyBtn.textContent = "复制验证码";
@@ -770,7 +770,7 @@ function initWorkbench() {
       if (state.aiEnabled && !outgoing) {
         const cat = msg.analysis?.category || (msg.analysis?.otp ? "otp" : "pending");
         bubble.append(
-          el("small", "wb-ai-badge", `AI 复核分组：${GROUP_LABELS[cat] || "待分析"} · 可手动调整`),
+          el("small", "wb-ai-badge", `AI 智能分类：${GROUP_LABELS[cat] || "待识别"} · 支持手动调整`),
         );
       }
 
@@ -779,7 +779,7 @@ function initWorkbench() {
         formatTime(msg.timestamp),
         dev.name,
         outgoing ? `由 ${simLabelFor(msg.receiver)} 发出 · 本机已发送同步` : `接收号码 ${msg.receiver}`,
-        msg.historical ? "历史补齐" : "",
+        msg.historical ? "历史短信" : "",
       ].filter(Boolean);
 
       wrap.append(bubble, el("div", "wb-msg__stamp", stampParts.join(" · ")));
@@ -789,7 +789,7 @@ function initWorkbench() {
     const readonlyFoot = el(
       "div",
       "wb-readonly-bar",
-      "只读查看端边界：鸿枢仅同步本机已收发短信，不提供回复输入框，也不通过运营商代发短信。",
+      "温馨提示：鸿枢只负责同步查看手机上收发的短信，不提供发送输入框，也不通过运营商代发短信。",
     );
     detail.append(stream, readonlyFoot);
   }
@@ -859,7 +859,7 @@ function initWorkbench() {
     const titles = el("div", "wb-detail__titles");
     titles.append(
       el("strong", "", cname || activeCall.number),
-      el("span", "wb-detail__sub", "独立 call_clock 顺序同步 · 不影响短信未读水位"),
+      el("span", "wb-detail__sub", "通话记录独立同步 · 不影响短信未读提醒"),
     );
     info.append(createAvatarNode(cname, activeCall.number, "hs-avatar--sm"), titles);
     head.append(backBtn, info);
@@ -868,11 +868,11 @@ function initWorkbench() {
     const entries = [
       ["记录类型", `${typeLabels[activeCall.type] || "通话"} · 语音通话`],
       ["通话时长", activeCall.type === "missed" ? "未接通" : formatDuration(activeCall.duration)],
-      ["对端号码", activeCall.number],
-      ["本机线路", `${simLabelFor(activeCall.receiver)} (${activeCall.receiver})`],
-      ["来源手机", dev.name],
-      ["归属地示例", activeCall.location],
-      ["能力边界", "只同步、只读：不拨打电话、不回拨、不触发跨端来电响铃"],
+      ["对方号码", activeCall.number],
+      ["接收号码", `${simLabelFor(activeCall.receiver)} (${activeCall.receiver})`],
+      ["来自手机", dev.name],
+      ["号码归属", activeCall.location],
+      ["使用说明", "仅供查阅：不支持在电脑上回拨电话，来电时也不会跨设备响铃"],
     ];
     for (const [k, v] of entries) {
       facts.append(el("dt", "", k), el("dd", "", v));
@@ -882,7 +882,7 @@ function initWorkbench() {
 
   function renderAll({ flip = false } = {}) {
     renderSourcePhoneCard();
-    if (els.bridgeSeq) els.bridgeSeq.textContent = `sync_clock #${state.seq}`;
+    if (els.bridgeSeq) els.bridgeSeq.textContent = `已同步 #${state.seq}`;
     els.pwaShell?.classList.toggle("has-mobile-detail", state.mobileDetailOpen);
 
     els.viewTabs.forEach((t) => {
@@ -944,7 +944,7 @@ function initWorkbench() {
     };
 
     if (els.phoneOutbox) {
-      els.phoneOutbox.textContent = "outbox 1 条写入 → 正在提交中枢…";
+      els.phoneOutbox.textContent = "发现 1 条新短信 → 正在加密发送…";
       els.phoneOutbox.classList.add("is-syncing");
     }
 
@@ -988,15 +988,15 @@ function initWorkbench() {
       }
 
       if (els.phoneOutbox) {
-        els.phoneOutbox.textContent = `outbox 0 待传 · 已确认 #${state.seq}`;
+        els.phoneOutbox.textContent = `连接正常 · 已同步至 #${state.seq}`;
         els.phoneOutbox.classList.remove("is-syncing");
       }
       renderAll({ flip: true });
       if (!options.silentToast) {
         showToast(
           generatedCode
-            ? `${dev.shortName} 捕获虚构验证码 ${generatedCode} → 已同步至桌面收件箱`
-            : `${dev.shortName} 新短信已归集至私有中枢 #${state.seq}`,
+            ? `${dev.shortName} 收到示例验证码 ${generatedCode} → 已同步到电脑收件箱`
+            : `${dev.shortName} 的新短信已保存到你的私有中枢 #${state.seq}`,
         );
       }
     };
@@ -1031,27 +1031,27 @@ function initWorkbench() {
     state.calls.unshift({
       id: nextCallId,
       number: "010-8820****",
-      hubAlias: "云主机运维值班",
+      hubAlias: "顺丰同城派送",
       type: "incoming",
       video: false,
       duration: 94,
       timestamp: Date.now(),
       receiver: dev.sims[0].phone,
       device_id: dev.id,
-      location: "北京 · 虚构示例",
+      location: "北京 · 示例号码",
       historical: false,
     });
     state.view = "calls";
     state.selectedCallId = nextCallId;
     renderAll({ flip: true });
-    showToast(`${dev.shortName} 通话记录已同步（只读归档，不触发跨端来电响铃）`);
+    showToast(`${dev.shortName} 通话记录已同步（仅供电脑上查看，来电不会跨设备响铃）`);
   });
 
   els.capsuleCopy?.addEventListener("click", () => {
     springPop(els.capsuleCopy, 1.08);
     void copySafeText(
       state.capsuleOtp.code,
-      `已从跨设备实时胶囊复制 ${state.capsuleOtp.code}`,
+      `已从状态栏胶囊复制 ${state.capsuleOtp.code}`,
     );
   });
 
@@ -1068,7 +1068,7 @@ function initWorkbench() {
     springPop(els.markAllRead);
     for (const m of state.messages) m.unread = false;
     renderAll({ flip: false });
-    showToast("已将全部会话标记为已读 · read_outbox 已同步至中枢");
+    showToast("已将全部对话标为已读 · 各设备将同步清除未读数");
   });
 
   els.toggleContacts?.addEventListener("click", () => {
@@ -1079,8 +1079,8 @@ function initWorkbench() {
     renderAll({ flip: false });
     showToast(
       state.localContactsEnabled
-        ? "已开启查看端本机联系人装饰（姓名仅在当前设备本地显示，不上传中枢）"
-        : "已关闭本机联系人装饰，恢复显示原始脱敏号码",
+        ? "已开启通讯录姓名匹配（只在当前设备本地显示，通讯录不会上传）"
+        : "已关闭通讯录匹配，恢复显示原始手机号码",
     );
   });
 
@@ -1092,8 +1092,8 @@ function initWorkbench() {
     renderAll({ flip: true });
     showToast(
       state.aiEnabled
-        ? "已预览可选 AI 7 组分类（真实环境中开启会把短信正文发给你选择的服务商）"
-        : "已回到默认本地规则模式（全部 / 验证码 / 其他，零外部模型调用）",
+        ? "已预览 AI 智能 7 组分类（实际开启时短信正文会发送给你选择的 AI 服务商）"
+        : "已回到默认本地自动分类（全部 / 验证码 / 其他，完全不联网模型）",
     );
   });
 
