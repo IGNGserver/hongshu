@@ -103,4 +103,50 @@ class OtpIntentTest {
         assertEquals(601_000L, otpNotificationExpiry(1_000L, 0))
         assertEquals(601_000L, otpNotificationExpiry(1_000L, 900_000L))
     }
+
+    @Test fun aiDiscoveredOtpEnqueuesIntentOnlyForUnreadCrossDeviceMessages() = database { name ->
+        grantNotifications()
+        val config = Config(context)
+        config.deviceId = "self"
+        config.notify = true
+        config.liveOtpIsland = true
+        try {
+            Store(context, name).use { store ->
+                val now = System.currentTimeMillis()
+                val batch = JSONArray()
+                    .put(
+                        JSONObject().put("id", 20L).put("device_id", "remote")
+                            .put("receiver", "10000").put("sender", "Brand").put("body", "动态数字 739104 请勿泄露")
+                            .put("timestamp", now).put("historical", false)
+                    )
+                    .put(
+                        JSONObject().put("id", 21L).put("device_id", "self")
+                            .put("receiver", "10000").put("sender", "Brand").put("body", "动态数字 112233 请勿泄露")
+                            .put("timestamp", now).put("historical", false)
+                    )
+                store.applySync(batch, 21, self = "self", pairedAt = 1, pageEpoch = 1)
+                assertTrue(store.pendingOtpIntents().isEmpty())
+
+                val items = JSONArray()
+                    .put(
+                        JSONObject().put("id", 20L).put(
+                            "analysis",
+                            JSONObject().put("otp", "739104").put("category", "otp").put("state", "complete").put("revision", 5),
+                        )
+                    )
+                    .put(
+                        JSONObject().put("id", 21L).put(
+                            "analysis",
+                            JSONObject().put("otp", "112233").put("category", "otp").put("state", "complete").put("revision", 6),
+                        )
+                    )
+                store.applyAnalysis(items, 6, 1, pairedAt = 1)
+                val intents = store.pendingOtpIntents()
+                assertEquals(listOf(20L), intents.map { it.messageId })
+                assertEquals("739104", intents.single().otp)
+            }
+        } finally {
+            context.getSharedPreferences("hongshu", Context.MODE_PRIVATE).edit().clear().commit()
+        }
+    }
 }

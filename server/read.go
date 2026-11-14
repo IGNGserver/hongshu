@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-func (a *app) unreadWithinTx(ctx context.Context, tx *sql.Tx, watermark int64) (int64, error) {
+func (a *app) unreadWithinTx(ctx context.Context, tx *sql.Tx, watermark int64, excludeDevice string) (int64, error) {
 	var epoch, unreadHead, revision int64
 	if err := tx.QueryRowContext(ctx, "SELECT c.epoch,(SELECT COALESCE(MAX(id),0) FROM messages WHERE historical=FALSE AND direction='in'),r.updated_at FROM sync_clock c JOIN read_state r ON r.id=c.id WHERE c.id=1").Scan(&epoch, &unreadHead, &revision); err != nil {
 		return 0, err
 	}
-	return a.snapshotUnread(ctx, tx, epoch, unreadHead, watermark, revision)
+	return a.snapshotUnreadForDevice(ctx, tx, epoch, unreadHead, watermark, revision, excludeDevice)
 }
 
 func (a *app) markRead(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +66,7 @@ func (a *app) markRead(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		unread, unreadErr := a.unreadWithinTx(r.Context(), tx, max(watermark, seq))
+		unread, unreadErr := a.unreadWithinTx(r.Context(), tx, max(watermark, seq), unreadExcludeDevice(device(r)))
 		if unreadErr != nil {
 			fail(w, 503, "database_unavailable")
 			return
@@ -127,7 +127,7 @@ VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE last_read_message_id=VALUES(last_read_m
 	}
 	// Derive the response from the same RR transaction as the mutation. A commit
 	// followed by independent queries could combine different global watermarks.
-	unread, err := a.unreadWithinTx(r.Context(), tx, watermark)
+	unread, err := a.unreadWithinTx(r.Context(), tx, watermark, unreadExcludeDevice(device(r)))
 	if err != nil {
 		fail(w, 503, "database_unavailable")
 		return
@@ -146,13 +146,18 @@ type contextQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func (a *app) attachUnreadCounts(ctx context.Context, q contextQueryer, ms []Message) ([]ConversationItem, error) {
+func (a *app) attachUnreadCounts(ctx context.Context, q contextQueryer, ms []Message, excludeDevice string) ([]ConversationItem, error) {
 	if len(ms) == 0 {
 		return []ConversationItem{}, nil
 	}
-	args := make([]any, 0, len(ms))
+	args := make([]any, 0, len(ms)+1)
 	for _, m := range ms {
 		args = append(args, m.Sender)
+	}
+	deviceFilter := ""
+	if excludeDevice != "" {
+		deviceFilter = "\n  AND m.device_id <> ?"
+		args = append(args, excludeDevice)
 	}
 	// Fold the singleton watermark into the aggregate so a conversation page needs one
 	// query after the page query, not two.
@@ -164,7 +169,7 @@ WHERE m.historical = FALSE
   AND m.direction = 'in'
   AND m.id > COALESCE((SELECT global_watermark_id FROM read_state WHERE id=1), 0)
   AND m.id > COALESCE(cr.last_read_message_id, 0)
-  AND m.sender IN (?`+strings.Repeat(",?", len(ms)-1)+`)
+  AND m.sender IN (?`+strings.Repeat(",?", len(ms)-1)+`)`+deviceFilter+`
 GROUP BY m.sender
 `, args...)
 	if err != nil {

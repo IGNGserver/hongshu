@@ -91,13 +91,14 @@ class RealtimeService : Service() {
                 mainActivityIntent(this),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-        return NotificationCompat.Builder(this, "connection")
+        return NotificationCompat.Builder(this, "connection_silent")
             .setSmallIcon(R.drawable.ic_hongshu)
             .setContentTitle("鸿枢实时同步")
             .setContentText(detail)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setNumber(0)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .addAction(0, "停止实时连接", stop)
             .build()
@@ -338,7 +339,7 @@ class RealtimeService : Service() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
         val notice =
-            NotificationCompat.Builder(this, "connection")
+            NotificationCompat.Builder(this, "connection_silent")
                 .setSmallIcon(R.drawable.ic_hongshu)
                 .setContentTitle("鸿枢实时连接未恢复")
                 .setContentText("点按打开鸿枢恢复实时连接；周期同步仍在工作")

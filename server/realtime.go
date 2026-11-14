@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"crypto/ecdh"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -89,6 +92,12 @@ func (a *app) ws(w http.ResponseWriter, r *http.Request) {
 			observedValid = true
 		}
 		return true
+	}
+
+	// Deliver the current cursor frame right on upgrade so opening or resuming a client
+	// never waits up to 25 seconds for the first heartbeat tick.
+	if !checkChanges() {
+		return
 	}
 
 	for {
@@ -445,6 +454,97 @@ func retryablePushStatus(status int) bool {
 	return status == 0 || status == 408 || status == 425 || status == 429 || status >= 500
 }
 
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == max {
+			return strings.TrimSpace(s[:i]) + "…"
+		}
+		count++
+	}
+	return s
+}
+
+func senderPushTag(sender string) string {
+	sum := sha256.Sum256([]byte(sender))
+	return "hongshu-msg-" + hex.EncodeToString(sum[:6])
+}
+
+func (a *app) buildPushPayload(ctx context.Context, j claimedPush) ([]byte, error) {
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var sender, body, contact, otp, deviceKind string
+	var hasAnalysis bool
+	err = tx.QueryRowContext(ctx, `SELECT m.sender, m.body, COALESCE(c.name,''), `+analysisOtpField+`, x.message_id IS NOT NULL, d.kind
+FROM messages m
+LEFT JOIN contacts c ON c.phone=m.sender
+LEFT JOIN message_analysis x ON x.message_id=m.id
+JOIN ai_settings ai ON ai.id=1
+JOIN devices d ON d.id=?
+WHERE m.id=?`, j.device, j.messageID).Scan(&sender, &body, &contact, &otp, &hasAnalysis, &deviceKind)
+	if err != nil {
+		return nil, err
+	}
+	if !hasAnalysis && otp == "" {
+		otp, _ = extractOTP(body, 0)
+	}
+	var epoch, unreadHead, watermark, readRevision int64
+	err = tx.QueryRowContext(ctx, `SELECT c.epoch,
+(SELECT COALESCE(MAX(id),0) FROM messages WHERE historical=FALSE AND direction='in'),
+r.global_watermark_id, r.updated_at
+FROM sync_clock c
+JOIN read_state r ON r.id=c.id
+WHERE c.id=1`).Scan(&epoch, &unreadHead, &watermark, &readRevision)
+	if err != nil {
+		return nil, err
+	}
+	unread, err := a.snapshotUnreadForDevice(ctx, tx, epoch, unreadHead, watermark, readRevision, unreadExcludeDevice(Device{ID: j.device, Kind: deviceKind}))
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	displaySender := strings.TrimSpace(contact)
+	if displaySender == "" {
+		displaySender = strings.TrimSpace(sender)
+	}
+	if displaySender == "" {
+		displaySender = "未知号码"
+	}
+	displaySender = truncateRunes(displaySender, 48)
+	bodyPreview := truncateRunes(strings.TrimSpace(strings.ReplaceAll(body, "\r\n", " ")), 140)
+	if bodyPreview == "" {
+		bodyPreview = "有新短信，打开应用查看"
+	}
+
+	payload := map[string]any{
+		"title":        displaySender,
+		"body":         bodyPreview,
+		"tag":          senderPushTag(sender),
+		"url":          fmt.Sprintf("/#sender=%s&msg=%d", url.QueryEscape(sender), j.messageID),
+		"renotify":     true,
+		"sender":       sender,
+		"message_id":   j.messageID,
+		"unread_count": unread,
+	}
+	if otp != "" {
+		payload["title"] = fmt.Sprintf("验证码 %s · %s", otp, displaySender)
+		payload["tag"] = fmt.Sprintf("hongshu-otp-%d", j.messageID)
+		payload["url"] = fmt.Sprintf("/#sender=%s&otp=%s&msg=%d", url.QueryEscape(sender), url.QueryEscape(otp), j.messageID)
+		payload["otp"] = otp
+	}
+	return json.Marshal(payload)
+}
+
 func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimedPush) error {
 	leaseDeadline := time.UnixMilli(j.lease)
 	if !time.Now().Before(leaseDeadline) {
@@ -475,9 +575,13 @@ func (a *app) deliverPushJob(ctx context.Context, client *http.Client, j claimed
 	}
 	// Even if a DB stall consumed most of the lease, an HTTP request cannot
 	// outlive it. Keep the parent context for the conditional state update.
+	payloadBytes, err := a.buildPushPayload(ctx, j)
+	if err != nil {
+		return err
+	}
 	sendCtx, cancel := context.WithDeadline(ctx, leaseDeadline)
 	defer cancel()
-	res, sendErr := webpush.SendNotificationWithContext(sendCtx, []byte(pushMessagePayload), &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
+	res, sendErr := webpush.SendNotificationWithContext(sendCtx, payloadBytes, &j.sub, &webpush.Options{HTTPClient: client, Subscriber: env("VAPID_SUBJECT", "mailto:admin@example.invalid"), VAPIDPublicKey: a.vapidPublic, VAPIDPrivateKey: a.vapidPrivate, TTL: 86400})
 	status := 0
 	var retryAfter time.Duration
 	if res != nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -446,5 +447,64 @@ func TestIntegrationPushTestRemovesExpiredSubscription(t *testing.T) {
 	}
 	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs WHERE device_id=?", d.ID).Scan(&jobs); err != nil || jobs != 0 {
 		t.Fatalf("jobs for expired subscription retained: %d %v", jobs, err)
+	}
+}
+
+func TestIntegrationPushBuildsRichPayloadsAndAIUpgrade(t *testing.T) {
+	a, d := pushFixture(t)
+	if _, err := a.db.Exec("INSERT INTO contacts (phone,name) VALUES ('10086','中国移动')"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := a.db.Exec("INSERT INTO devices (id,name,kind,token_hash,admin,upload,notify,revoked,created_at) VALUES ('source-phone','Source','android',?,FALSE,TRUE,FALSE,FALSE,0)", hash("source")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical,direction) VALUES (2,'source-phone',?,?,'10086','您的验证码 654321 请勿泄露',?,1,FALSE,'in')", strings.Repeat("1", 64), "+123456789", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec("INSERT INTO message_analysis (message_id,otp,expires_at,rule_version,state,revision) VALUES (2,'654321',0,1,'pending',1)"); err != nil {
+		t.Fatal(err)
+	}
+	rawOTP, err := a.buildPushPayload(context.Background(), claimedPush{device: d.ID, messageID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var otpPayload map[string]any
+	if err := json.Unmarshal(rawOTP, &otpPayload); err != nil {
+		t.Fatal(err)
+	}
+	if otpPayload["title"] != "验证码 654321 · 中国移动" || otpPayload["otp"] != "654321" || otpPayload["sender"] != "10086" || otpPayload["renotify"] != true || !strings.HasPrefix(otpPayload["url"].(string), "/#sender=10086&otp=654321&msg=2") || otpPayload["unread_count"] != float64(2) {
+		t.Fatalf("unexpected rich OTP push payload: %v", otpPayload)
+	}
+
+	rawNormal, err := a.buildPushPayload(context.Background(), claimedPush{device: d.ID, messageID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalPayload map[string]any
+	if err := json.Unmarshal(rawNormal, &normalPayload); err != nil {
+		t.Fatal(err)
+	}
+	if normalPayload["title"] != "synthetic" || normalPayload["body"] != "synthetic SMS" || normalPayload["otp"] != nil || !strings.HasPrefix(normalPayload["tag"].(string), "hongshu-msg-") {
+		t.Fatalf("unexpected normal push payload: %v", normalPayload)
+	}
+
+	// Simulate async AI discovering an OTP where rules initially found none.
+	if _, err := a.db.Exec("INSERT INTO messages (id,device_id,fingerprint,receiver,sender,body,timestamp,subscription_id,historical,direction) VALUES (3,'source-phone',?,'+123456789','Bank','Alert digits 998877',?,1,FALSE,'in')", strings.Repeat("2", 64), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec("INSERT INTO message_analysis (message_id,otp,expires_at,rule_version,state,lease_token,revision) VALUES (3,'',0,1,'processing','tok',2)"); err != nil {
+		t.Fatal(err)
+	}
+	var gen int64
+	if err := a.db.QueryRow("SELECT generation FROM ai_settings WHERE id=1").Scan(&gen); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.finishAnalysis(context.Background(), &analysisJob{ID: 3, OTP: "", Token: "tok", Settings: AISettings{Generation: gen}}, "otp", "998877", "", false); err != nil {
+		t.Fatal(err)
+	}
+	var aiPushCount int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM push_jobs WHERE message_id=3 AND device_id=?", d.ID).Scan(&aiPushCount); err != nil || aiPushCount != 1 {
+		t.Fatalf("AI OTP discovery did not enqueue push job: count=%d err=%v", aiPushCount, err)
 	}
 }

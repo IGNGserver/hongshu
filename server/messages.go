@@ -345,7 +345,7 @@ func (a *app) conversations(w http.ResponseWriter, r *http.Request) {
 	if more {
 		ms = ms[:limit]
 	}
-	items, err := a.attachUnreadCounts(r.Context(), tx, ms)
+	items, err := a.attachUnreadCounts(r.Context(), tx, ms, unreadExcludeDevice(device(r)))
 	if err != nil || tx.Commit() != nil {
 		fail(w, 503, "database_unavailable")
 		return

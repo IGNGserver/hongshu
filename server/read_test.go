@@ -21,9 +21,11 @@ func TestReadWatermarksAndUnreadCounts(t *testing.T) {
 
 	// Login web
 	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	webCookie := c.cookie
 
-	// Login android
+	// Login android (restore web cookie so Web session queries below don't use Phone's cookie)
 	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Phone", "kind": "android"}, 200)
+	c.cookie = webCookie
 	androidToken := paired["token"].(string)
 	id := paired["device"].(map[string]any)["id"].(string)
 
@@ -120,18 +122,66 @@ func unreadFixture(t *testing.T) (*app, *apiTest, string) {
 		t.Fatal(err)
 	}
 	c := &apiTest{t: t, a: a}
-	login := c.call("POST", "/api/login", "", map[string]any{"password": "synthetic", "kind": "android"}, 200)
-	token := login["token"].(string)
-	id := login["device"].(map[string]any)["id"].(string)
-	c.call("PATCH", "/api/devices/"+id, token, map[string]bool{"upload": true}, 200)
-	c.call("PUT", "/api/sims", token, map[string]any{"phone": "+123456789", "label": "Synthetic", "subscription_id": 1}, 200)
-	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{
+	// Source device captures/uploads the fixture messages; the returned token is a
+	// second Android phone so its unread counts reflect cross-device notifications
+	// while still supporting uploads when tests exercise concurrent read+upload locks.
+	uploader := c.call("POST", "/api/login", "", map[string]any{"password": "synthetic", "name": "source-phone", "kind": "android"}, 200)
+	uploaderToken := uploader["token"].(string)
+	uploaderID := uploader["device"].(map[string]any)["id"].(string)
+	c.call("PATCH", "/api/devices/"+uploaderID, uploaderToken, map[string]bool{"upload": true}, 200)
+	c.call("PUT", "/api/sims", uploaderToken, map[string]any{"phone": "+123456789", "label": "Synthetic", "subscription_id": 1}, 200)
+	c.call("POST", "/api/messages", uploaderToken, map[string]any{"messages": []Incoming{
 		{Receiver: "+123456789", Sender: "10086", Body: "first", Timestamp: 1000},
 		{Receiver: "+123456789", Sender: "10010", Body: "other sender", Timestamp: 2000},
 		{Receiver: "+123456789", Sender: "10086", Body: "second", Timestamp: 3000},
 		{Receiver: "+123456789", Sender: "10086", Body: "history", Timestamp: 500, Historical: true},
 	}}, 200)
+	login := c.call("POST", "/api/login", "", map[string]any{"password": "synthetic", "name": "viewer-phone", "kind": "android"}, 200)
+	token := login["token"].(string)
+	id := login["device"].(map[string]any)["id"].(string)
+	c.call("PATCH", "/api/devices/"+id, token, map[string]bool{"upload": true}, 200)
+	c.call("PUT", "/api/sims", token, map[string]any{"phone": "+123456789", "label": "Synthetic", "subscription_id": 1}, 200)
 	return a, c, token
+}
+
+func TestSourceDeviceExcludesOwnUploadsFromUnread(t *testing.T) {
+	db := testDB(t)
+	a, err := newApp(db, "http://localhost:8080", "1", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := apiTest{t: t, a: a}
+	web := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "web", "kind": "web"}, 200)
+	webToken := web["token"].(string)
+
+	phoneA := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "PhoneA", "kind": "android"}, 200)
+	tokenA := phoneA["token"].(string)
+	idA := phoneA["device"].(map[string]any)["id"].(string)
+	c.call("PATCH", "/api/devices/"+idA, tokenA, map[string]bool{"upload": true}, 200)
+	c.call("PUT", "/api/sims", tokenA, map[string]any{"phone": "+8613800000000", "label": "SIM1", "subscription_id": 1}, 200)
+
+	phoneB := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "PhoneB", "kind": "android"}, 200)
+	tokenB := phoneB["token"].(string)
+
+	c.call("POST", "/api/messages", tokenA, map[string]any{"messages": []Incoming{
+		{Receiver: "+8613800000000", Sender: "10086", Body: "hello", Timestamp: 1700000000000},
+		{Receiver: "+8613800000000", Sender: "10010", Body: "world", Timestamp: 1700000001000},
+	}}, 200)
+
+	if meA := c.call("GET", "/api/me", tokenA, nil, 200); meA["unread_count"] != float64(0) {
+		t.Fatalf("source phone counted own uploads as unread: %v", meA["unread_count"])
+	}
+	for _, raw := range c.call("GET", "/api/conversations", tokenA, nil, 200)["conversations"].([]any) {
+		if raw.(map[string]any)["unread_count"] != float64(0) {
+			t.Fatalf("source phone conversation showed own upload as unread: %v", raw)
+		}
+	}
+	if meB := c.call("GET", "/api/me", tokenB, nil, 200); meB["unread_count"] != float64(2) {
+		t.Fatalf("other android expected unread 2, got %v", meB["unread_count"])
+	}
+	if meW := c.call("GET", "/api/me", webToken, nil, 200); meW["unread_count"] != float64(2) {
+		t.Fatalf("web expected unread 2, got %v", meW["unread_count"])
+	}
 }
 
 func TestReadRejectsMalformedBoundaryBeforeStore(t *testing.T) {
@@ -178,7 +228,9 @@ func TestReadRejectsInvalidBoundaries(t *testing.T) {
 	c.call("POST", "/api/messages", token, map[string]any{"messages": []Incoming{
 		{Receiver: "+123456789", Sender: "10086", Body: "after read", Timestamp: 4000},
 	}}, 200)
-	if me := c.call("GET", "/api/me", token, nil, 200); me["unread_count"] != float64(2) {
+	// Source device skips its own upload (still only 10010 remaining), while web viewer sees both.
+	webViewer := c.call("POST", "/api/login", "", map[string]any{"password": "synthetic", "kind": "web"}, 200)["token"].(string)
+	if me := c.call("GET", "/api/me", webViewer, nil, 200); me["unread_count"] != float64(2) {
 		t.Fatal("new message was preemptively read", me)
 	}
 	assertUnread(map[string]any{"sender": "10086", "message_id": 0}, 1)
@@ -393,7 +445,8 @@ func TestManualRepairReadWatermarks(t *testing.T) {
 		{Receiver: "+123456789", Sender: "10086", Body: "new after repair A", Timestamp: 6000},
 		{Receiver: "+123456789", Sender: "10010", Body: "new after repair B", Timestamp: 7000},
 	}}, 200)
-	if me := c.call("GET", "/api/me", token, nil, 200); me["unread_count"] != float64(5) {
+	webViewer := c.call("POST", "/api/login", "", map[string]any{"password": "synthetic", "kind": "web"}, 200)["token"].(string)
+	if me := c.call("GET", "/api/me", webViewer, nil, 200); me["unread_count"] != float64(5) {
 		t.Fatal("new messages remained preemptively read after repair", me)
 	}
 }

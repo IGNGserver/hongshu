@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -65,9 +66,72 @@ func (a *app) finishAnalysis(ctx context.Context, j *analysisJob, category, otp,
 	}
 	if e = tx.Commit(); e == nil {
 		a.invalidateAIStatus()
+		if errCode == "" && category == "otp" && otp != "" && j.OTP == "" {
+			if ok, pushErr := a.enqueueDiscoveredOTPPush(ctx, j.ID, time.Now()); pushErr == nil && ok {
+				signalWork(a.pushWake)
+			}
+		}
 		a.notifyChange()
 	}
 	return e
+}
+
+func (a *app) enqueueDiscoveredOTPPush(ctx context.Context, messageID int64, now time.Time) (bool, error) {
+	cutoff := now.Add(-10 * time.Minute).UnixMilli()
+	var sourceDevice string
+	err := a.db.QueryRowContext(ctx, `SELECT m.device_id
+FROM messages m
+LEFT JOIN conversation_reads cr ON cr.sender=m.sender
+JOIN read_state rs ON rs.id=1
+WHERE m.id=?
+  AND m.historical=FALSE
+  AND m.direction='in'
+  AND m.timestamp>=?
+  AND m.id>rs.global_watermark_id
+  AND m.id>COALESCE(cr.last_read_message_id,0)`, messageID, cutoff).Scan(&sourceDevice)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT d.id FROM devices d
+JOIN push_subscriptions p ON p.device_id=d.id
+WHERE d.id<>? AND d.notify=TRUE AND d.revoked=FALSE`, sourceDevice)
+	if err != nil {
+		return false, err
+	}
+	var devices []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, err
+		}
+		devices = append(devices, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(devices) == 0 {
+		return false, err
+	}
+	var query strings.Builder
+	query.WriteString("INSERT IGNORE INTO push_jobs (message_id,device_id,next_at,leased_until) VALUES ")
+	args := make([]any, 0, len(devices)*3)
+	ts := now.UnixMilli()
+	for i, devID := range devices {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteString("(?,?,?,0)")
+		args = append(args, messageID, devID, ts)
+	}
+	res, err := a.db.ExecContext(ctx, query.String(), args...)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
 }
 
 func (a *app) analysisBackfillLoop(ctx context.Context) {

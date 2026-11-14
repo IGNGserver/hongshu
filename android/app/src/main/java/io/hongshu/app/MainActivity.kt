@@ -50,17 +50,25 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
+const val EXTRA_CONVERSATION_SENDER = "conversation_sender"
+
 class MainActivity : ComponentActivity() {
+    private val _pendingConversationSender = MutableStateFlow<String?>(null)
+    internal val pendingConversationSender = _pendingConversationSender.asStateFlow()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         clearLegacyTaskExclusion(this)
+        handleDeepLink(intent)
         // Note: Removed window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) to allow screenshots
         setContent {
             HongshuTheme {
@@ -81,13 +89,37 @@ class MainActivity : ComponentActivity() {
         SimMonitor.start(this)
         SmsInboxObserver.ensure(this)
         CallLogObserver.ensure(this)
-        syncNow(this)
+        syncNow(this, manual = true)
+        if (Config(this).token.isNotEmpty()) {
+            lifecycleScope.launch {
+                runCatching { SyncEngine.run(this@MainActivity, realtime = true) }
+            }
+        }
         if (!RuntimeHealth.connection.value.running) startRealtimeIfEnabled(this)
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: android.content.Intent?) {
+        if (intent == null) return
+        val fromExtra = intent.getStringExtra(EXTRA_CONVERSATION_SENDER)?.takeIf { it.isNotEmpty() }
+        val fromUri =
+            intent.data
+                ?.takeIf { it.scheme == "hongshu" && it.authority == "message" }
+                ?.pathSegments
+                ?.firstOrNull()
+                ?.takeIf { it.isNotEmpty() }
+        val target = fromExtra ?: fromUri ?: return
+        intent.removeExtra(EXTRA_CONVERSATION_SENDER)
+        _pendingConversationSender.value = target
+    }
+
+    internal fun consumePendingConversationSender() {
+        _pendingConversationSender.value = null
     }
 
     fun leaveForBackground() {
@@ -319,6 +351,16 @@ fun HongshuUI(activity: MainActivity) {
             if (navigationStack.lastOrNull() is AppDestination.Conversation) {
                 replaceTopDestination(navigationStack, destination)
             } else pushDestination(navigationStack, destination)
+    }
+
+    val pendingSender by activity.pendingConversationSender.collectAsState()
+    LaunchedEffect(pendingSender, repo.config.token) {
+        val target = pendingSender?.takeIf { it.isNotEmpty() } ?: return@LaunchedEffect
+        if (repo.config.token.isEmpty()) return@LaunchedEffect
+        homeView = HomeView.SMS
+        searchQuery = ""
+        navigationStack = listOf(AppDestination.Home, AppDestination.Conversation(target))
+        activity.consumePendingConversationSender()
     }
 
     fun navigateCall(id: Long) {

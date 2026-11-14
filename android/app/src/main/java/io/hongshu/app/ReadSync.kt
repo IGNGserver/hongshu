@@ -36,11 +36,13 @@ internal fun Store.applyReadState(page: JSONObject) = synchronized(identityLock)
     val complete = !page.getBoolean("more")
     val db = writableDatabase
     var changed = false
+    val revoked = mutableListOf<Store.OtpIntent>()
     db.beginTransaction()
     try {
         if (global > readMeta("global_watermark_id")) {
             db.execSQL("UPDATE meta SET value=? WHERE key='global_watermark_id'", arrayOf(global))
             changed = true
+            revoked += revokeOtpIntents(db, null, global)
         }
         for ((sender, id) in values) {
             val previous = db.rawQuery("SELECT last_read_message_id FROM conversation_reads WHERE sender=?", arrayOf(sender))
@@ -49,6 +51,7 @@ internal fun Store.applyReadState(page: JSONObject) = synchronized(identityLock)
                 db.execSQL("INSERT OR REPLACE INTO conversation_reads VALUES (?,?)", arrayOf<Any>(sender, id))
                 changed = true
             }
+            if (id > 0) revoked += revokeOtpIntents(db, sender, id)
         }
         if (complete) {
             for ((key, value) in listOf("read_state_revision" to revision, "read_state_head" to head, "read_state_epoch" to pageEpoch, "read_state_seen" to 1L)) {
@@ -59,7 +62,11 @@ internal fun Store.applyReadState(page: JSONObject) = synchronized(identityLock)
     } finally {
         db.endTransaction()
     }
-    if (changed) Store.changes.value++
+    cancelOtpNotifications(revoked)
+    if (changed) {
+        Store.changes.value++
+        runCatching { reconcileNotifications(appContext, this) }
+    }
 }
 
 internal suspend fun syncReadState(store: Store, request: suspend (String) -> JSONObject): Boolean {

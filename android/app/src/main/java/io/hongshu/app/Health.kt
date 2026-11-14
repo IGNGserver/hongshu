@@ -192,7 +192,7 @@ fun connectionNotificationStatus(context: Context): String {
     if (
         context
             .getSystemService(NotificationManager::class.java)
-            .getNotificationChannel("connection")
+            .getNotificationChannel("connection_silent")
             ?.importance == NotificationManager.IMPORTANCE_NONE
     )
         return "系统已关闭实时连接通知渠道"
@@ -209,7 +209,7 @@ fun notificationStatus(context: Context, c: Config, health: ConnectionHealth): S
         return "缺少通知权限"
     if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return "系统已禁止应用通知"
     val channel =
-        context.getSystemService(NotificationManager::class.java).getNotificationChannel("messages")
+        context.getSystemService(NotificationManager::class.java).getNotificationChannel("messages_high")
     if (channel?.importance == NotificationManager.IMPORTANCE_NONE) return "系统已关闭短信通知渠道"
     if (!c.syncHealthy) return "通知权限正常 · ${c.status}"
     if (System.currentTimeMillis() - c.lastSync > 30 * 60 * 1000) return "通知权限正常 · 长时间未成功接收更新"

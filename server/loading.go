@@ -151,6 +151,7 @@ func (a *app) recent(w http.ResponseWriter, r *http.Request) {
 
 type unreadSnapshot struct {
 	epoch, head, watermark, revision, count int64
+	device                                  string
 	valid                                   bool
 }
 
@@ -160,30 +161,66 @@ type unreadCall struct {
 	err   error
 }
 
+func unreadExcludeDevice(d Device) string {
+	if d.Kind == "android" {
+		return d.ID
+	}
+	return ""
+}
+
+func (a *app) cachedUnreadLocked(epoch, head, watermark, revision int64, excludeDevice string) (int64, bool) {
+	// Resetting unreadSnapshot directly in tests clears per-device snapshots too.
+	if !a.unreadSnapshot.valid {
+		a.deviceUnread = nil
+		return 0, false
+	}
+	if a.unreadSnapshot.epoch != epoch || a.unreadSnapshot.head != head || a.unreadSnapshot.watermark != watermark || a.unreadSnapshot.revision != revision {
+		a.unreadSnapshot = unreadSnapshot{}
+		a.deviceUnread = nil
+		return 0, false
+	}
+	if a.unreadSnapshot.device == excludeDevice {
+		return a.unreadSnapshot.count, true
+	}
+	if a.deviceUnread != nil {
+		if snap, ok := a.deviceUnread[excludeDevice]; ok && snap.valid && snap.epoch == epoch && snap.head == head && snap.watermark == watermark && snap.revision == revision {
+			return snap.count, true
+		}
+	}
+	return 0, false
+}
+
 // Callers supply a repeatable-read transaction and durable state read from that
 // snapshot. Equal keys share one in-flight COUNT per process; waiters never hold
 // the cache mutex or issue a duplicate query during a cache miss.
 func (a *app) snapshotUnread(ctx context.Context, tx *sql.Tx, epoch, head, watermark, revision int64) (int64, error) {
-	key := fmt.Sprintf("%d/%d/%d/%d", epoch, head, watermark, revision)
-	a.unreadMu.Lock()
-	cached := a.unreadSnapshot
-	a.unreadMu.Unlock()
-	if cached.valid && cached.epoch == epoch && cached.head == head && cached.watermark == watermark && cached.revision == revision {
-		return cached.count, nil
+	return a.snapshotUnreadForDevice(ctx, tx, epoch, head, watermark, revision, "")
+}
+
+func (a *app) snapshotUnreadForDevice(ctx context.Context, tx *sql.Tx, epoch, head, watermark, revision int64, excludeDevice string) (int64, error) {
+	cacheScope := excludeDevice
+	if cacheScope == "" {
+		cacheScope = "all"
 	}
+	key := fmt.Sprintf("%d/%d/%d/%d/%s", epoch, head, watermark, revision, cacheScope)
+	a.unreadMu.Lock()
+	if count, ok := a.cachedUnreadLocked(epoch, head, watermark, revision, excludeDevice); ok {
+		a.unreadMu.Unlock()
+		return count, nil
+	}
+	a.unreadMu.Unlock()
 	redisKey := ""
 	if a.redis != nil {
-		redisKey = a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision))
+		redisKey = a.redis.key("unread", fmt.Sprintf("%d", epoch), fmt.Sprintf("%d", head), fmt.Sprintf("%d", watermark), fmt.Sprintf("%d", revision), cacheScope)
 		if count, ok := a.redis.getInt(ctx, redisKey); ok {
 			return count, nil
 		}
 	}
 
 	a.unreadMu.Lock()
-	cached = a.unreadSnapshot
-	if cached.valid && cached.epoch == epoch && cached.head == head && cached.watermark == watermark && cached.revision == revision {
+	if count, ok := a.cachedUnreadLocked(epoch, head, watermark, revision, excludeDevice); ok {
 		a.unreadMu.Unlock()
-		return cached.count, nil
+		return count, nil
 	}
 	if a.unreadFlights == nil {
 		a.unreadFlights = make(map[string]*unreadCall)
@@ -203,13 +240,29 @@ func (a *app) snapshotUnread(ctx context.Context, tx *sql.Tx, epoch, head, water
 
 	var count int64
 	a.unreadQueries.Add(1)
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages m
+	query := `SELECT COUNT(*) FROM messages m
 LEFT JOIN conversation_reads cr ON cr.sender=m.sender
-WHERE m.historical=FALSE AND m.direction='in' AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`, watermark).Scan(&count)
+WHERE m.historical=FALSE AND m.direction='in' AND m.id>? AND m.id>COALESCE(cr.last_read_message_id,0)`
+	args := []any{watermark}
+	if excludeDevice != "" {
+		query += " AND m.device_id<>?"
+		args = append(args, excludeDevice)
+	}
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
 	flight.count, flight.err = count, err
 	if err == nil {
+		snap := unreadSnapshot{epoch: epoch, head: head, watermark: watermark, revision: revision, count: count, device: excludeDevice, valid: true}
 		a.unreadMu.Lock()
-		a.unreadSnapshot = unreadSnapshot{epoch, head, watermark, revision, count, true}
+		if excludeDevice == "" || !a.unreadSnapshot.valid || a.unreadSnapshot.epoch != epoch || a.unreadSnapshot.head != head || a.unreadSnapshot.watermark != watermark || a.unreadSnapshot.revision != revision || a.unreadSnapshot.device == excludeDevice {
+			a.unreadSnapshot = snap
+		}
+		if a.deviceUnread == nil {
+			a.deviceUnread = make(map[string]unreadSnapshot)
+		}
+		if len(a.deviceUnread) >= 64 {
+			clear(a.deviceUnread)
+		}
+		a.deviceUnread[excludeDevice] = snap
 		a.unreadMu.Unlock()
 		if a.redis != nil {
 			a.redis.setInt(ctx, redisKey, count, 30*time.Second)

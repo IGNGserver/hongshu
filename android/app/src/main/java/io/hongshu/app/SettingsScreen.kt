@@ -626,10 +626,22 @@ private fun HubForm(
         host.action {
             val previousDevice = c.deviceId
             host.repo.saveConnection(url, password, name, allowCleartext = allowCleartext)
+            val autoEnabledKeepAlive =
+                if (c.token.isNotEmpty()) {
+                    var turnedOn = false
+                    if (!c.hasConfiguredKeepAlive) {
+                        c.keepAlive = true
+                        turnedOn = true
+                    }
+                    if (!c.hasConfiguredBootRestore) {
+                        c.restoreRealtimeOnBoot = true
+                    }
+                    turnedOn
+                } else false
             withContext(Dispatchers.Main) {
-                if (previousDevice != c.deviceId) {
+                if (previousDevice != c.deviceId || (autoEnabledKeepAlive && !RuntimeHealth.connection.value.running)) {
                     val service = Intent(host.activity, RealtimeService::class.java)
-                    host.activity.stopService(service)
+                    if (previousDevice != c.deviceId) host.activity.stopService(service)
                     if (c.keepAlive) {
                         try {
                             ContextCompat.startForegroundService(host.activity, service)

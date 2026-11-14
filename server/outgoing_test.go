@@ -49,6 +49,7 @@ func TestIntegrationOutgoingMessages(t *testing.T) {
 	a, _ := newApp(db, "http://localhost:8080", "1", "", "")
 	c := apiTest{t: t, a: a}
 	c.call("POST", "/api/login", "", map[string]any{"password": "1"}, 200)
+	webCookie := c.cookie
 	admin := c.call("GET", "/api/me", "", nil, 200)
 	adminID := admin["device"].(map[string]any)["id"].(string)
 	features, _ := admin["features"].([]any)
@@ -59,6 +60,7 @@ func TestIntegrationOutgoingMessages(t *testing.T) {
 		t.Fatal(e)
 	}
 	paired := c.call("POST", "/api/login", "", map[string]any{"password": "1", "name": "Phone", "kind": "android"}, 200)
+	c.cookie = webCookie
 	token := paired["token"].(string)
 	id := paired["device"].(map[string]any)["id"].(string)
 	c.call("PATCH", "/api/devices/"+id, token, map[string]bool{"upload": true}, 200)

@@ -99,4 +99,38 @@ class ReadSyncTest {
         } catch (_: IllegalStateException) {}
         assertEquals(-1L, store.readStateRevision())
     }
+
+    @Test fun selfDeviceMessagesAreExcludedFromUnreadCountsAndRemoteReadsRevokeOtpIntents() {
+        val name = "read-self-${java.util.UUID.randomUUID()}.db"
+        val config = Config(context)
+        config.deviceId = "self-phone"
+        config.notify = true
+        config.liveOtpIsland = true
+        try {
+            Store(context, name).use { store ->
+                val now = System.currentTimeMillis()
+                val messages = JSONArray()
+                    .put(
+                        JSONObject().put("id", 1L).put("device_id", "self-phone").put("sender", "10010")
+                            .put("receiver", "+1234567890").put("body", "self captured SMS").put("timestamp", now).put("historical", false)
+                    )
+                    .put(
+                        JSONObject().put("id", 2L).put("device_id", "remote").put("sender", "10086")
+                            .put("receiver", "+1234567890").put("body", "验证码 482913").put("timestamp", now).put("historical", false)
+                    )
+                store.applySync(messages, 2, self = "self-phone", pairedAt = 1, pageEpoch = 1)
+                assertEquals(mapOf("10086" to 1), store.unreadCounts())
+                assertEquals(1, store.totalUnreadCount())
+                assertEquals(1, store.pendingOtpIntents().size)
+
+                store.applyReadState(page(10, "10086", 2))
+                assertTrue(store.unreadCounts().isEmpty())
+                assertEquals(0, store.totalUnreadCount())
+                assertTrue(store.pendingOtpIntents().isEmpty())
+            }
+        } finally {
+            context.deleteDatabase(name)
+            context.getSharedPreferences("hongshu", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        }
+    }
 }

@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.*
@@ -37,17 +38,26 @@ class HongshuApp : Application() {
 
 fun channels(context: Context) {
     val manager = context.getSystemService(NotificationManager::class.java)
+    runCatching {
+        manager.deleteNotificationChannel("connection")
+        manager.deleteNotificationChannel("messages")
+    }
     manager.createNotificationChannel(
-        NotificationChannel("messages", "跨设备短信", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+        NotificationChannel("messages_high", "跨设备短信", NotificationManager.IMPORTANCE_HIGH).apply {
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            setShowBadge(true)
+            description = "来自其他已连接设备的普通短信通知"
         }
     )
     manager.createNotificationChannel(
-        NotificationChannel("connection", "实时同步连接", NotificationManager.IMPORTANCE_LOW)
+        NotificationChannel("connection_silent", "实时同步连接", NotificationManager.IMPORTANCE_LOW).apply {
+            setShowBadge(false)
+        }
     )
     manager.createNotificationChannel(
         NotificationChannel("otp_island", "验证码实时状态", NotificationManager.IMPORTANCE_HIGH).apply {
-            lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            setShowBadge(true)
             description = "跨设备验证码通知，在支持的系统上以灵动岛/状态栏胶囊形式突出显示"
         }
     )
@@ -327,10 +337,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
     override suspend fun getForegroundInfo(): ForegroundInfo =
         ForegroundInfo(
             3,
-            NotificationCompat.Builder(applicationContext, "connection")
+            NotificationCompat.Builder(applicationContext, "connection_silent")
                 .setSmallIcon(R.drawable.ic_hongshu)
                 .setContentTitle("鸿枢 · 正在同步短信")
                 .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setNumber(0)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .build(),
         )
@@ -407,7 +418,7 @@ object SyncEngine {
                 // Display preview rows never acknowledge the reliable history log.
                 if (hubFeatures(session).contains("recent_snapshot") &&
                     session.getLong("cursor") > store.cursor() &&
-                    (!store.initialComplete() || session.getLong("cursor") - store.cursor() > 200) &&
+                    (!store.initialComplete() || session.getLong("cursor") - store.cursor() > 20) &&
                     store.previewHead() != session.getLong("cursor")) {
                     try {
                         store.applyRecent(repo.api.requestCancellable("/recent?limit=50", timeoutMillis = 8_000))
@@ -502,6 +513,18 @@ object SyncEngine {
                 if (session.optLong("unread_count", -1L) == 0L) {
                     context.getSystemService(NotificationManager::class.java).cancel(2)
                 }
+                if (store.epoch() > 0) {
+                    try {
+                        uploadReadReceipts(repo.api, store)
+                        syncReadState(store) { repo.api.requestCancellable(it) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: ApiException) {
+                        if (e.status == 401) throw e
+                    } catch (_: Exception) {
+                        // Pre-sync read check is best-effort; authoritative read sync runs at loop end.
+                    }
+                }
                 val pairedAt = me.optLong("created_at")
                 for (page in 0 until 4) {
                     val data =
@@ -527,7 +550,7 @@ object SyncEngine {
                     }
                     applyMessagePage(context, c, store, data, pairedAt)
                     val pendingNotice = store.pendingNotification()
-                    if (!c.notify || (pendingNotice > 0 && notifyMessage(context)))
+                    if (!c.notify || (pendingNotice > 0 && notifyMessage(context, store)))
                         store.acknowledgeNotification(pendingNotice)
                     if (!uploaded) {
                         uploadFailure = uploadSlice()
@@ -545,10 +568,10 @@ object SyncEngine {
                         val contactsHealthy = if (maintenance()) refreshContactSnapshot(repo, session)
                             else c.contactsHealthy
                         if (!realtime) c.contactsHealthy = contactsHealthy
-                        // Cosmetic analysis has a separate cursor and never creates notifications.
-                        val analysisMore = maintenance() && syncMessageAnalysis(repo, session)
                         uploadReadReceipts(repo.api, store)
                         val readsComplete = syncReadState(store) { repo.api.requestCancellable(it) }
+                        val analysisMore = maintenance() && syncMessageAnalysis(context, repo, session, pairedAt)
+                        reconcileNotifications(context, store)
                         val callsMore = maintenance() && uploadCallSlice()
                         // Same isolation as call uploads: a failure is retried next sync.
                         val callPagesMore =
@@ -615,11 +638,9 @@ internal fun hubFeatures(session: JSONObject): Set<String> {
     return (0 until features.length()).mapNotNull { features.optString(it).takeIf(String::isNotEmpty) }.toSet()
 }
 
-internal fun applyMessagePage(context: Context, config: Config, store: Store, data: JSONObject, pairedAt: Long) {
-    store.applySync(data.getJSONArray("messages"), data.getLong("cursor"),
-        config.deviceId, pairedAt, data.getLong("epoch"))
+internal fun dispatchPendingOtpNotifications(context: Context, config: Config, store: Store) {
     if (!config.notify || !config.liveOtpIsland || config.deviceId.isEmpty()) return
-    // Intents were committed with the message pages, so a process death between the commit
+    // Intents were committed with the message/analysis pages, so a process death between the commit
     // and this loop still shows a valid code on the next sync. Consume every pending intent,
     // not just this page's, while it is still valid.
     store.dropExpiredOtpIntents()
@@ -630,7 +651,18 @@ internal fun applyMessagePage(context: Context, config: Config, store: Store, da
     }
 }
 
-internal suspend fun syncMessageAnalysis(repo: Repository, session: JSONObject): Boolean {
+internal fun applyMessagePage(context: Context, config: Config, store: Store, data: JSONObject, pairedAt: Long) {
+    store.applySync(data.getJSONArray("messages"), data.getLong("cursor"),
+        config.deviceId, pairedAt, data.getLong("epoch"))
+    dispatchPendingOtpNotifications(context, config, store)
+}
+
+internal suspend fun syncMessageAnalysis(
+    context: Context,
+    repo: Repository,
+    session: JSONObject,
+    pairedAt: Long = 0,
+): Boolean {
     val store = repo.store
     try {
         store.rememberAI(session.optBoolean("ai_enabled"))
@@ -646,7 +678,8 @@ internal suspend fun syncMessageAnalysis(repo: Repository, session: JSONObject):
                 continue
             }
             if (epochReset(store.epochSeen(), store.epoch(), data.getLong("epoch"))) return false
-            store.applyAnalysis(data.getJSONArray("items"), data.getLong("cursor"), data.getLong("epoch"))
+            store.applyAnalysis(data.getJSONArray("items"), data.getLong("cursor"), data.getLong("epoch"), pairedAt)
+            dispatchPendingOtpNotifications(context, repo.config, store)
             if (!data.getBoolean("more")) return false
         }
         return store.analysisCursor() < session.getLong("analysis_revision")
@@ -737,14 +770,51 @@ internal class SimRegistrations(private val api: Api, private val c: Config) {
     }
 }
 
-fun notifyMessage(context: Context): Boolean {
+private fun conversationLaunchIntent(context: Context, sender: String): Intent =
+    mainActivityIntent(context).apply {
+        if (sender.isNotEmpty()) {
+            putExtra(EXTRA_CONVERSATION_SENDER, sender)
+            data = Uri.parse("hongshu://message/${Uri.encode(sender)}")
+        }
+    }
+
+internal fun applyLauncherBadge(context: Context, notification: android.app.Notification?, count: Int) {
+    val safeCount = count.coerceAtLeast(0)
+    if (notification != null) {
+        runCatching {
+            val extra = notification.javaClass.getDeclaredField("extraNotification").get(notification)
+            extra?.javaClass?.getMethod("setMessageCount", Int::class.javaPrimitiveType)
+                ?.invoke(extra, safeCount)
+        }
+    }
+    if (safeCount >= 0) {
+        runCatching {
+            val intent = Intent("android.intent.action.APPLICATION_MESSAGE_UPDATE").apply {
+                putExtra(
+                    "android.intent.extra.update_application_component_name",
+                    "${context.packageName}/${MainActivity::class.java.name}",
+                )
+                putExtra(
+                    "android.intent.extra.update_application_message_text",
+                    if (safeCount == 0) "" else safeCount.toString(),
+                )
+            }
+            context.sendBroadcast(intent)
+        }
+    }
+}
+
+fun notifyMessage(
+    context: Context,
+    store: Store? = null,
+    silentUpdate: Boolean = false,
+): Boolean {
     if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
         return false
+    val manager = context.getSystemService(NotificationManager::class.java)
     if (
-        context
-            .getSystemService(NotificationManager::class.java)
-            .getNotificationChannel("messages")
-            ?.importance == NotificationManager.IMPORTANCE_NONE
+        manager.getNotificationChannel("messages_high")?.importance ==
+            NotificationManager.IMPORTANCE_NONE
     )
         return false
     if (
@@ -752,27 +822,104 @@ fun notifyMessage(context: Context): Boolean {
             PackageManager.PERMISSION_GRANTED && android.os.Build.VERSION.SDK_INT >= 33
     )
         return false
+    val (ordinaryCount, items, totalUnread) =
+        if (store != null) {
+            val (count, list) = store.unreadOrdinaryMessages(5)
+            Triple(count, list, store.totalUnreadCount())
+        } else {
+            Store(context).use { s ->
+                val (count, list) = s.unreadOrdinaryMessages(5)
+                Triple(count, list, s.totalUnreadCount())
+            }
+        }
+    if (ordinaryCount <= 0 && store != null) {
+        manager.cancel(2)
+        applyLauncherBadge(context, null, totalUnread)
+        return true
+    }
+    val distinctSenders = items.map { it.sender }.distinct()
+    val targetSender = if (distinctSenders.size == 1) distinctSenders.single() else ""
     val open =
         PendingIntent.getActivity(
             context,
             0,
-            mainActivityIntent(context),
+            conversationLaunchIntent(context, targetSender),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-    context
-        .getSystemService(NotificationManager::class.java)
-        .notify(
-            2,
-            NotificationCompat.Builder(context, "messages")
-                .setSmallIcon(R.drawable.ic_hongshu)
+    val latest = items.firstOrNull()
+    val latestSenderLabel = latest?.let { it.contact.ifEmpty { it.sender } }.orEmpty()
+    val badgeCount = totalUnread.coerceAtLeast(1)
+    val builder =
+        NotificationCompat.Builder(context, "messages_high")
+            .setSmallIcon(R.drawable.ic_hongshu)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setNumber(badgeCount)
+            .setOnlyAlertOnce(silentUpdate)
+            .setSilent(silentUpdate)
+    when {
+        ordinaryCount <= 1 && latest != null -> {
+            builder
+                .setContentTitle(latestSenderLabel.ifEmpty { "鸿枢新短信" })
+                .setContentText(latest.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(latest.body))
+        }
+        items.size > 1 -> {
+            val inboxStyle =
+                NotificationCompat.InboxStyle()
+                    .setBigContentTitle("鸿枢 · $ordinaryCount 条未读短信")
+                    .setSummaryText("点击打开查看")
+            items.take(5).forEach { item ->
+                val label = item.contact.ifEmpty { item.sender }
+                inboxStyle.addLine("$label: ${item.body}")
+            }
+            builder
+                .setContentTitle("鸿枢 · $ordinaryCount 条新短信")
+                .setContentText("$latestSenderLabel: ${latest?.body.orEmpty()}")
+                .setStyle(inboxStyle)
+        }
+        latest != null -> {
+            builder
+                .setContentTitle(latestSenderLabel.ifEmpty { "鸿枢新短信" })
+                .setContentText(latest.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(latest.body))
+        }
+        else -> {
+            builder
                 .setContentTitle("鸿枢 · 有新短信")
-                .setContentText("打开应用查看，通知中不显示短信内容")
-                .setContentIntent(open)
-                .setAutoCancel(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                .build(),
-        )
+                .setContentText("点击查看最新同步短信")
+        }
+    }
+    val built = builder.build()
+    applyLauncherBadge(context, built, badgeCount)
+    manager.notify(2, built)
     return true
+}
+
+internal fun reconcileNotifications(context: Context, store: Store) {
+    val manager = context.getSystemService(NotificationManager::class.java) ?: return
+    val active = runCatching { manager.activeNotifications.orEmpty() }.getOrDefault(emptyArray())
+    val hasSummary = active.any { it.id == 2 && it.tag == null }
+    val totalUnread = store.totalUnreadCount()
+    if (!Config(context).notify) {
+        manager.cancel(2)
+        applyLauncherBadge(context, null, 0)
+        return
+    }
+    val (ordinaryCount, _) = store.unreadOrdinaryMessages(1)
+    if (ordinaryCount <= 0) {
+        manager.cancel(2)
+        applyLauncherBadge(context, null, totalUnread)
+        return
+    }
+    if (hasSummary) {
+        notifyMessage(context, store, silentUpdate = true)
+    } else {
+        applyLauncherBadge(context, null, totalUnread)
+    }
 }
 
 /**

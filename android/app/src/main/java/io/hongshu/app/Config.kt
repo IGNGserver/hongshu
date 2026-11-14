@@ -349,6 +349,9 @@ class Config(context: Context) {
             prefs.edit().putBoolean("sim_recognition_healthy", value).commit()
         }
 
+    val hasConfiguredKeepAlive: Boolean
+        get() = prefs.contains("keep_alive")
+
     var keepAlive: Boolean
         get() = prefs.getBoolean("keep_alive", false)
         set(value) {
@@ -379,6 +382,9 @@ class Config(context: Context) {
         set(value) {
             prefs.edit().putString("last_revive_result", value).commit()
         }
+
+    val hasConfiguredBootRestore: Boolean
+        get() = prefs.contains("restore_realtime_on_boot")
 
     var restoreRealtimeOnBoot: Boolean
         get() = prefs.getBoolean("restore_realtime_on_boot", false)
