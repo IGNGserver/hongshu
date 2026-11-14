@@ -9,6 +9,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.SQLiteMode
 import org.robolectric.annotation.Config as RobolectricConfig
 
@@ -101,6 +102,8 @@ class ReadSyncTest {
     }
 
     @Test fun selfDeviceMessagesAreExcludedFromUnreadCountsAndRemoteReadsRevokeOtpIntents() {
+        shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        channels(context)
         val name = "read-self-${java.util.UUID.randomUUID()}.db"
         val config = Config(context)
         config.deviceId = "self-phone"
