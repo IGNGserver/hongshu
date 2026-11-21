@@ -148,4 +148,34 @@ class NavigationTest {
         stack = popNavigationStack(stack, twoPane = true)
         assertEquals(listOf<AppDestination>(AppDestination.Home), stack)
     }
+    @Test
+    fun searchCoversCallDetailOnlyInTwoPane() {
+        val stack = listOf<AppDestination>(AppDestination.Home, AppDestination.Search, AppDestination.Call(7))
+        assertTrue(isSearchMode(stack, twoPane = true))
+        assertFalse(isSearchMode(stack, twoPane = false))
+        assertFalse(isSearchMode(listOf(AppDestination.Home, AppDestination.Call(7)), twoPane = true))
+    }
+
+    @Test
+    fun switchingHomeViewKeepsSearchAndDropsDetail() {
+        val detail =
+            listOf<AppDestination>(
+                AppDestination.Home,
+                AppDestination.Search,
+                AppDestination.Call(7),
+            )
+        assertEquals(
+            listOf<AppDestination>(AppDestination.Home, AppDestination.Search),
+            switchHomeViewStack(detail),
+        )
+        assertEquals(
+            listOf<AppDestination>(AppDestination.Home),
+            switchHomeViewStack(listOf(AppDestination.Home, AppDestination.Conversation("95588"))),
+        )
+        assertEquals(
+            listOf<AppDestination>(AppDestination.Home, AppDestination.Search),
+            switchHomeViewStack(listOf(AppDestination.Home, AppDestination.Search)),
+        )
+    }
+
 }

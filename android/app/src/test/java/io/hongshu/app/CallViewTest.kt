@@ -170,4 +170,72 @@ class CallViewTest {
         assertEquals(listOf(AppDestination.Home), popDestination(stack))
         assertTrue(isBackNavigation(stack, AppDestination.Call(7), AppDestination.Home))
     }
+    @Test
+    fun kindChipsMatchTheRowSemantics() {
+        assertTrue(callKindMatches("rejected", "missed"))
+        assertTrue(callKindMatches("blocked", "missed"))
+        assertTrue(callKindMatches("answered_externally", "incoming"))
+        assertTrue(callKindMatches("vendor", "all"))
+        assertFalse(callKindMatches("vendor", "missed"))
+        assertFalse(callKindMatches("voicemail", "outgoing"))
+        assertEquals(listOf("all", "missed", "incoming", "outgoing", "voicemail"), callFilterLabels.keys.toList())
+    }
+
+    @Test
+    fun filtersAndCountsUseTheSameKindBuckets() = runBlocking {
+        val calls =
+            listOf(
+                call(1, type = "missed"),
+                call(2, type = "rejected"),
+                call(3, type = "blocked"),
+                call(4, type = "incoming"),
+                call(5, type = "answered_externally"),
+                call(6, type = "outgoing"),
+                call(7, type = "voicemail"),
+                call(8, type = "vendor"),
+            )
+        assertFalse(syncCallLog(store, { page(calls, 8, false) }))
+
+        assertEquals((1L..8L).toList(), store.calls().map { it.id }.sorted())
+        assertEquals(listOf(1L, 2L, 3L), store.calls(kind = "missed").map { it.id }.sorted())
+        assertEquals(listOf(4L, 5L), store.calls(kind = "incoming").map { it.id }.sorted())
+        assertEquals(listOf(6L), store.calls(kind = "outgoing").map { it.id })
+        assertEquals(listOf(7L), store.calls(kind = "voicemail").map { it.id })
+
+        val counts = store.callCounts()
+        assertEquals(8, counts["all"])
+        assertEquals(3, counts["missed"])
+        assertEquals(2, counts["incoming"])
+        assertEquals(1, counts["outgoing"])
+        assertEquals(1, counts["voicemail"])
+
+        // Odd ids carry the known line; even ids are unknown-line records.
+        val line = "+8613800000000"
+        assertEquals(listOf(1L, 3L, 5L, 7L), store.calls(sim = line).map { it.id }.sorted())
+        assertEquals(4, store.callCounts(sim = line)["all"])
+        assertEquals(2, store.callCounts(sim = line)["missed"])
+        assertEquals(listOf(line), store.callReceivers())
+    }
+
+    @Test
+    fun searchMatchesNumberAndHubAlias() = runBlocking {
+        val calls = listOf(call(1, number = "13900001111"), call(2, number = "13900002222"))
+        assertFalse(syncCallLog(store, { page(calls, 2, false) }))
+        store.applyContacts(JSONObject().put("13900001111", "合成联系人"))
+
+        assertEquals(listOf(2L), store.calls(query = "2222").map { it.id })
+        assertEquals(listOf(1L), store.calls(query = "合成").map { it.id })
+        assertEquals(listOf(1L, 2L), store.calls(query = "139").map { it.id }.sorted())
+        assertEquals(1, store.callCounts(query = "2222")["all"])
+        assertEquals(1, store.callCounts(query = "合成")["all"])
+    }
+
+    @Test
+    fun callNumbersSkipUnknownLinesAndDuplicates() = runBlocking {
+        val calls = listOf(call(1, number = "13900000000"), call(2), call(3, number = ""))
+        assertFalse(syncCallLog(store, { page(calls, 3, false) }))
+        assertEquals(listOf("+8613800000000"), store.callReceivers())
+        assertEquals(listOf("13900000000"), store.callNumbers())
+    }
+
 }

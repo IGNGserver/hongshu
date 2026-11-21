@@ -2775,7 +2775,8 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
 
     // Escaped literals avoid SQLite's bind-variable limit for large contact search results.
     // These are original local SMS addresses, never written to any persistent contact table.
-    private fun contactSearchClause(column: String, senders: Set<String>): String =
+    // Used by SMS and call search, so a contact-name match means the same on both timelines.
+    internal fun contactSearchClause(column: String, senders: Set<String>): String =
         if (senders.isEmpty()) "" else " OR $column IN (${senders.joinToString(",") { android.database.DatabaseUtils.sqlEscapeString(it) }})"
 
     // Mirrors the server's effectiveGroup: a manual decision is always final;

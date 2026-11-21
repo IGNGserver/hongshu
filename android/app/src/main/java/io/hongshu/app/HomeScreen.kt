@@ -7,12 +7,16 @@ package io.hongshu.app
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -37,6 +41,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -109,6 +114,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -138,6 +145,10 @@ class HomeModel(
     val callLogAvailable: Boolean = false,
     val calls: List<CachedCall>? = null,
     val callLimit: Int = 200,
+    val callCounts: Map<String, Int> = emptyMap(),
+    val callReceivers: List<String> = emptyList(),
+    val callKind: String = "all",
+    val callSimFilter: String = "",
 )
 
 /** Callbacks from the main screen back to its owner. */
@@ -158,6 +169,8 @@ class HomeActions(
     val onViewChange: (HomeView) -> Unit = {},
     val onSelectCall: (Long) -> Unit = {},
     val onLoadMoreCalls: () -> Unit = {},
+    val onCallKindChange: (String) -> Unit = {},
+    val onCallSimFilterChange: (String) -> Unit = {},
 )
 
 private fun formatClock(timestamp: Long): String =
@@ -174,7 +187,7 @@ fun MainSurface(
 ) {
     val conversation = destination as? AppDestination.Conversation
     val call = destination as? AppDestination.Call
-    val callsView = model.view == HomeView.CALLS
+    val callsView = model.callLogAvailable && model.view == HomeView.CALLS
     val compactHeight = layoutSpec.compactHeight
     Box(
         Modifier.fillMaxSize()
@@ -189,8 +202,14 @@ fun MainSurface(
                 horizontalArrangement = Arrangement.spacedBy(layoutSpec.paneSpacing),
             ) {
                 Box(Modifier.width(layoutSpec.listPaneWidth).fillMaxHeight()) {
-                    if (callsView) CallListPane(model, actions, call?.id, compactHeight)
-                    else ConversationListPane(model, actions, searching, conversation, compactHeight = compactHeight)
+                    HomeListPane(
+                        model,
+                        actions,
+                        searching,
+                        conversation?.sender,
+                        call?.id,
+                        compactHeight,
+                    )
                 }
                 Surface(
                     Modifier.weight(1f)
@@ -238,8 +257,6 @@ fun MainSurface(
             }
         } else if (call != null) {
             CallDetailPane(call.id, model, true, actions.onBack, actions.onMessage, layoutSpec.conversationMaxWidth)
-        } else if (callsView) {
-            CallListPane(model, actions, null, compactHeight)
         } else if (conversation != null) {
             ConversationPane(
                 conversation,
@@ -251,7 +268,7 @@ fun MainSurface(
                 bubbleMaxWidth = layoutSpec.bubbleMaxWidth,
             )
         } else {
-            ConversationListPane(model, actions, searching, null, compactHeight = compactHeight)
+            HomeListPane(model, actions, searching, null, null, compactHeight)
         }
         AnimatedVisibility(
             visible = model.busy && !model.refreshing,
@@ -293,43 +310,73 @@ private fun DetailPlaceholder() {
 }
 
 @Composable
-private fun ConversationListPane(
+private fun HomeListPane(
     model: HomeModel,
     actions: HomeActions,
     searching: Boolean,
-    selected: AppDestination.Conversation?,
+    selectedSender: String?,
+    selectedCallId: Long?,
     compactHeight: Boolean = false,
 ) {
-    val f = model.facts
-    val showSims = model.receivers.size > 1
+    val view = if (model.callLogAvailable) model.view else HomeView.SMS
+    val callsView = view == HomeView.CALLS
+    val lines = if (callsView) model.callReceivers else model.receivers
+    val lineFilter = if (callsView) model.callSimFilter else model.simFilter
+    val smsListState = rememberLazyListState()
+    val callListState = rememberLazyListState()
+    val enterFx = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
+    val exitFx = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+    val enterSize = MaterialTheme.motionScheme.defaultSpatialSpec<IntSize>()
+    val exitSize = MaterialTheme.motionScheme.fastSpatialSpec<IntSize>()
+    val slide = MaterialTheme.motionScheme.fastSpatialSpec<IntOffset>()
     Column(Modifier.fillMaxSize()) {
         SearchHeader(
             searching = searching,
             query = model.searchQuery,
             onQueryChange = actions.onSearchQueryChange,
             onSearchActiveChange = actions.onSearchActiveChange,
-            attention = f.connected && attentionItems(f).isNotEmpty(),
+            attention = model.facts.connected && attentionItems(model.facts).isNotEmpty(),
             onOpenSettings = { actions.onOpenSettings(SettingsPage.Overview) },
             onMarkAllRead = actions.onMarkAllRead,
+            placeholder = if (callsView) "搜索通话、号码或联系人" else "搜索短信、号码或联系人",
+            showMarkAllRead = !callsView,
             compactHeight = compactHeight,
         )
-        if (model.callLogAvailable && !searching) HomeViewSwitch(model.view, actions.onViewChange)
-        AnimatedVisibility(showSims) {
-            SimFilterRow(model.receivers, model.sims, model.simFilter, actions.onSimFilterChange)
-        }
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        AnimatedVisibility(
+            visible = model.callLogAvailable,
+            enter = fadeIn(enterFx) + expandVertically(enterSize),
+            exit = fadeOut(exitFx) + shrinkVertically(exitSize),
         ) {
-            items(visibleMessageGroups(model.aiEnabled), key = { it }) { group ->
-                FilterChip(
-                    selected = model.group == group,
-                    onClick = { actions.onGroupChange(group) },
-                    label = { Text("${messageGroupLabels[group].orEmpty()} ${model.groupCounts[group] ?: 0}") },
-                )
-            }
+            HomeViewSwitch(view, actions.onViewChange)
         }
-        if (model.aiEnabled) {
+        AnimatedVisibility(
+            visible = lines.size > 1,
+            enter = fadeIn(enterFx) + expandVertically(enterSize),
+            exit = fadeOut(exitFx) + shrinkVertically(exitSize),
+        ) {
+            SimFilterRow(
+                lines,
+                model.sims,
+                lineFilter,
+                if (callsView) actions.onCallSimFilterChange else actions.onSimFilterChange,
+            )
+        }
+        AnimatedContent(
+            targetState = view,
+            transitionSpec = {
+                val dir = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                (fadeIn(enterFx) + slideInHorizontally(slide) { it / 12 * dir }) togetherWith
+                    (fadeOut(exitFx) + slideOutHorizontally(slide) { -it / 12 * dir })
+            },
+            label = "filter rail",
+        ) { target ->
+            if (target == HomeView.CALLS) CallFilterRail(model, actions) else SmsFilterRail(model, actions)
+        }
+        AnimatedVisibility(
+            visible = !callsView && model.aiEnabled,
+            enter = fadeIn(enterFx) + expandVertically(enterSize),
+            exit = fadeOut(exitFx) + shrinkVertically(exitSize),
+        ) {
             TextButton(
                 onClick = { actions.onOpenSettings(SettingsPage.Analysis) },
                 modifier = Modifier.padding(horizontal = 8.dp),
@@ -351,7 +398,49 @@ private fun ConversationListPane(
                 )
             },
         ) {
-            ConversationList(model, actions, searching, selected, showSims)
+            AnimatedContent(
+                targetState = view,
+                transitionSpec = { fadeIn(enterFx) togetherWith fadeOut(exitFx) },
+                label = "home list",
+            ) { target ->
+                if (target == HomeView.CALLS) {
+                    CallList(model, actions, selectedCallId, callListState, searching)
+                } else {
+                    ConversationList(model, actions, searching, selectedSender, lines.size > 1, smsListState)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmsFilterRail(model: HomeModel, actions: HomeActions) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(visibleMessageGroups(model.aiEnabled), key = { it }) { group ->
+            FilterChip(
+                selected = model.group == group,
+                onClick = { actions.onGroupChange(group) },
+                label = { Text("${messageGroupLabels[group].orEmpty()} ${model.groupCounts[group] ?: 0}") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CallFilterRail(model: HomeModel, actions: HomeActions) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(callFilterLabels.keys.toList(), key = { it }) { kind ->
+            FilterChip(
+                selected = model.callKind == kind,
+                onClick = { actions.onCallKindChange(kind) },
+                label = { Text("${callFilterLabels[kind]} ${model.callCounts[kind] ?: 0}") },
+            )
         }
     }
 }
@@ -365,6 +454,8 @@ private fun SearchHeader(
     attention: Boolean,
     onOpenSettings: () -> Unit,
     onMarkAllRead: () -> Unit = {},
+    placeholder: String = "搜索短信、号码或联系人",
+    showMarkAllRead: Boolean = true,
     compactHeight: Boolean = false,
 ) {
     Surface(
@@ -379,6 +470,8 @@ private fun SearchHeader(
     ) {
         val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
         val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
+        val enterWidth = MaterialTheme.motionScheme.defaultSpatialSpec<IntSize>()
+        val exitWidth = MaterialTheme.motionScheme.fastSpatialSpec<IntSize>()
         AnimatedContent(
             targetState = searching,
             transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
@@ -397,7 +490,7 @@ private fun SearchHeader(
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                         if (query.isEmpty()) {
                             Text(
-                                "搜索短信、号码或联系人",
+                                placeholder,
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -433,8 +526,14 @@ private fun SearchHeader(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    IconButton(onClick = onMarkAllRead) {
-                        Icon(Icons.Default.DoneAll, contentDescription = "全部标记为已读")
+                    AnimatedVisibility(
+                        visible = showMarkAllRead,
+                        enter = fadeIn(enter) + expandHorizontally(enterWidth),
+                        exit = fadeOut(exit) + shrinkHorizontally(exitWidth),
+                    ) {
+                        IconButton(onClick = onMarkAllRead) {
+                            Icon(Icons.Default.DoneAll, contentDescription = "全部标记为已读")
+                        }
                     }
                     IconButton(onClick = onOpenSettings) {
                         BadgedBox(badge = { if (attention) Badge() }) {
@@ -484,9 +583,17 @@ private fun ConversationList(
     model: HomeModel,
     actions: HomeActions,
     searching: Boolean,
-    selected: AppDestination.Conversation?,
+    selectedSender: String?,
     showSims: Boolean,
+    listState: LazyListState,
 ) {
+    // New filter or query starts at the newest row instead of wherever the old list stopped.
+    // The first composition of a tab is not a filter change, so returning keeps its scroll.
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(model.group, model.simFilter, model.searchQuery, searching) {
+        if (settled && listState.firstVisibleItemIndex > 0) listState.scrollToItem(0)
+        settled = true
+    }
     val messages = model.messages
     val f = model.facts
     val hasBanners =
@@ -495,6 +602,7 @@ private fun ConversationList(
     val navigation = WindowInsets.navigationBars.asPaddingValues()
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(top = 4.dp, bottom = navigation.calculateBottomPadding() + 24.dp),
     ) {
         if (!searching && model.setup.visible) {
@@ -555,8 +663,7 @@ private fun ConversationList(
                     ConversationRow(
                         message = msg,
                         receiverLabel = if (showSims) simLabel(msg.receiver, model.sims) else null,
-                        isSelected =
-                            selected?.sender == msg.sender,
+                        isSelected = selectedSender == msg.sender,
                         onClick = { actions.onSelectConversation(msg.sender) },
                         modifier = Modifier.animateItem(),
                     )

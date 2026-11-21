@@ -166,6 +166,12 @@ private data class HomeLists(
     val callLog: Boolean = false,
 )
 
+/** Call chips metadata: counts over the whole cache and the lines that have calls. */
+private data class CallMeta(
+    val counts: Map<String, Int> = emptyMap(),
+    val receivers: List<String> = emptyList(),
+)
+
 @Composable
 fun HongshuUI(activity: MainActivity) {
     val repo = remember { Repository(activity) }
@@ -183,6 +189,8 @@ fun HongshuUI(activity: MainActivity) {
     var searchQuery by remember { mutableStateOf("") }
     var simFilter by remember { mutableStateOf("") }
     var group by remember { mutableStateOf("all") }
+    var callSimFilter by remember { mutableStateOf("") }
+    var callKind by remember { mutableStateOf("all") }
     var aiEnabled by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
@@ -259,6 +267,7 @@ fun HongshuUI(activity: MainActivity) {
         }
 
     LaunchedEffect(searchQuery, simFilter, group) { messageLimit = 200 }
+    LaunchedEffect(searchQuery, callSimFilter, callKind) { callLimit = 200 }
 
     val destination = navigationStack.last()
     LaunchedEffect(changes, simFilter, messageLimit, group, destination, searchActive, visible) {
@@ -271,24 +280,51 @@ fun HongshuUI(activity: MainActivity) {
             }
     }
 
-    LaunchedEffect(changes, callLimit, homeView, visible, destination) {
-        if (!visible || destination is AppDestination.Settings || homeView != HomeView.CALLS) return@LaunchedEffect
-        loadedCalls =
+    // Numbers on the call timeline whose local contact name matches the query. Kept separate
+    // from the SMS senders because the two timelines can hold different numbers.
+    val callSearchNumbers by produceState<Set<String>>(emptySet(), changes, searchQuery, contactRevision, homeView) {
+        value = emptySet()
+        value =
             withContext(Dispatchers.IO) {
-                repo.store.readUnlessClosed(emptyList()) { cachedCalls(callLimit) }
+                if (searchQuery.isBlank() || !localContacts.available() || homeView != HomeView.CALLS) emptySet()
+                else localContacts.matchingSenders(searchQuery, repo.store.readUnlessClosed(emptyList()) { callNumbers() })
             }
     }
 
-    val searchSenders by produceState<Set<String>>(emptySet(), changes, searchQuery, contactRevision) {
+    LaunchedEffect(
+        changes,
+        callLimit,
+        homeView,
+        searchActive,
+        searchQuery,
+        callKind,
+        callSimFilter,
+        callSearchNumbers,
+        visible,
+        destination,
+    ) {
+        if (!visible || destination is AppDestination.Settings || homeView != HomeView.CALLS) return@LaunchedEffect
+        // Match the SMS search debounce; a blank query is an ordinary list load and stays immediate.
+        if (searchActive && searchQuery.isNotBlank()) kotlinx.coroutines.delay(250)
+        val query = if (searchActive) searchQuery else ""
+        loadedCalls =
+            withContext(Dispatchers.IO) {
+                repo.store.readUnlessClosed(emptyList()) {
+                    calls(query, callKind, callSimFilter, callSearchNumbers, callLimit)
+                }
+            }
+    }
+
+    val searchSenders by produceState<Set<String>>(emptySet(), changes, searchQuery, contactRevision, homeView) {
         value = emptySet()
         value = withContext(Dispatchers.IO) {
-            if (searchQuery.isBlank() || !localContacts.available()) emptySet()
+            if (searchQuery.isBlank() || !localContacts.available() || homeView != HomeView.SMS) emptySet()
             else localContacts.matchingSenders(searchQuery, repo.store.readUnlessClosed(emptyList()) { contactSearchSenders() })
         }
     }
 
-    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, searchSenders, destination, searchActive, visible) {
-        if (!visible || destination is AppDestination.Settings || !searchActive) return@LaunchedEffect
+    LaunchedEffect(changes, searchQuery, simFilter, messageLimit, group, searchSenders, destination, searchActive, visible, homeView) {
+        if (!visible || destination is AppDestination.Settings || !searchActive || homeView != HomeView.SMS) return@LaunchedEffect
         kotlinx.coroutines.delay(250)
         loadedSearchMessages =
             withContext(Dispatchers.IO) {
@@ -313,6 +349,20 @@ fun HongshuUI(activity: MainActivity) {
                             aiEnabled = aiEnabled(),
                             groupCounts = groupCounts(activeQuery, simFilter, searchSenders),
                             callLog = hubSupportsCallLog(),
+                        )
+                    }
+                }
+        }
+    val callMeta by
+        produceState(CallMeta(), changes, callKind, callSimFilter, searchActive, searchQuery, callSearchNumbers, homeView, lists.callLog, visible, destination) {
+            if (!visible || destination is AppDestination.Settings || !lists.callLog) return@produceState
+            val activeQuery = if (searchActive) searchQuery else ""
+            value =
+                withContext(Dispatchers.IO) {
+                    repo.store.readUnlessClosed(CallMeta()) {
+                        CallMeta(
+                            counts = callCounts(activeQuery, callSimFilter, callSearchNumbers),
+                            receivers = callReceivers(),
                         )
                     }
                 }
@@ -383,8 +433,8 @@ fun HongshuUI(activity: MainActivity) {
         if (view == homeView) return
         homeView = view
         callLimit = 200
-        searchQuery = ""
-        navigationStack = listOf(AppDestination.Home)
+        // Keep an active search and its query: the tabs scope the search, they do not end it.
+        navigationStack = switchHomeViewStack(navigationStack)
     }
 
     fun popNavigation() {
@@ -431,6 +481,8 @@ fun HongshuUI(activity: MainActivity) {
             onViewChange = ::switchView,
             onSelectCall = ::navigateCall,
             onLoadMoreCalls = { callLimit += 200 },
+            onCallKindChange = { callKind = it },
+            onCallSimFilterChange = { callSimFilter = it },
             onChangeCategory = { id, category ->
                 action {
                     identityMutex.withLock { repo.api.requestCancellable("/messages/$id/category", "PATCH", JSONObject().put("category", category)) }
@@ -506,6 +558,10 @@ fun HongshuUI(activity: MainActivity) {
                                     callLogAvailable = lists.callLog,
                                     calls = loadedCalls,
                                     callLimit = callLimit,
+                                    callCounts = callMeta.counts,
+                                    callReceivers = callMeta.receivers,
+                                    callKind = callKind,
+                                    callSimFilter = callSimFilter,
                                 ),
                             actions = homeActions,
                             twoPane = isExpanded,

@@ -25,8 +25,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -38,12 +38,13 @@ import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Voicemail
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
@@ -51,13 +52,15 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -112,6 +115,26 @@ internal val callPresentationLabels = mapOf("restricted" to "隐藏号码", "unk
 internal fun callTypeLabel(type: String): String = callTypeLabels[type] ?: callTypeLabels.getValue("unknown")
 
 internal fun isMissedCall(type: String): Boolean = type == "missed" || type == "rejected" || type == "blocked"
+
+// Type chips on the call list. The keys drive Store.callCounts and callKindMatches, so the
+// chip counts and the filtered rows can never disagree.
+internal val callFilterLabels =
+    linkedMapOf(
+        "all" to "全部通话",
+        "missed" to "未接",
+        "incoming" to "呼入",
+        "outgoing" to "呼出",
+        "voicemail" to "语音信箱",
+    )
+
+internal fun callKindMatches(type: String, kind: String): Boolean =
+    when (kind) {
+        "missed" -> type == "missed" || type == "rejected" || type == "blocked"
+        "incoming" -> type == "incoming" || type == "answered_externally"
+        "outgoing" -> type == "outgoing"
+        "voicemail" -> type == "voicemail"
+        else -> true
+    }
 
 internal fun formatCallDuration(seconds: Long): String {
     val total = seconds.coerceAtLeast(0)
@@ -241,11 +264,82 @@ private fun android.database.Cursor.call() =
         historical = getInt(12) != 0,
     )
 
-internal fun Store.cachedCalls(limit: Int): List<CachedCall> =
-    readableDatabase.rawQuery(
-        "SELECT $CALL_COLUMNS FROM calls k$CALL_JOIN ORDER BY k.timestamp DESC,k.id DESC LIMIT ?",
-        arrayOf(limit.toString()),
+private fun callKindClause(kind: String): String? =
+    when (kind) {
+        "missed" -> "k.type IN ('missed','rejected','blocked')"
+        "incoming" -> "k.type IN ('incoming','answered_externally')"
+        "outgoing" -> "k.type='outgoing'"
+        "voicemail" -> "k.type='voicemail'"
+        else -> null
+    }
+
+// One WHERE builder for both the list and the chip counts, so a filter cannot mean two things.
+private fun Store.callWhere(query: String, kind: String, sim: String, localNumbers: Set<String>): Pair<String, List<String>> {
+    val clauses = mutableListOf("1=1")
+    val args = mutableListOf<String>()
+    if (sim.isNotEmpty()) {
+        clauses += "k.receiver=?"
+        args += sim
+    }
+    callKindClause(kind)?.let { clauses += it }
+    if (query.isNotEmpty()) {
+        clauses +=
+            "(instr(lower(k.number),lower(?))>0 OR instr(lower(COALESCE(s.name,'')),lower(?))>0${contactSearchClause("k.number", localNumbers)})"
+        args += query
+        args += query
+    }
+    return clauses.joinToString(" AND ") to args
+}
+
+internal fun Store.calls(
+    query: String = "",
+    kind: String = "all",
+    sim: String = "",
+    localNumbers: Set<String> = emptySet(),
+    limit: Int = 200,
+): List<CachedCall> {
+    val (where, args) = callWhere(query, kind, sim, localNumbers)
+    return readableDatabase.rawQuery(
+        "SELECT $CALL_COLUMNS FROM calls k$CALL_JOIN WHERE $where ORDER BY k.timestamp DESC,k.id DESC LIMIT ?",
+        (args + limit.toString()).toTypedArray(),
     ).use { c -> buildList { while (c.moveToNext()) add(c.call()) } }
+}
+
+internal fun Store.cachedCalls(limit: Int): List<CachedCall> = calls(limit = limit)
+
+/** Counts over every cached call, independent of the page limit; "other" is not shown as a chip. */
+internal fun Store.callCounts(
+    query: String = "",
+    sim: String = "",
+    localNumbers: Set<String> = emptySet(),
+): Map<String, Int> {
+    val result = callFilterLabels.keys.associateWith { 0 }.toMutableMap()
+    val (where, args) = callWhere(query, "all", sim, localNumbers)
+    readableDatabase.rawQuery(
+        "SELECT CASE WHEN k.type IN ('missed','rejected','blocked') THEN 'missed' " +
+            "WHEN k.type IN ('incoming','answered_externally') THEN 'incoming' " +
+            "WHEN k.type='outgoing' THEN 'outgoing' WHEN k.type='voicemail' THEN 'voicemail' " +
+            "ELSE 'other' END g,COUNT(*) FROM calls k$CALL_JOIN WHERE $where GROUP BY g",
+        args.toTypedArray(),
+    ).use { c ->
+        while (c.moveToNext()) {
+            val group = c.getString(0)
+            val count = c.getInt(1)
+            result["all"] = result.getValue("all") + count
+            if (group != "other" && group in result) result[group] = count
+        }
+    }
+    return result
+}
+
+internal fun Store.callReceivers(): List<String> =
+    readableDatabase.rawQuery("SELECT DISTINCT receiver FROM calls WHERE receiver<>'' ORDER BY receiver", null)
+        .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+/** Numbers on the call timeline, for matching contacts by name without touching the cache. */
+internal fun Store.callNumbers(): List<String> =
+    readableDatabase.rawQuery("SELECT DISTINCT number FROM calls WHERE number<>''", null)
+        .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
 
 internal fun Store.cachedCall(id: Long): CachedCall? =
     readableDatabase.rawQuery("SELECT $CALL_COLUMNS FROM calls k$CALL_JOIN WHERE k.id=?", arrayOf(id.toString()))
@@ -304,91 +398,118 @@ private fun dayLabel(timestamp: Long): String =
 private fun clock(timestamp: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
-internal fun CallListPane(
+internal fun CallList(
     model: HomeModel,
     actions: HomeActions,
     selected: Long?,
-    compactHeight: Boolean,
+    listState: LazyListState,
+    searching: Boolean,
 ) {
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.statusBarsPadding()
-                .padding(start = 24.dp, end = 8.dp, top = if (compactHeight) 4.dp else 8.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("通话记录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            IconButton(onClick = { actions.onOpenSettings(SettingsPage.Overview) }) {
-                Icon(Icons.Default.Settings, contentDescription = "设置")
+    // A new filter or query means the reader starts at the newest match, not mid-list. The
+    // first composition of a tab is not a filter change, so returning to calls keeps its scroll.
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(model.callKind, model.callSimFilter, model.searchQuery, searching) {
+        if (settled && listState.firstVisibleItemIndex > 0) listState.scrollToItem(0)
+        settled = true
+    }
+    val calls = model.calls
+    when {
+        calls == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingIndicator() }
+        calls.isEmpty() -> {
+            val (icon, title, text) =
+                when {
+                    searching && model.searchQuery.isNotEmpty() ->
+                        Triple(Icons.Default.SearchOff, "没有找到相关通话", "换个号码，或搜索联系人名称")
+                    searching -> Triple(Icons.Default.Call, "搜索通话", "输入号码或联系人名称")
+                    model.callKind != "all" ->
+                        Triple(Icons.Default.Call, "这个筛选下没有通话", "换个类型，或查看全部通话")
+                    model.callSimFilter.isNotEmpty() ->
+                        Triple(Icons.Default.Call, "这张卡还没有通话", "清除筛选查看全部通话")
+                    else ->
+                        Triple(
+                            Icons.Default.Call,
+                            "暂无通话记录",
+                            "在 Android 手机的“采集方式”中开启“通话记录”后，通话会出现在这里",
+                        )
+                }
+            CallEmptyState(icon, title, text) {
+                when {
+                    searching && model.searchQuery.isNotEmpty() ->
+                        TextButton(onClick = { actions.onSearchQueryChange("") }) { Text("清除搜索") }
+                    model.callKind != "all" ->
+                        TextButton(onClick = { actions.onCallKindChange("all") }) { Text("查看全部通话") }
+                    model.callSimFilter.isNotEmpty() ->
+                        TextButton(onClick = { actions.onCallSimFilterChange("") }) { Text("清除筛选") }
+                    else ->
+                        TextButton(onClick = { actions.onOpenSettings(SettingsPage.Capture) }) { Text("开启通话采集") }
+                }
             }
         }
-        HomeViewSwitch(model.view, actions.onViewChange)
-        PullToRefreshBox(
-            isRefreshing = model.refreshing,
-            onRefresh = actions.onRefresh,
-            modifier = Modifier.weight(1f),
-        ) {
-            val calls = model.calls
-            when {
-                calls == null -> Box(Modifier.fillMaxSize())
-                calls.isEmpty() -> CallEmptyState(Icons.Default.Call, "暂无通话记录", "在 Android 手机的“采集方式”中开启“通话记录”后，通话会出现在这里")
-                else -> {
-                    val state = rememberLazyListState()
-                    val nearEnd by remember {
-                        derivedStateOf {
-                            val last = state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                            last >= state.layoutInfo.totalItemsCount - 10
+        else -> {
+            // One line is the normal case; showing it on every row is noise, same as SMS.
+            val showLines = model.callReceivers.size > 1
+            val nearEnd by remember {
+                derivedStateOf {
+                    val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    last >= listState.layoutInfo.totalItemsCount - 10
+                }
+            }
+            LaunchedEffect(nearEnd, calls.size) {
+                if (nearEnd && calls.size >= model.callLimit) actions.onLoadMoreCalls()
+            }
+            val rows = remember(calls) {
+                buildList<Any> {
+                    var day = ""
+                    for (call in calls) {
+                        val label = dayLabel(call.timestamp)
+                        if (label != day) {
+                            add(label)
+                            day = label
                         }
-                    }
-                    LaunchedEffect(nearEnd, calls.size) {
-                        if (nearEnd && calls.size >= model.callLimit) actions.onLoadMoreCalls()
-                    }
-                    val rows = remember(calls) {
-                        buildList<Any> {
-                            var day = ""
-                            for (call in calls) {
-                                val label = dayLabel(call.timestamp)
-                                if (label != day) {
-                                    add(label)
-                                    day = label
-                                }
-                                add(call)
-                            }
-                        }
-                    }
-                    LazyColumn(Modifier.fillMaxSize(), state = state) {
-                        items(rows, key = { if (it is CachedCall) "call:${it.id}" else "day:$it" }) { row ->
-                            if (row is CachedCall)
-                                CallRow(
-                                    row,
-                                    receiverLabel = model.sims.find { it.phone == row.receiver }?.label,
-                                    isSelected = selected == row.id,
-                                    onClick = { actions.onSelectCall(row.id) },
-                                )
-                            else
-                                Text(
-                                    row as String,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(start = 24.dp, top = 12.dp, bottom = 4.dp),
-                                )
-                        }
-                        item { Spacer(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) }
+                        add(call)
                     }
                 }
+            }
+            LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                items(rows, key = { if (it is CachedCall) "call:${it.id}" else "day:$it" }) { row ->
+                    if (row is CachedCall)
+                        CallRow(
+                            row,
+                            receiverLabel =
+                                if (showLines) row.receiver.takeIf { it.isNotEmpty() }?.let { simLabel(it, model.sims) }
+                                else null,
+                            isSelected = selected == row.id,
+                            onClick = { actions.onSelectCall(row.id) },
+                            modifier = Modifier.animateItem(),
+                        )
+                    else
+                        Text(
+                            row as String,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.animateItem().padding(start = 24.dp, top = 12.dp, bottom = 4.dp),
+                        )
+                }
+                item { Spacer(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) }
             }
         }
     }
 }
 
 @Composable
-private fun CallRow(call: CachedCall, receiverLabel: String?, isSelected: Boolean, onClick: () -> Unit) {
+private fun CallRow(
+    call: CachedCall,
+    receiverLabel: String?,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val local = if (call.number.isEmpty()) null else rememberLocalContact(call.number)
     val name = local?.name ?: call.contact
     val missed = isMissedCall(call.type)
     val accent = if (missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .padding(horizontal = 8.dp)
             .clip(RoundedCornerShape(28.dp))
             .background(if (isSelected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
@@ -410,12 +531,17 @@ private fun CallRow(call: CachedCall, receiverLabel: String?, isSelected: Boolea
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
-                Text(clock(call.timestamp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    listOfNotNull(receiverLabel, clock(call.timestamp)).joinToString(" · "),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(callIcon(call), contentDescription = null, tint = accent, modifier = Modifier.size(16.dp))
                 Text(
-                    listOfNotNull(callSummary(call), receiverLabel).joinToString(" · "),
+                    callSummary(call),
                     style = MaterialTheme.typography.bodyMedium,
                     color = accent,
                     maxLines = 1,
@@ -524,7 +650,12 @@ internal fun CallDetailPane(
 }
 
 @Composable
-internal fun CallEmptyState(icon: ImageVector, title: String, text: String) {
+internal fun CallEmptyState(
+    icon: ImageVector,
+    title: String,
+    text: String,
+    action: (@Composable () -> Unit)? = null,
+) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
@@ -538,6 +669,7 @@ internal fun CallEmptyState(icon: ImageVector, title: String, text: String) {
         }
         Text(title, style = MaterialTheme.typography.titleMedium)
         Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        action?.invoke()
     }
 }
 
