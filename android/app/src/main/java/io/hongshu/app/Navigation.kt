@@ -215,18 +215,31 @@ internal fun navigateSettingsDestination(
 }
 
 /**
- * True when the search bar and filtered conversation list should be active.
+ * True when the search bar and filtered list should be active.
  *
- * In two-pane mode, opening a conversation from search keeps `Search` on the stack right below
- * `Conversation`, so the left pane stays in search mode while the right pane previews the thread.
+ * In two-pane mode, opening a conversation or a call from search keeps `Search` on the stack
+ * right below the detail, so the left pane stays in search mode while the right pane previews
+ * the item. Search belongs to the shared list screen, not to one data domain.
  */
 internal fun isSearchMode(stack: List<AppDestination>, twoPane: Boolean): Boolean {
     val last = stack.lastOrNull() ?: return false
     if (last == AppDestination.Search) return true
-    return twoPane &&
-        last is AppDestination.Conversation &&
-        stack.getOrNull(stack.lastIndex - 1) == AppDestination.Search
+    if (!twoPane) return false
+    val previous = stack.getOrNull(stack.lastIndex - 1)
+    return previous == AppDestination.Search &&
+        (last is AppDestination.Conversation || last is AppDestination.Call)
 }
+
+/**
+ * Navigation stack after switching between the SMS and calls tabs.
+ *
+ * Search is a property of the shared list screen, so an active search survives the switch:
+ * the query is kept and the other domain is searched with the same words. Any open detail is
+ * closed because it belongs to the previous domain's list.
+ */
+internal fun switchHomeViewStack(stack: List<AppDestination>): List<AppDestination> =
+    if (AppDestination.Search in stack) listOf(AppDestination.Home, AppDestination.Search)
+    else listOf(AppDestination.Home)
 
 /**
  * Which destinations share one screen and therefore change in place instead of sliding.

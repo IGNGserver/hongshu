@@ -270,9 +270,12 @@ class UiScreenshotTest {
         }
     }
 
-    private fun callModel(): HomeModel {
+    private fun callModel(kind: String = "all"): HomeModel {
         seedCalls()
-        val calls = Store(compose.activity).use { it.cachedCalls(50) }
+        val (calls, counts, receivers) =
+            Store(compose.activity).use {
+                Triple(it.calls(kind = kind), it.callCounts(), it.callReceivers())
+            }
         return HomeModel(
             repo = Repository(compose.activity),
             messages = sample,
@@ -289,6 +292,9 @@ class UiScreenshotTest {
             view = HomeView.CALLS,
             callLogAvailable = true,
             calls = calls,
+            callCounts = counts,
+            callReceivers = receivers,
+            callKind = kind,
         )
     }
 
@@ -302,6 +308,12 @@ class UiScreenshotTest {
     fun homeCallsDark() {
         val model = callModel()
         shot("home-calls-dark", dark = true) { MainSurface(AppDestination.Home, model, actions, twoPane = false) }
+    }
+
+    @Test
+    fun homeCallsMissed() {
+        val model = callModel(kind = "missed")
+        shot("home-calls-missed") { MainSurface(AppDestination.Home, model, actions, twoPane = false) }
     }
 
     @Test
