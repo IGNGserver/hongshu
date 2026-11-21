@@ -1319,3 +1319,39 @@ Android 356 项单测 0 失败（20 项截图按条件跳过）+ lint 通过。
 `CallLog.kt` 与 `CallView.kt` 而非 `Store.kt`，正是拆分时最容易漏掉的一类。补登通话领域后通过。
 
 这是 R1 的前置产物，不是 R1 本身：仓储拆分仍需真机回归验收。
+
+## 2026-11-21 SIM 拔卡残留修复
+
+现象：手机移除卡2后，设置页“SIM 卡与号码”的卡片列表只剩卡1（该页读系统实时扫描），但首页的线路
+筛选和会话接收号码仍显示卡2。根因：本地 `sims` 表只做增量 upsert，从不删除系统已不再报告的订阅；
+首页读表、设置页读扫描，两处数据源不一致。待上传“指定号码”、引导完成态、自动忽略开关和上传到中枢
+的 SIM 注册都读同一张表，因此都会把旧卡当成现存。
+
+修法：
+
+- `Store.updateSimMappings` 增加 `authoritative` 语义：扫描成功且非空时删除不在活动订阅集合里的行，
+  空扫描视为不可信不删除；自动刷新的变更判断改为整表比较，并单独识别“存储里有、扫描里没有”的订阅。
+- 手动模式新增只删不增的 `reconcileRemovedSims`，在回到前台、授予权限和 SIM 设置页扫描时对账。
+- 中枢 `PUT /api/sims` 新增 `{sims:[...]}` 全量替换形态（能力 `sim_inventory`），与 metadata revision
+  同事务提交；旧客户端单条增量形态保持不变。Android 在每轮短信与通话上传结束后同步清单并裁剪注册缓存。
+- 展示层不改写历史快照：没有当前映射的线路回退“尾号 xxxx”，Web 端同样回退，旧短信接收号码不改写。
+
+本机验证：
+
+| 检查 | 结果 |
+| --- | --- |
+| `bash scripts/verify-repository.sh`、`git diff --check` | 通过 |
+| `go vet ./...`、`go test -race ./...`、`go build -trimpath` | 通过；真实 MySQL 集成测试按设计 skip，由 CI 的 MySQL service 执行 |
+| `npm test`、`npm run check`、`npm run build` | 127 项通过；语法检查与生产壳构建通过 |
+| Android `:app:testDebugUnitTest` / `:app:lintDebug` / `:app:assembleDebug` | 371 项单测 0 失败（20 项截图按条件跳过），含新增 `SimMappingLifecycleTest` 4 项；lint 无 error（156 条既有 warning）；debug APK 构建通过 |
+
+本机 Robolectric 首次执行时 `/tmp` 空间不足导致原生 SQLite 运行库解包失败（218 项失败），
+把 Gradle 测试 JVM 的 `java.io.tmpdir` 指到共享构建缓存后全部通过，不是代码问题。
+
+未执行与边界：
+
+- 本机没有真机双卡，也没有可用的 MySQL 实例；拔卡/插回、eSIM 停用启用、运营商不暴露号码的 ROM
+  仍需真机验收：插两卡同步一次 → 首页出现卡1/卡2 → 拔卡2后等一次同步或重开应用 → 首页只剩卡1、
+  设置只剩卡1、待上传没有卡2 → Web“设备与 SIM”和筛选不再出现 SIM2 → 插回卡2恢复识别。
+- 全量替换需要中枢与 Android 同版本；旧中枢没有 `sim_inventory` 时客户端保持增量注册，残留清单
+  要等中枢升级后的下一次同步才清理。

@@ -700,9 +700,27 @@ async function openContactConversation(sender) {
   shell(); // inboxView owns the single refresh for the newly selected query.
 }
 
+// The hub keeps only the lines a phone still confirms, so a historical message can arrive
+// with a receiving number that no longer has a SIM registration. Never claim such a line is
+// the current card: fall back to its tail digits the way people refer to their numbers.
+export function simDisplayLabel(phone, sims = state.sims) {
+  if (!phone) return "";
+  const sim = sims.find((s) => s.phone === phone);
+  if (sim?.label) return sim.label;
+  const digits = String(phone).replace(/\D/g, "");
+  return digits.length >= 7 ? `尾号 ${digits.slice(-4)}` : phone;
+}
+
 function simLabel(phone) {
-  const sim = state.sims.find((s) => s.phone === phone);
-  return sim?.label || phone;
+  return simDisplayLabel(phone);
+}
+
+// Mapped lines keep their SIM label plus the full number; a line without a current
+// registration reads better as just its tail digits than as a full phone number.
+function simLine(receiver) {
+  if (!receiver) return "";
+  const sim = state.sims.find((s) => s.phone === receiver);
+  return sim?.label ? `${sim.label} ${receiver}` : simLabel(receiver);
 }
 
 function formatClock(t) {
@@ -2240,9 +2258,7 @@ function callName(c) {
 }
 
 function callLine(receiver) {
-  if (!receiver) return "";
-  const label = simLabel(receiver);
-  return label === receiver ? receiver : `${label} ${receiver}`;
+  return simLine(receiver);
 }
 
 function renderCalls() {
@@ -2388,7 +2404,7 @@ function updateJumpButton(announceNew = false) {
 
 function messageStamp(msg) {
   const deviceName = state.devices.find((device) => device.id === msg.device_id)?.name || "来源手机";
-  const line = msg.receiver ? `${simLabel(msg.receiver)}${simLabel(msg.receiver) === msg.receiver ? "" : " " + msg.receiver}` : "";
+  const line = simLine(msg.receiver);
   // The phone's own line is the recipient of a received message and the sender of a sent one.
   const receiver = isOutgoing(msg) ? (line ? `由 ${line} 发出` : "发送号码未知") : (line || "接收号码未知");
   return el("div", "message-stamp", [formatClock(msg.timestamp), deviceName, receiver, isOutgoing(msg) ? "已发送" : "", msg.historical ? "历史补齐" : ""].filter(Boolean).join(" · "));

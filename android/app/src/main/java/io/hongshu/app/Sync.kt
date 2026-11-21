@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 class HongshuApp : Application() {
@@ -401,10 +402,12 @@ object SyncEngine {
                 c.lastSyncAttempt = System.currentTimeMillis()
                 val session = repo.api.requestCancellable("/me", timeoutMillis = 15_000)
                 val me = session.getJSONObject("device")
+                val features = hubFeatures(session)
                 val serverUpload = reconcileUploadSwitch(repo.api, c, me.getBoolean("upload"))
                 c.serverUploadAllowed = serverUpload
-                store.rememberHubOutgoing(hubFeatures(session).contains(HUB_FEATURE_OUTGOING))
-                store.rememberHubCallLog(hubFeatures(session).contains(HUB_FEATURE_CALL_LOG))
+                store.rememberHubOutgoing(features.contains(HUB_FEATURE_OUTGOING))
+                store.rememberHubCallLog(features.contains(HUB_FEATURE_CALL_LOG))
+                val simInventory = features.contains(HUB_FEATURE_SIM_INVENTORY)
                 if (me.has("name")) c.deviceName = me.getString("name")
                 if (store.captureSince() == 0L) {
                     store.initializeCaptureSince(me.getLong("created_at"))
@@ -506,6 +509,23 @@ object SyncEngine {
                         false
                     }
                 }
+                // Keep the hub's SIM inventory equal to this phone's current mappings. Only
+                // hubs advertising sim_inventory understand the full-set body; older hubs
+                // keep the additive per-number registration above. Runs last so pending
+                // historical receiver registrations are not deleted before their upload.
+                suspend fun syncSimInventory() {
+                    if (!simInventory || !c.upload || !serverUpload || !c.serverUploadAllowed)
+                        return
+                    try {
+                        SimRegistrations(repo.api, c).replaceAll(store.sims())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: ApiException) {
+                        if (e.status == 401) throw e
+                    } catch (_: Exception) {
+                        // Inventory only feeds display metadata; the next sync retries it.
+                    }
+                }
                 var uploaded = false
                 if (session.has("global_watermark_id")) {
                     store.updateGlobalWatermark(session.optLong("global_watermark_id"))
@@ -573,6 +593,7 @@ object SyncEngine {
                         val analysisMore = maintenance() && syncMessageAnalysis(context, repo, session, pairedAt)
                         reconcileNotifications(context, store)
                         val callsMore = maintenance() && uploadCallSlice()
+                        if (maintenance()) syncSimInventory()
                         // Same isolation as call uploads: a failure is retried next sync.
                         val callPagesMore =
                             try {
@@ -767,6 +788,32 @@ internal class SimRegistrations(private val api: Api, private val c: Config) {
         stale.keys.forEach { reused.remove(it) }
         c.registeredSims = cached
         return stale.values.toSet()
+    }
+
+    // Replaces the hub's whole inventory for this device. Only call it when the hub advertises
+    // HUB_FEATURE_SIM_INVENTORY: an older hub rejects the full-set body shape.
+    suspend fun replaceAll(sims: List<SimMapping>) {
+        val array = JSONArray()
+        val keys = mutableSetOf<String>()
+        for (sim in sims) {
+            if (!confirmedNumber(sim.phone)) continue
+            array.put(
+                JSONObject()
+                    .put("phone", sim.phone)
+                    .put("label", sim.label)
+                    .put("subscription_id", sim.sub)
+            )
+            keys += simRegistrationKey(c.deviceId, sim.phone, sim.label, sim.sub)
+        }
+        api.requestCancellable("/sims", "PUT", JSONObject().put("sims", array))
+        // The hub now knows exactly these rows. Keeping another cached key would let ensure()
+        // skip a registration the replacement just deleted.
+        reused.clear()
+        cached.retainAll(keys)
+        cached += keys
+        sent.clear()
+        sent += keys
+        c.registeredSims = cached
     }
 }
 

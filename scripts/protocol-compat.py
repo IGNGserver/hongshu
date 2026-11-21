@@ -60,7 +60,7 @@ REQUIRED_FIELDS = {
 
 # Additive capabilities and endpoints a client must not assume exist.
 ADDITIVE_PATHS = ["/api/ops"]
-ADDITIVE_FEATURES = ["outgoing_sms", "metadata_revision", "recent_snapshot", "call_log", "conversation_cursor"]
+ADDITIVE_FEATURES = ["outgoing_sms", "metadata_revision", "recent_snapshot", "call_log", "conversation_cursor", "sim_inventory"]
 
 
 class Probe:

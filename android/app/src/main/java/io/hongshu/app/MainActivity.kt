@@ -87,6 +87,11 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { AppUpdates.get(this@MainActivity).check() }
         clearLegacyTaskExclusion(this)
         SimMonitor.start(this)
+        // Manual SIM mode only writes on save; a pulled card must still stop claiming a slot
+        // as soon as the user looks at the app.
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { reconcileRemovedSims(this@MainActivity) }
+        }
         SmsInboxObserver.ensure(this)
         CallLogObserver.ensure(this)
         syncNow(this, manual = true)
@@ -244,6 +249,9 @@ fun HongshuUI(activity: MainActivity) {
             grants ->
             Store.changes.value++
             SimMonitor.start(activity)
+            activity.lifecycleScope.launch(Dispatchers.IO) {
+                runCatching { reconcileRemovedSims(activity) }
+            }
             syncNow(activity)
             val continuation = permissionContinuation
             permissionContinuation = null

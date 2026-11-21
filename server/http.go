@@ -351,16 +351,42 @@ func (a *app) sims(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"sims": out})
 }
+
+// simRegistration is the wire shape a device confirms for one line. DeviceID is assigned by
+// the session, never by the request body.
+type simRegistration struct {
+	Phone          string `json:"phone"`
+	Label          string `json:"label"`
+	SubscriptionID int    `json:"subscription_id"`
+}
+
 func (a *app) saveSIM(w http.ResponseWriter, r *http.Request) {
+	// Every released client still registers one confirmed line at a time. A client that
+	// advertises sim_inventory replaces its whole set after uploads instead, so a removed
+	// SIM disappears from /api/sims (and therefore from the Web inventory) instead of
+	// staying behind forever.
 	var in struct {
-		Phone          string `json:"phone"`
-		Label          string `json:"label"`
-		SubscriptionID int    `json:"subscription_id"`
+		simRegistration
+		Sims []simRegistration `json:"sims"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	if !phonePattern.MatchString(in.Phone) || len(in.Label) > 100 {
+	replace := in.Sims != nil
+	if replace {
+		if len(in.Sims) > 32 {
+			fail(w, 400, "invalid_sim")
+			return
+		}
+		seen := make(map[string]bool, len(in.Sims))
+		for _, sim := range in.Sims {
+			if !phonePattern.MatchString(sim.Phone) || len(sim.Label) > 100 || seen[sim.Phone] {
+				fail(w, 400, "invalid_sim")
+				return
+			}
+			seen[sim.Phone] = true
+		}
+	} else if !phonePattern.MatchString(in.Phone) || len(in.Label) > 100 {
 		fail(w, 400, "invalid_sim")
 		return
 	}
@@ -370,7 +396,28 @@ func (a *app) saveSIM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, e = tx.ExecContext(r.Context(), "INSERT INTO sims VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE label=?,subscription_id=?", device(r).ID, in.Phone, in.Label, in.SubscriptionID, in.Label, in.SubscriptionID); e != nil || a.commitMetadata(r.Context(), tx) != nil {
+	switch {
+	case !replace:
+		_, e = tx.ExecContext(r.Context(), "INSERT INTO sims VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE label=?,subscription_id=?", device(r).ID, in.Phone, in.Label, in.SubscriptionID, in.Label, in.SubscriptionID)
+	case len(in.Sims) == 0:
+		_, e = tx.ExecContext(r.Context(), "DELETE FROM sims WHERE device_id=?", device(r).ID)
+	default:
+		placeholders := make([]string, len(in.Sims))
+		args := make([]any, 0, len(in.Sims)+1)
+		args = append(args, device(r).ID)
+		for index, sim := range in.Sims {
+			placeholders[index] = "?"
+			args = append(args, sim.Phone)
+		}
+		if _, e = tx.ExecContext(r.Context(), "DELETE FROM sims WHERE device_id=? AND phone NOT IN ("+strings.Join(placeholders, ",")+")", args...); e == nil {
+			for _, sim := range in.Sims {
+				if _, e = tx.ExecContext(r.Context(), "INSERT INTO sims VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE label=?,subscription_id=?", device(r).ID, sim.Phone, sim.Label, sim.SubscriptionID, sim.Label, sim.SubscriptionID); e != nil {
+					break
+				}
+			}
+		}
+	}
+	if e != nil || a.commitMetadata(r.Context(), tx) != nil {
 		fail(w, 503, "database_unavailable")
 		return
 	}
