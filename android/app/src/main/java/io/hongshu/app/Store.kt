@@ -1782,8 +1782,15 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         changes.value++
     }
 
+    // `authoritative` means the caller just scanned the system and `active` is the complete
+    // set of subscriptions it reports. Only then may rows for vanished subscriptions be
+    // removed; an empty or failed scan must never wipe a working mapping.
     @Suppress("UNUSED_PARAMETER")
-    fun updateSimMappings(active: List<SimMapping>, automatic: Boolean) {
+    fun updateSimMappings(
+        active: List<SimMapping>,
+        automatic: Boolean,
+        authoritative: Boolean = false,
+    ) {
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -1793,6 +1800,16 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
                 if (confirmedNumber(sim.phone)) saveSim(sim)
                 else db.delete("sims", "sub=?", arrayOf(sim.sub.toString()))
             }
+            // A removed card must stop being presented as a current line. Historical messages
+            // keep their captured receiver snapshot; only this mapping table is pruned.
+            if (authoritative && active.isNotEmpty()) {
+                val subs = active.map { it.sub }.distinct()
+                db.delete(
+                    "sims",
+                    "sub NOT IN (${subs.joinToString(",") { "?" }})",
+                    subs.map { it.toString() }.toTypedArray(),
+                )
+            }
             // Retry only SIM failures; malformed messages must not be retried indefinitely.
             db.execSQL("UPDATE outbox SET blocked='' WHERE blocked='sim_not_confirmed'")
             db.setTransactionSuccessful()
@@ -1801,6 +1818,24 @@ class Store(private val context: Context, databaseName: String = "hongshu.db") :
         }
         releaseAutoIgnoredIfResolved()
         changes.value++
+    }
+
+    // Manual mode does not rescan numbers on its own, but a card the system no longer reports
+    // must still stop claiming a slot. Only vanished subscriptions are dropped; the numbers
+    // the user saved for surviving cards are left untouched.
+    fun pruneInactiveSimMappings(activeSubs: Set<Int>): Int {
+        if (activeSubs.isEmpty()) return 0
+        val removed =
+            writableDatabase.delete(
+                "sims",
+                "sub NOT IN (${activeSubs.joinToString(",") { "?" }})",
+                activeSubs.map { it.toString() }.toTypedArray(),
+            )
+        if (removed > 0) {
+            releaseAutoIgnoredIfResolved()
+            changes.value++
+        }
+        return removed
     }
 
     @Suppress("UNUSED_PARAMETER")

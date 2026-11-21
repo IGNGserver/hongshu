@@ -660,6 +660,13 @@ fun SimsPage(host: SettingsHost) {
                 if (next != null) {
                     candidates = next
                     scanStatus = if (next.isEmpty()) "未检测到 SIM 卡" else null
+                    // The list above is live; make the stored mappings match so the home
+                    // screen stops presenting a pulled card as a current line.
+                    if (next.isNotEmpty()) {
+                        withContext(Dispatchers.IO) {
+                            repo.store.pruneInactiveSimMappings(next.map { it.sub }.toSet())
+                        }
+                    }
                     if (!initialized) {
                         val saved = withContext(Dispatchers.IO) { repo.store.sims() }
                         phones =

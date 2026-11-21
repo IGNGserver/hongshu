@@ -11,14 +11,14 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 | GET /healthz | 数据库可用性和脱敏 Push 指标：enabled、claim_failures、state_failures、delivery_failures、suppressed_read（因已读被抑制）、dropped（重试耗尽被丢弃）、last_success（毫秒，0 表示尚无成功）；DB 不可用为 503。200 不代表 Push 端到端健康 |
 | POST /api/login | `{password, name?, kind?}`，校验中枢密码并创建设备会话；kind=web 或 android；设置 Cookie 并返回 `{device, token}`；弱密码允许，空密码不允许 |
 | GET /api/ops | 运维快照（需认证）：`status,version,uptime_ms`，`database` 连接池与延迟，`schema` 已应用版本与 `dirty` 计数，`push` 计数与 `last_loop/last_success/backlog`，`analysis` 的 `finish_failures/last_success/last_loop/queued`，`workers.running/exited`，`realtime.subscribers`，`redis.enabled`。只包含计数、时长与布尔值；不含短信正文、发件人、设备 token、Push endpoint 或 AI 密钥。`backlog`/`queued` 查询失败时为 `null`，不把无法测量当成 0；DB 不可用返回 503 |
-| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`、`conversation_cursor`；`call_cursor` 为通话记录提交头。当请求端为 `kind=android` 设备时，`unread_count` 自动排除本设备自己上传的消息，仅统计来自其他设备或未归属本设备的未读入站短信 |
+| GET /api/me | 本设备、设置、公钥、`push_subscribed`、当前 sequence、数据库 epoch、metadata_revision、ai_paused；`features` 宣告 `outgoing_sms`、`metadata_revision`、`recent_snapshot`、`call_log`、`conversation_cursor`、`sim_inventory`；`call_cursor` 为通话记录提交头。当请求端为 `kind=android` 设备时，`unread_count` 自动排除本设备自己上传的消息，仅统计来自其他设备或未归属本设备的未读入站短信 |
 | GET /api/metadata?since=N | 一致性元数据快照；`revision,epoch,unchanged`，有变化时另含 devices/sims/contacts；需 `metadata_revision` 能力 |
 | GET /api/recent?limit=50 | 最近会话头消息展示快照：messages/head/epoch；head 不可用于推进可靠同步游标，需 `recent_snapshot` 能力 |
 | POST /api/logout | 原子撤销本浏览器身份后清除 cookie；保留历史；即使退出最后一个管理员，也可用中枢密码重新登录 |
 | GET /api/devices | 设备清单，不含 token |
 | PATCH /api/devices/{id} | 本设备或管理员修改 name/upload/notify；Android 连接后的保存改名复用现有身份；admin 不可通过此接口提权 |
 | DELETE /api/devices/{id} | 管理员撤销，保留消息；中枢密码可重新创建管理员 Web 身份 |
-| GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 注册本设备确认的接收号码 |
+| GET/PUT /api/sims | 查询；`{phone,label,subscription_id}` 单条注册本设备确认的接收号码（旧客户端仍使用的增量形态）；`{sims:[{phone,label,subscription_id}]}` 全量替换本设备清单并删除不在列表中的号码（需 `sim_inventory` 能力，空数组表示本设备没有已确认号码）。替换、删除与 metadata revision 同事务提交 |
 | GET/PUT /api/contacts | 查询号码名称映射；`{phone,name}` 或 `{contacts:[{phone,name}]}` 批量同步，空 name 删除名称 |
 | POST /api/messages | Android 上传，`{messages:[{receiver,sender,body,timestamp,subscription_id,historical:false}]}`，最多 100 条；按请求顺序返回等长 `{id,duplicate,error?,fingerprint}`。fingerprint 为既有幂等指纹（receiver、sender、timestamp、body 以 NUL 分隔的 UTF-8 SHA-256），每条成功/失败均回传，旧客户端可忽略新增字段。格式非法的消息只拒绝该条 `invalid_message`，同批有效短信仍提交；已存在的相同 fingerprint 优先返回 duplicate，即使当前 SIM 注册后来丢失；其他未确认接收号码只标记该条 `sim_not_confirmed`，同批已确认短信仍提交。客户端先验证整组 ACK，再按指纹关联；旧中枢无此字段时按请求顺序关联，不能检测重排。异常响应保留队列；旧中枢整批 invalid_message 可二分隔离，单条失败只阻塞该条。历史导入设 historical=true，不生成新短信通知。可选 `direction`：省略或 `"in"` 为本机 SIM 收到的短信，`"out"` 为本机发出的短信，其他值按该条 `invalid_message` 拒绝；见下文“收发方向” |
 | POST /api/messages/read | `{sender?, message_id?, all?}` 标记已读；all=true 且省略/0 message_id 时推进全局已读水位线为最新消息，正数 message_id 则推进到 min(目标,当前提交头)，用于 Android 持久目标补传；指定 sender 则推进该会话已读游标。显式正数 message_id 必须是该 sender 已提交的消息，否则返回 400；负数无效，省略或 0 保留“当前整个会话已读”的兼容语义，自动标读客户端必须提交实际展示的 ID。返回 `{ok, global_watermark_id, unread_count}`（Android 设备返回排除自身上传后的 `unread_count`） |
@@ -53,6 +53,10 @@ JSON UTF-8；时间统一 Unix 毫秒；分页 limit 1..200，默认 100。
 
 请求体最多 1 MiB；不接受未知 JSON 字段；正文最多 64000 UTF-8 bytes，时间限制在 Unix epoch 至未来 24h；客户端按实际 JSON 字节数拆批。
 号码不能包含 NUL，接收号码采用用户确认的号码（建议 E.164，服务端校验 + 和 3..20 位数字）。Android 保存自动模式即授权持续使用系统读取的有效号码；每次变化仍先注册 /sims 再上传，不猜测无法读取的号码。
+`PUT /api/sims` 的两种形态可以并存：单条形态是旧客户端仍会发送的增量注册；`sims` 全量形态由
+Android 在每轮短信与通话上传结束后发送，使中枢清单等于手机当前的 SIM 映射，拔卡后不再确认的号码
+随之删除。历史短信保留各自的接收号码快照，不会被改写；展示端对没有当前映射的线路按尾号显示，
+不再声称它是当前卡槽。旧中枢没有 `sim_inventory` 时客户端继续逐号码增量注册，不做删除。
 token 和密码没有放在 URL 的接口。登录失败按来源地址限速。
 登录请求必须携带与 PUBLIC_URL 相同的 Origin；Android 原生客户端也显式发送该头，不依赖浏览器自动添加。
 显式 TRUSTED_PROXY_CIDRS 配置后才接受代理覆盖的单个 X-Forwarded-For 地址；客户端直连提交的转发头不可信。

@@ -54,7 +54,7 @@ fun saveSimSelection(context: Context, automatic: Boolean, mappings: List<SimMap
         val config = Config(context)
         synchronized(identityLock) {
             Store(context).use { store ->
-                store.updateSimMappings(mappings, automatic)
+                store.updateSimMappings(mappings, automatic, authoritative = true)
                 store.reconcileNotificationCaptures()
                 store.reconcileUnknownSimCaptures()
             }
@@ -85,8 +85,19 @@ fun refreshAutomaticSims(context: Context) =
                 Store(context).use { store ->
                     val stored = store.sims()
                     val merged = mergeAutomaticSims(stored, scanned)
-                    if (merged.any { next -> stored.find { it.sub == next.sub } != next }) {
-                        store.updateSimMappings(merged, automatic = true)
+                    val scannedSubs = scanned.map { it.sub }.toSet()
+                    // A pulled card is only visible as a stored row missing from the scan, so
+                    // it would never trigger the per-row comparison below on its own.
+                    val removed = stored.any { it.sub !in scannedSubs }
+                    if (
+                        removed ||
+                            merged.any { next -> stored.find { it.sub == next.sub } != next }
+                    ) {
+                        store.updateSimMappings(
+                            merged,
+                            automatic = true,
+                            authoritative = scanned.isNotEmpty(),
+                        )
                     }
                     merged
                 }
@@ -94,6 +105,33 @@ fun refreshAutomaticSims(context: Context) =
                 active.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
             config.simRecognitionHealthy = true
         }
+    }
+
+// Manual mode only writes numbers when the user saves, but a card pulled from the tray must
+// still stop claiming a slot on the home screen and in the pending-assignment list. This
+// deletes mappings for vanished subscriptions only; saved numbers for surviving cards are
+// left exactly as they are. Call it when the app becomes visible and when permissions change.
+fun reconcileRemovedSims(context: Context) =
+    synchronized(simLock) {
+        val config = Config(context)
+        if (!hasPermission(context, Manifest.permission.READ_PHONE_STATE)) return@synchronized
+        val scanned = runCatching { scanSims(context) }.getOrNull() ?: return@synchronized
+        // An empty result is not authoritative: telephony can be briefly unavailable.
+        if (scanned.isEmpty()) return@synchronized
+        val generation = config.captureGeneration
+        synchronized(identityLock) {
+            if (config.captureGeneration != generation) return@synchronized
+            val remaining =
+                Store(context).use { store ->
+                    if (store.pruneInactiveSimMappings(scanned.map { it.sub }.toSet()) == 0) null
+                    else store.sims()
+                } ?: return@synchronized
+            config.simRecognitionHealthy = true
+            config.singleSimSubscription =
+                remaining.singleOrNull()?.takeIf { confirmedNumber(it.phone) }?.sub ?: -1
+        }
+        // A removed card may have been the only thing keeping single-SIM fallback off.
+        Store(context).use { it.resolvePendingFallback() }
     }
 
 // Registered again after permissions are granted; periodic scans also cover process death

@@ -52,7 +52,7 @@ const (
 // "outgoing_sms" is present: an older hub ignores the direction field and would store them
 // as messages received from their recipient. "call_log" gates call uploads the same way:
 // an older hub has no /api/calls.
-var hubFeatures = []string{"outgoing_sms", "metadata_revision", "recent_snapshot", "call_log", "conversation_cursor"}
+var hubFeatures = []string{"outgoing_sms", "metadata_revision", "recent_snapshot", "call_log", "conversation_cursor", "sim_inventory"}
 
 func direction(m Incoming) string {
 	if m.Direction == "" {

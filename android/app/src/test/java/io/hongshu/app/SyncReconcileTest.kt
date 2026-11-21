@@ -140,6 +140,34 @@ class SyncReconcileTest {
         assertFalse(config.uploadPatchPending)
     }
 
+    @Test
+    fun replacementSendsTheWholeSetAndDropsCachedRegistrations() = runBlocking {
+        val stale = simRegistrationKey("device-a", "+8613900000000", "SIM2", 8)
+        config.registeredSims = setOf(simRegistrationKey("device-a", "+8613800000000", "SIM1", 7), stale)
+        SimRegistrations(Api(config), config)
+            .replaceAll(listOf(SimMapping(7, 0, "+8613800000000", "SIM1")))
+        assertEquals(listOf("PUT /api/sims"), requests.distinct())
+        val body = org.json.JSONObject(bodies.single())
+        assertEquals(1, body.getJSONArray("sims").length())
+        assertEquals("+8613800000000", body.getJSONArray("sims").getJSONObject(0).getString("phone"))
+        assertEquals(
+            setOf(simRegistrationKey("device-a", "+8613800000000", "SIM1", 7)),
+            config.registeredSims,
+        )
+        // The removed line must not be trusted from the previous cache: the hub deleted it.
+        requests.clear()
+        SimRegistrations(Api(config), config).ensure("+8613900000000", "SIM2", 8)
+        assertEquals(listOf("PUT /api/sims"), requests.distinct())
+    }
+
+    @Test
+    fun replacementWithNoConfirmedLineClearsTheInventory() = runBlocking {
+        SimRegistrations(Api(config), config).replaceAll(emptyList())
+        assertEquals(listOf("PUT /api/sims"), requests.distinct())
+        assertEquals(0, org.json.JSONObject(bodies.single()).getJSONArray("sims").length())
+        assertTrue(config.registeredSims.isEmpty())
+    }
+
     @Test fun failedReadReceiptIsRetriedWithDisplayedIdAndDoesNotConsumeNewerRead() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "receipt-network-${java.util.UUID.randomUUID()}.db"

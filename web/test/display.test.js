@@ -1,9 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { linkSegments, isFreshArrival, freshConversationKeys, conversationKey, updateAppBadge } from "../app.js";
+import { linkSegments, isFreshArrival, freshConversationKeys, conversationKey, updateAppBadge, simDisplayLabel } from "../app.js";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+test("a line without a current SIM registration never claims a card slot", () => {
+  const sims = [{ phone: "+8613800138000", label: "SIM1" }];
+  assert.equal(simDisplayLabel("+8613800138000", sims), "SIM1");
+  // The hub deletes registrations for unplugged cards, so historical messages arrive with
+  // a number that has no label. Falling back to the full number would read like a live card.
+  assert.equal(simDisplayLabel("+8613900139999", sims), "尾号 9999");
+  assert.equal(simDisplayLabel("+8613900139999", []), "尾号 9999");
+  assert.equal(simDisplayLabel("95588", sims), "95588");
+  assert.equal(simDisplayLabel("", sims), "");
+});
 
 test("links keep exact text and stop before sentence punctuation", () => {
   const body = "账单详情 https://h5.example.cn/bill?id=7，请查收。备用 http://a.example.com/x).";

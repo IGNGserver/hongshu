@@ -30,6 +30,11 @@ data class SmsRecord(
 // would store a sent message as one received from its recipient, so sent rows wait for it.
 internal const val HUB_FEATURE_OUTGOING = "outgoing_sms"
 
+// Optional hub capability: PUT /api/sims accepts the phone's whole confirmed set and deletes
+// rows it no longer reports. Without it a released client can only add registrations, which
+// leaves a pulled card in the hub inventory (and Web filters) forever.
+internal const val HUB_FEATURE_SIM_INVENTORY = "sim_inventory"
+
 fun sha256(value: String): String =
     MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString(
         ""
