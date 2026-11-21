@@ -3,7 +3,7 @@
 // below is 100% fictional and masked to illustrate privacy & product boundaries.
 
 export const HUB_META = {
-  version: "0.2.0-alpha.27",
+  version: "0.2.0-alpha.28",
   endpoint: "https://sms.home-lab.example",
   localBind: "127.0.0.1:18473",
   engine: "Go + MySQL 8.4",
@@ -396,7 +396,7 @@ export const DEPLOY_TABS = [
     label: "推荐：一键单机部署",
     caption: "适合家里 NAS、小主机或个人云服务器，一条命令自动配好中枢与数据库。",
     code: `# 1. 初始化配置文件与网页推送密钥（使用当前发布版本）
-HONGSHU_VERSION=0.2.0-alpha.27 \\
+HONGSHU_VERSION=0.2.0-alpha.28 \\
 PUBLIC_URL=https://sms.example.com \\
 VAPID_SUBJECT=mailto:ops@example.com \\
 bash scripts/init-deployment.sh
@@ -412,7 +412,7 @@ curl --fail http://127.0.0.1:18473/healthz`,
     label: "进阶：连接已有 MySQL",
     caption: "如果你电脑或 NAS 上已经跑了 MySQL 8.0+，可以共用数据库、只启动轻量的中枢服务。",
     code: `# 提前创建 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin 独立库
-HONGSHU_VERSION=0.2.0-alpha.27 \\
+HONGSHU_VERSION=0.2.0-alpha.28 \\
 HONGSHU_DB_MODE=external \\
 HONGSHU_DATABASE_URL='mysql://hongshu:change-me@mysql.internal:3306/hongshu?tls=true' \\
 PUBLIC_URL=https://sms.example.com \\
